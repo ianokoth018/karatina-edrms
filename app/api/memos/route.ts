@@ -179,13 +179,16 @@ export async function POST(req: NextRequest) {
     }
 
     const body = await req.json();
-    const { to, subject, memoBody, recommenders, documentId, approver: approverId } = body as {
+    const { to, subject, memoBody, recommenders, documentId, approver: approverId, cc, bcc, referenceNumber: customRef } = body as {
       to: string;
       subject: string;
       memoBody: string;
       recommenders: string[];
       documentId?: string;
       approver?: string;
+      cc?: string[];
+      bcc?: string[];
+      referenceNumber?: string;
     };
 
     // Validate required fields
@@ -250,8 +253,20 @@ export async function POST(req: NextRequest) {
     const department = session.user.department || "GEN";
     const deptAbbr = department.replace(/[^A-Z0-9]/gi, "").slice(0, 6).toUpperCase() || "GEN";
 
-    // Generate reference number for the memo document
-    const memoReference = await generateReference("MEMO", deptAbbr);
+    // Use custom reference number or auto-generate
+    let memoReference: string;
+    if (customRef?.trim()) {
+      // Verify uniqueness
+      const existing = await db.document.findFirst({
+        where: { referenceNumber: customRef.trim() },
+      });
+      if (existing) {
+        return NextResponse.json({ error: "Reference number already exists" }, { status: 409 });
+      }
+      memoReference = customRef.trim();
+    } else {
+      memoReference = await generateReference("MEMO", deptAbbr);
+    }
 
     // Get or create the Internal Memo Approval workflow template
     let template = await db.workflowTemplate.findFirst({
@@ -296,6 +311,9 @@ export async function POST(req: NextRequest) {
               department: r.department,
               jobTitle: r.jobTitle,
             })),
+            cc: cc ?? [],
+            bcc: bcc ?? [],
+            bodyHtml: memoBody.trim(),
           },
           ...(documentId
             ? {} // If linking to existing document, we don't create a file
@@ -336,6 +354,8 @@ export async function POST(req: NextRequest) {
             fromJobTitle: initiator.jobTitle,
             memoReference,
             documentId: document.id,
+            cc: cc ?? [],
+            bcc: bcc ?? [],
           },
         },
       });
