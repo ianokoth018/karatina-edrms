@@ -2,6 +2,7 @@
 
 import { useState } from "react";
 import Link from "next/link";
+import Image from "next/image";
 import { usePathname } from "next/navigation";
 import { signOut, useSession } from "next-auth/react";
 
@@ -213,13 +214,16 @@ export default function Sidebar({ open, onClose }: SidebarProps) {
       >
         {/* Logo area */}
         <div className="flex items-center gap-3 px-5 h-16 border-b border-gray-200 dark:border-gray-800 flex-shrink-0">
-          <div className="w-8 h-8 rounded-lg bg-karu-green flex items-center justify-center flex-shrink-0">
-            <svg className="w-4.5 h-4.5 text-karu-gold" fill="none" viewBox="0 0 24 24" strokeWidth={1.5} stroke="currentColor">
-              <path strokeLinecap="round" strokeLinejoin="round" d="M19.5 14.25v-2.625a3.375 3.375 0 0 0-3.375-3.375h-1.5A1.125 1.125 0 0 1 13.5 7.125v-1.5a3.375 3.375 0 0 0-3.375-3.375H8.25m2.25 0H5.625c-.621 0-1.125.504-1.125 1.125v17.25c0 .621.504 1.125 1.125 1.125h12.75c.621 0 1.125-.504 1.125-1.125V11.25a9 9 0 0 0-9-9Z" />
-            </svg>
-          </div>
+          <Image
+            src="/karu-crest.png"
+            alt="Karatina University"
+            width={32}
+            height={32}
+            className="flex-shrink-0"
+            style={{ width: "32px", height: "auto" }}
+          />
           <div className="min-w-0">
-            <h1 className="text-sm font-bold text-gray-900 dark:text-gray-100 truncate">EDRMS</h1>
+            <h1 className="text-sm font-bold text-gray-900 dark:text-gray-100 truncate">KARU EDRMS</h1>
             <p className="text-[10px] text-gray-500 dark:text-gray-400 truncate leading-tight">Karatina University</p>
           </div>
 
