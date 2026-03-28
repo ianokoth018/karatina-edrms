@@ -22,12 +22,12 @@ function DashboardSkeleton() {
 
         {/* Nav items skeleton */}
         <div className="flex-1 p-3 space-y-2">
-          {Array.from({ length: 7 }).map((_, i) => (
+          {[75, 60, 85, 70, 90, 65, 80].map((w, i) => (
             <div key={i} className="flex items-center gap-3 px-3 py-2.5">
               <div className="w-5 h-5 rounded bg-gray-200 dark:bg-gray-700 animate-pulse" />
               <div
                 className="h-3 bg-gray-200 dark:bg-gray-700 rounded animate-pulse"
-                style={{ width: `${60 + Math.random() * 40}%` }}
+                style={{ width: `${w}%` }}
               />
             </div>
           ))}

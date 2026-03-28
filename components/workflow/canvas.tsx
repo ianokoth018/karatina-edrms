@@ -2,6 +2,7 @@
 
 import {
   useCallback,
+  useMemo,
   useRef,
   type DragEvent,
 } from "react";
@@ -60,6 +61,7 @@ export default function WorkflowCanvas({
   onNodeSelect,
 }: WorkflowCanvasProps) {
   const reactFlowWrapper = useRef<HTMLDivElement>(null);
+  const memoizedNodeTypes = useMemo(() => nodeTypes, []);
   const reactFlowInstance = useRef<ReactFlowInstance | null>(null);
 
   const onConnect = useCallback(
@@ -163,7 +165,7 @@ export default function WorkflowCanvas({
         onDragOver={onDragOver}
         onNodeClick={onNodeClick}
         onPaneClick={onPaneClick}
-        nodeTypes={nodeTypes}
+        nodeTypes={memoizedNodeTypes}
         fitView
         deleteKeyCode={["Backspace", "Delete"]}
         proOptions={{ hideAttribution: true }}
