@@ -5,6 +5,10 @@ import StarterKit from "@tiptap/starter-kit";
 import Underline from "@tiptap/extension-underline";
 import TextAlign from "@tiptap/extension-text-align";
 import Placeholder from "@tiptap/extension-placeholder";
+import { Table } from "@tiptap/extension-table";
+import { TableRow } from "@tiptap/extension-table-row";
+import { TableCell } from "@tiptap/extension-table-cell";
+import { TableHeader } from "@tiptap/extension-table-header";
 import { useEffect } from "react";
 
 /* ---------- types ---------- */
@@ -74,6 +78,12 @@ export default function RichTextEditor({
       Placeholder.configure({
         placeholder,
       }),
+      Table.configure({
+        resizable: true,
+      }),
+      TableRow,
+      TableCell,
+      TableHeader,
     ],
     content,
     editable,
@@ -223,6 +233,18 @@ export default function RichTextEditor({
           >
             <svg className="w-4 h-4" viewBox="0 0 24 24" fill="currentColor">
               <path d="M3 3h18v2H3V3zm0 4h18v2H3V7zm0 4h18v2H3v-2zm0 4h18v2H3v-2zm0 4h18v2H3v-2z" />
+            </svg>
+          </ToolbarButton>
+
+          <ToolbarDivider />
+
+          {/* Table */}
+          <ToolbarButton
+            onClick={() => editor.chain().focus().insertTable({ rows: 3, cols: 3, withHeaderRow: true }).run()}
+            title="Insert Table"
+          >
+            <svg className="w-4 h-4" viewBox="0 0 24 24" fill="currentColor">
+              <path d="M4 4h16v16H4V4zm2 4v4h4V8H6zm6 0v4h4V8h-4zm-6 6v4h4v-4H6zm6 0v4h4v-4h-4z" />
             </svg>
           </ToolbarButton>
 

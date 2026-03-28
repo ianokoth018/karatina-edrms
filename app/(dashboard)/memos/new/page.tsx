@@ -499,12 +499,12 @@ export default function NewMemoPage() {
   return (
     <div className="p-4 sm:p-6 max-w-5xl mx-auto space-y-6 animate-fade-in">
       {/* Hidden print document */}
-      <div className="hidden print:block">
+      <div className="hidden print-only">
         <MemoDocument ref={printRef} {...memoPreviewProps} />
       </div>
 
       {/* Header */}
-      <div className="print:hidden">
+      <div className="no-print">
         <h1 className="text-2xl font-bold text-gray-900 dark:text-gray-100">
           New Internal Memo
         </h1>
@@ -514,7 +514,7 @@ export default function NewMemoPage() {
       </div>
 
       {/* Step indicator */}
-      <div className="print:hidden">
+      <div className="no-print">
         <div className="flex items-center gap-1 sm:gap-2 overflow-x-auto pb-1">
           {STEPS.map((s, idx) => (
             <div key={s.num} className="flex items-center gap-1 sm:gap-2 flex-shrink-0">
@@ -576,7 +576,7 @@ export default function NewMemoPage() {
 
       {/* Error */}
       {error && (
-        <div className="print:hidden rounded-xl bg-red-50 dark:bg-red-950/30 border border-red-200 dark:border-red-800 px-4 py-3">
+        <div className="no-print rounded-xl bg-red-50 dark:bg-red-950/30 border border-red-200 dark:border-red-800 px-4 py-3">
           <div className="flex items-center gap-2">
             <svg
               className="h-4 w-4 text-red-500 flex-shrink-0"
@@ -618,7 +618,7 @@ export default function NewMemoPage() {
       {/*  STEP 1: Compose                                                    */}
       {/* ================================================================== */}
       {step === 1 && (
-        <div className="print:hidden space-y-5 animate-slide-up">
+        <div className="no-print space-y-5 animate-slide-up">
           <div className="bg-white dark:bg-gray-900 rounded-2xl border border-gray-200 dark:border-gray-800 p-5 sm:p-6 space-y-5 shadow-sm">
             <h2 className="text-lg font-semibold text-gray-900 dark:text-gray-100 flex items-center gap-2">
               <svg
@@ -793,7 +793,7 @@ export default function NewMemoPage() {
       {/*  STEP 2: Review & Generate                                          */}
       {/* ================================================================== */}
       {step === 2 && (
-        <div className="print:hidden space-y-6 animate-slide-up">
+        <div className="no-print space-y-6 animate-slide-up">
           {/* Preview card */}
           <div className="bg-white dark:bg-gray-900 rounded-2xl border border-gray-200 dark:border-gray-800 overflow-hidden shadow-sm">
             <div className="px-5 sm:px-6 py-4 border-b border-gray-200 dark:border-gray-800 bg-gray-50 dark:bg-gray-800/50 flex items-center justify-between">
@@ -1047,7 +1047,7 @@ export default function NewMemoPage() {
       {/*  STEP 3: Recommenders & Approver                                    */}
       {/* ================================================================== */}
       {step === 3 && (
-        <div className="print:hidden space-y-6 animate-slide-up">
+        <div className="no-print space-y-6 animate-slide-up">
           {/* Recommenders card */}
           <div className="bg-white dark:bg-gray-900 rounded-2xl border border-gray-200 dark:border-gray-800 p-5 sm:p-6 space-y-5 shadow-sm">
             <div>
@@ -1354,7 +1354,7 @@ export default function NewMemoPage() {
       {/*  STEP 4: Submit                                                     */}
       {/* ================================================================== */}
       {step === 4 && (
-        <div className="print:hidden space-y-6 animate-slide-up">
+        <div className="no-print space-y-6 animate-slide-up">
           {/* Summary card */}
           <div className="bg-white dark:bg-gray-900 rounded-2xl border border-gray-200 dark:border-gray-800 overflow-hidden shadow-sm">
             <div className="px-5 sm:px-6 py-4 border-b border-gray-200 dark:border-gray-800 bg-gray-50 dark:bg-gray-800/50">
