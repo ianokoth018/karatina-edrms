@@ -43,17 +43,15 @@ export default function LoginPage() {
       {/* Header with crest */}
       <div className="text-center mb-6 lg:mb-8">
         <div className="flex justify-center mb-5 animate-scale-in">
-          <div className="rounded-2xl bg-white dark:bg-gray-800 p-3 ring-1 ring-gray-100 dark:ring-gray-700">
-            <Image
-              src="/karu-crest.png"
-              alt="Karatina University Crest"
-              width={48}
-              height={48}
-              className="w-12 h-auto"
-              style={{ width: "48px", height: "auto" }}
-              priority
-            />
-          </div>
+          <Image
+            src="/karu-crest.png"
+            alt="Karatina University Crest"
+            width={56}
+            height={56}
+            className="h-14 w-auto drop-shadow-sm"
+            style={{ width: "auto", height: "56px" }}
+            priority
+          />
         </div>
         <h1 className="text-2xl font-bold text-gray-900 dark:text-gray-100 animate-fade-in delay-100">
           Welcome back
