@@ -5,7 +5,7 @@ import { getToken } from "next-auth/jwt";
  * Protect all routes except /login and /api/auth.
  * Uses next-auth/jwt which is Edge Runtime compatible (no Node.js crypto).
  */
-export async function middleware(req: NextRequest) {
+export async function proxy(req: NextRequest) {
   const { pathname } = req.nextUrl;
 
   // Allow public routes
