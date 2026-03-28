@@ -1,0 +1,464 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+}
+
+// === Users, Roles, Permissions ===
+model User {
+  id            String   @id @default(cuid())
+  employeeId    String?  @unique
+  email         String   @unique
+  name          String
+  displayName   String
+  password      String   // hashed bcrypt
+  department    String?
+  jobTitle      String?
+  phone         String?
+  profilePhoto  String?
+  isActive      Boolean  @default(true)
+  lastLoginAt   DateTime?
+  mfaEnabled    Boolean  @default(false)
+  mfaSecret     String?
+  createdAt     DateTime @default(now())
+  updatedAt     DateTime @updatedAt
+
+  roles             UserRole[]
+  createdDocuments  Document[]     @relation("CreatedBy")
+  auditLogs         AuditLog[]
+  workflowTasks     WorkflowTask[] @relation("Assignee")
+  delegationsFrom   Delegation[]   @relation("Delegator")
+  delegationsTo     Delegation[]   @relation("Delegate")
+  notifications     Notification[]
+
+  @@map("users")
+}
+
+model Role {
+  id          String       @id @default(cuid())
+  name        String       @unique
+  description String?
+  isSystem    Boolean      @default(false)
+  permissions Permission[]
+  users       UserRole[]
+  createdAt   DateTime     @default(now())
+
+  @@map("roles")
+}
+
+model UserRole {
+  userId     String
+  roleId     String
+  user       User   @relation(fields: [userId], references: [id], onDelete: Cascade)
+  role       Role   @relation(fields: [roleId], references: [id], onDelete: Cascade)
+  assignedAt DateTime @default(now())
+
+  @@id([userId, roleId])
+  @@map("user_roles")
+}
+
+model Permission {
+  id       String @id @default(cuid())
+  roleId   String
+  resource String  // documents, workflows, admin, records, forms, reports
+  action   String  // create, read, update, delete, approve, manage
+  role     Role   @relation(fields: [roleId], references: [id], onDelete: Cascade)
+
+  @@unique([roleId, resource, action])
+  @@map("permissions")
+}
+
+// === Classification & Retention ===
+model ClassificationNode {
+  id          String  @id @default(cuid())
+  code        String  @unique
+  title       String
+  description String?
+  level       Int     // 1=Function, 2=Activity, 3=Transaction
+  parentId    String?
+  parent      ClassificationNode?  @relation("ClassTree", fields: [parentId], references: [id])
+  children    ClassificationNode[] @relation("ClassTree")
+  documents   Document[]
+  retentionSchedules RetentionSchedule[]
+  isActive    Boolean @default(true)
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  @@map("classification_nodes")
+}
+
+model RetentionSchedule {
+  id                   String   @id @default(cuid())
+  classificationNodeId String
+  classificationNode   ClassificationNode @relation(fields: [classificationNodeId], references: [id])
+  activeYears          Int
+  inactiveYears        Int
+  totalYears           Int
+  disposalAction       DisposalAction
+  legalBasis           String?
+  createdAt            DateTime @default(now())
+  updatedAt            DateTime @updatedAt
+
+  @@map("retention_schedules")
+}
+
+enum DisposalAction {
+  DESTROY
+  ARCHIVE_PERMANENT
+  REVIEW
+}
+
+// === Documents ===
+model Document {
+  id                   String   @id @default(cuid())
+  referenceNumber      String   @unique
+  title                String
+  description          String?
+  documentType         String   // MEMO, LETTER, FORM, REPORT, STUDENT_FILE, etc.
+  status               DocumentStatus @default(ACTIVE)
+  classificationNodeId String?
+  classificationNode   ClassificationNode? @relation(fields: [classificationNodeId], references: [id])
+  createdById          String
+  createdBy            User     @relation("CreatedBy", fields: [createdById], references: [id])
+  department           String
+  sourceSystem         String?  // STUDENT_PORTAL, ERP, MANUAL, EMAIL
+  sourceId             String?  // external ID from source system
+  isVitalRecord        Boolean  @default(false)
+  isOnLegalHold        Boolean  @default(false)
+  legalHoldReason      String?
+  legalHoldAt          DateTime?
+  checkoutUserId       String?
+  checkoutAt           DateTime?
+  retentionExpiresAt   DateTime?
+  contentHash          String?
+  metadata             Json     @default("{}")
+  createdAt            DateTime @default(now())
+  updatedAt            DateTime @updatedAt
+
+  files          DocumentFile[]
+  versions       DocumentVersion[]
+  tags           DocumentTag[]
+  workflowInstances WorkflowInstance[]
+  accessControls DocumentAccessControl[]
+
+  @@index([status])
+  @@index([department])
+  @@index([documentType])
+  @@index([sourceSystem, sourceId])
+  @@index([createdAt])
+  @@map("documents")
+}
+
+model DocumentFile {
+  id           String   @id @default(cuid())
+  documentId   String
+  document     Document @relation(fields: [documentId], references: [id], onDelete: Cascade)
+  storagePath  String   // file path or MinIO key
+  fileName     String
+  mimeType     String
+  sizeBytes    BigInt
+  isArchival   Boolean  @default(false)
+  isThumbnail  Boolean  @default(false)
+  ocrText      String?  @db.Text
+  ocrStatus    OcrStatus @default(PENDING)
+  encryptionIv String?
+  encryptionTag String?
+  uploadedAt   DateTime @default(now())
+
+  @@map("document_files")
+}
+
+model DocumentVersion {
+  id          String   @id @default(cuid())
+  documentId  String
+  document    Document @relation(fields: [documentId], references: [id], onDelete: Cascade)
+  versionNum  Int
+  storagePath String
+  sizeBytes   BigInt
+  changeNote  String
+  createdById String
+  createdAt   DateTime @default(now())
+
+  @@unique([documentId, versionNum])
+  @@map("document_versions")
+}
+
+model DocumentTag {
+  id         String   @id @default(cuid())
+  documentId String
+  document   Document @relation(fields: [documentId], references: [id], onDelete: Cascade)
+  tag        String
+
+  @@unique([documentId, tag])
+  @@map("document_tags")
+}
+
+model DocumentAccessControl {
+  id         String   @id @default(cuid())
+  documentId String
+  document   Document @relation(fields: [documentId], references: [id], onDelete: Cascade)
+  userId     String?
+  roleId     String?
+  canRead    Boolean @default(true)
+  canWrite   Boolean @default(false)
+  canDelete  Boolean @default(false)
+  canShare   Boolean @default(false)
+
+  @@map("document_access_controls")
+}
+
+enum DocumentStatus {
+  DRAFT
+  ACTIVE
+  CHECKED_OUT
+  ARCHIVED
+  PENDING_DISPOSAL
+  DISPOSED
+}
+
+enum OcrStatus {
+  PENDING
+  PROCESSING
+  COMPLETE
+  FAILED
+}
+
+// === Workflow Engine ===
+model WorkflowTemplate {
+  id          String @id @default(cuid())
+  name        String @unique
+  description String?
+  definition  Json   // serialized node graph
+  isActive    Boolean @default(true)
+  version     Int     @default(1)
+  createdById String
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+  instances   WorkflowInstance[]
+
+  @@map("workflow_templates")
+}
+
+model WorkflowInstance {
+  id               String   @id @default(cuid())
+  referenceNumber  String   @unique
+  templateId       String
+  template         WorkflowTemplate @relation(fields: [templateId], references: [id])
+  documentId       String?
+  document         Document? @relation(fields: [documentId], references: [id])
+  initiatedById    String
+  subject          String
+  status           WorkflowStatus @default(PENDING)
+  currentStepIndex Int      @default(0)
+  formData         Json     @default("{}")
+  startedAt        DateTime @default(now())
+  completedAt      DateTime?
+  dueAt            DateTime?
+
+  tasks     WorkflowTask[]
+  events    WorkflowEvent[]
+
+  @@index([status])
+  @@index([initiatedById])
+  @@map("workflow_instances")
+}
+
+model WorkflowTask {
+  id           String   @id @default(cuid())
+  instanceId   String
+  instance     WorkflowInstance @relation(fields: [instanceId], references: [id], onDelete: Cascade)
+  stepName     String
+  stepIndex    Int
+  assigneeId   String
+  assignee     User     @relation("Assignee", fields: [assigneeId], references: [id])
+  taskType     TaskType @default(PRIMARY)
+  status       TaskStatus @default(PENDING)
+  action       TaskAction?
+  comment      String?
+  dueAt        DateTime?
+  assignedAt   DateTime @default(now())
+  completedAt  DateTime?
+
+  @@map("workflow_tasks")
+}
+
+model WorkflowEvent {
+  id         String   @id @default(cuid())
+  instanceId String
+  instance   WorkflowInstance @relation(fields: [instanceId], references: [id], onDelete: Cascade)
+  eventType  String
+  actorId    String?
+  data       Json     @default("{}")
+  occurredAt DateTime @default(now())
+
+  @@index([instanceId])
+  @@map("workflow_events")
+}
+
+model Delegation {
+  id           String   @id @default(cuid())
+  delegatorId  String
+  delegator    User     @relation("Delegator", fields: [delegatorId], references: [id])
+  delegateId   String
+  delegate     User     @relation("Delegate", fields: [delegateId], references: [id])
+  reason       String
+  startsAt     DateTime
+  endsAt       DateTime
+  isActive     Boolean  @default(true)
+  createdAt    DateTime @default(now())
+
+  @@map("delegations")
+}
+
+enum WorkflowStatus {
+  PENDING
+  IN_PROGRESS
+  COMPLETED
+  REJECTED
+  CANCELLED
+}
+
+enum TaskType {
+  PRIMARY
+  CC
+  BCC
+}
+
+enum TaskStatus {
+  PENDING
+  COMPLETED
+  SKIPPED
+  ESCALATED
+}
+
+enum TaskAction {
+  APPROVED
+  REJECTED
+  RETURNED
+  DELEGATED
+}
+
+// === Forms ===
+model FormTemplate {
+  id          String @id @default(cuid())
+  name        String @unique
+  description String?
+  fields      Json
+  workflowTemplateId String?
+  isActive    Boolean @default(true)
+  version     Int     @default(1)
+  createdById String
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+  submissions FormSubmission[]
+
+  @@map("form_templates")
+}
+
+model FormSubmission {
+  id         String       @id @default(cuid())
+  templateId String
+  template   FormTemplate @relation(fields: [templateId], references: [id])
+  submittedById String
+  data       Json
+  workflowInstanceId String?
+  submittedAt DateTime   @default(now())
+
+  @@map("form_submissions")
+}
+
+// === Audit, Notifications, Physical Records ===
+model AuditLog {
+  id           String   @id @default(cuid())
+  userId       String?
+  user         User?    @relation(fields: [userId], references: [id])
+  action       String
+  resourceType String
+  resourceId   String?
+  ipAddress    String?
+  userAgent    String?
+  metadata     Json     @default("{}")
+  occurredAt   DateTime @default(now())
+
+  @@index([userId])
+  @@index([resourceType, resourceId])
+  @@index([action])
+  @@index([occurredAt])
+  @@map("audit_logs")
+}
+
+model Notification {
+  id        String   @id @default(cuid())
+  userId    String
+  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  type      String
+  title     String
+  body      String
+  linkUrl   String?
+  isRead    Boolean  @default(false)
+  sentEmail Boolean  @default(false)
+  createdAt DateTime @default(now())
+
+  @@index([userId, isRead])
+  @@map("notifications")
+}
+
+model PhysicalRecord {
+  id              String   @id @default(cuid())
+  referenceNumber String   @unique
+  title           String
+  boxNumber       String?
+  shelfLocation   String?
+  offSiteLocation String?
+  barcode         String?  @unique
+  documentId      String?
+  status          PhysicalRecordStatus @default(AVAILABLE)
+  checkedOutTo    String?
+  checkedOutAt    DateTime?
+  expectedReturnAt DateTime?
+  createdAt       DateTime @default(now())
+  updatedAt       DateTime @updatedAt
+  movements       PhysicalRecordMovement[]
+
+  @@map("physical_records")
+}
+
+model PhysicalRecordMovement {
+  id               String         @id @default(cuid())
+  physicalRecordId String
+  physicalRecord   PhysicalRecord @relation(fields: [physicalRecordId], references: [id])
+  action           String
+  fromLocation     String?
+  toLocation       String?
+  performedById    String
+  notes            String?
+  occurredAt       DateTime       @default(now())
+
+  @@map("physical_record_movements")
+}
+
+enum PhysicalRecordStatus {
+  AVAILABLE
+  CHECKED_OUT
+  TRANSFERRED
+  ARCHIVED
+  DISPOSED
+}
+
+// === Student Portal Integration ===
+model IntegrationSync {
+  id            String   @id @default(cuid())
+  sourceSystem  String   // STUDENT_PORTAL, ERP, LMS
+  sourceId      String   // ID from source system
+  documentId    String?  // linked EDRMS document
+  syncStatus    String   // PENDING, SYNCED, FAILED
+  metadata      Json     @default("{}")
+  lastSyncAt    DateTime?
+  createdAt     DateTime @default(now())
+  updatedAt     DateTime @updatedAt
+
+  @@unique([sourceSystem, sourceId])
+  @@map("integration_syncs")
+}
