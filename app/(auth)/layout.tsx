@@ -39,6 +39,7 @@ export default function AuthLayout({
           src="/DJI_0070-scaled.jpg"
           alt="Karatina University Campus"
           fill
+          sizes="50vw"
           className="object-cover"
           priority
         />
