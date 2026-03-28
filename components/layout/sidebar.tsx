@@ -235,7 +235,7 @@ export default function Sidebar({ open, onClose }: SidebarProps) {
             width={32}
             height={32}
             className="flex-shrink-0"
-            style={{ width: "32px", height: "auto" }}
+            style={{ width: "auto", height: "32px" }}
           />
           <div className="min-w-0">
             <h1 className="text-sm font-bold text-gray-900 dark:text-gray-100 truncate">KARU EDRMS</h1>
