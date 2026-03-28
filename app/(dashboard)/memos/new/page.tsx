@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useEffect, useRef, useCallback } from "react";
+import { useState, useEffect, useRef } from "react";
 import { useSession } from "next-auth/react";
 import { useRouter } from "next/navigation";
 import RichTextEditor from "@/components/memo/rich-text-editor";
@@ -30,6 +30,38 @@ const STEPS = [
   { num: 3, label: "Recommenders & Approver" },
   { num: 4, label: "Submit" },
 ];
+
+/** Maps department names to department office / abbreviation for memo header */
+const DEPARTMENT_MAP: Record<string, { office: string; abbr: string }> = {
+  "Registrar (AA)": {
+    office: "OFFICE OF THE REGISTRAR",
+    abbr: "ACADEMIC AFFAIRS",
+  },
+  "Vice Chancellor": {
+    office: "OFFICE OF THE VICE CHANCELLOR",
+    abbr: "VC",
+  },
+  "Deputy Vice Chancellor (ARSA)": {
+    office: "OFFICE OF THE DEPUTY VICE CHANCELLOR",
+    abbr: "ACADEMIC, RESEARCH & STUDENT AFFAIRS",
+  },
+  "Deputy Vice Chancellor (AFD)": {
+    office: "OFFICE OF THE DEPUTY VICE CHANCELLOR",
+    abbr: "ADMINISTRATION, FINANCE & DEVELOPMENT",
+  },
+  Finance: {
+    office: "OFFICE OF THE FINANCE OFFICER",
+    abbr: "FINANCE",
+  },
+  ICT: {
+    office: "DIRECTORATE OF ICT",
+    abbr: "ICT",
+  },
+  "Human Resources": {
+    office: "DIRECTORATE OF HUMAN RESOURCES",
+    abbr: "HR",
+  },
+};
 
 /* ========================================================================== */
 /*  UserSearch component                                                      */
@@ -240,7 +272,7 @@ function UserSearch({
 }
 
 /* ========================================================================== */
-/*  Multi-user tag input (for CC / BCC)                                       */
+/*  Multi-user tag input (for Copy to)                                        */
 /* ========================================================================== */
 
 function MultiUserInput({
@@ -339,9 +371,13 @@ export default function NewMemoPage() {
   const [error, setError] = useState<string | null>(null);
 
   // Step 1: Compose
+  const [toMode, setToMode] = useState<"search" | "manual">("search");
   const [recipient, setRecipient] = useState<UserOption | null>(null);
+  const [manualTo, setManualTo] = useState("");
   const [ccUsers, setCcUsers] = useState<UserOption[]>([]);
-  const [bccUsers, setBccUsers] = useState<UserOption[]>([]);
+  const [department, setDepartment] = useState("");
+  const [departmentOffice, setDepartmentOffice] = useState("");
+  const [departmentAbbr, setDepartmentAbbr] = useState("");
   const [referenceNumber, setReferenceNumber] = useState("");
   const [subject, setSubject] = useState("");
   const [memoBody, setMemoBody] = useState("");
@@ -355,16 +391,42 @@ export default function NewMemoPage() {
   const [approverSameAsRecipient, setApproverSameAsRecipient] = useState(true);
   const [approver, setApprover] = useState<UserOption | null>(null);
 
-  const finalApprover = approverSameAsRecipient ? recipient : approver;
+  const finalApprover =
+    approverSameAsRecipient && toMode === "search" ? recipient : approver;
+
+  /* ---------- auto-fill department from session ---------- */
+  useEffect(() => {
+    if (session?.user?.department && !department) {
+      const dept = session.user.department;
+      setDepartment(dept);
+      const mapped = DEPARTMENT_MAP[dept];
+      if (mapped) {
+        setDepartmentOffice(mapped.office);
+        setDepartmentAbbr(mapped.abbr);
+      } else {
+        setDepartmentOffice(`OFFICE OF THE ${dept.toUpperCase()}`);
+        setDepartmentAbbr(dept.toUpperCase());
+      }
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [session?.user?.department]);
 
   /* ---------- helpers ---------- */
 
   function formatDate(): string {
-    return new Date().toLocaleDateString("en-US", {
-      month: "long",
-      day: "numeric",
-      year: "numeric",
-    });
+    const d = new Date();
+    const day = d.getDate();
+    const suffix =
+      day === 1 || day === 21 || day === 31
+        ? "st"
+        : day === 2 || day === 22
+        ? "nd"
+        : day === 3 || day === 23
+        ? "rd"
+        : "th";
+    const month = d.toLocaleDateString("en-US", { month: "long" });
+    const year = d.getFullYear();
+    return `${day}${suffix} ${month}, ${year}`;
   }
 
   function getInitials(name: string) {
@@ -376,8 +438,21 @@ export default function NewMemoPage() {
       .slice(0, 2);
   }
 
+  /** Resolve the display text for the "To" field */
+  function getToDisplay(): string {
+    if (toMode === "manual") return manualTo;
+    if (recipient) {
+      const parts = [recipient.displayName];
+      if (recipient.jobTitle) parts.push(recipient.jobTitle);
+      return parts.join(", ");
+    }
+    return "";
+  }
+
   function canProceedStep1(): boolean {
-    return !!recipient && !!subject.trim() && !!memoBody.trim();
+    const hasTo =
+      toMode === "search" ? !!recipient : !!manualTo.trim();
+    return hasTo && !!subject.trim() && !!memoBody.trim();
   }
 
   function addRecommender(user: UserOption) {
@@ -409,35 +484,42 @@ export default function NewMemoPage() {
     window.print();
   }
 
+  function handleDepartmentChange(dept: string) {
+    setDepartment(dept);
+    const mapped = DEPARTMENT_MAP[dept];
+    if (mapped) {
+      setDepartmentOffice(mapped.office);
+      setDepartmentAbbr(mapped.abbr);
+    } else {
+      setDepartmentOffice(`OFFICE OF THE ${dept.toUpperCase()}`);
+      setDepartmentAbbr(dept.toUpperCase());
+    }
+  }
+
   const excludeIds = [
     session?.user?.id ?? "",
     recipient?.id ?? "",
     ...recommenders.map((r) => r.id),
     ...ccUsers.map((u) => u.id),
-    ...bccUsers.map((u) => u.id),
   ].filter(Boolean);
 
   /* ---------- memo preview props ---------- */
 
   const memoPreviewProps = {
-    referenceNumber: referenceNumber || "---",
+    universityName: "KARATINA UNIVERSITY",
+    departmentOffice: departmentOffice || "OFFICE OF THE REGISTRAR",
+    departmentAbbr: departmentAbbr || "ACADEMIC AFFAIRS",
+    phone: "+254 0716135171/0723683150",
+    poBox: "P.O Box 1957-10101,KARATINA",
+    from: session?.user?.name ?? "",
     date: formatDate(),
-    to: {
-      name: recipient?.displayName ?? "",
-      title: [recipient?.jobTitle, recipient?.department]
-        .filter(Boolean)
-        .join(", "),
-    },
-    cc: ccUsers.map((u) => ({
-      name: u.displayName,
-      title: [u.jobTitle, u.department].filter(Boolean).join(", "),
-    })),
-    from: {
-      name: session?.user?.name ?? "",
-      title: session?.user?.department ?? "",
-    },
+    to: getToDisplay(),
+    refNumber: referenceNumber || "---",
     subject,
-    body: memoBody,
+    bodyHtml: memoBody,
+    senderName: session?.user?.name ?? "",
+    senderTitle: session?.user?.department ?? "",
+    copyTo: ccUsers.map((u) => u.displayName),
     recommenders: recommenders.map((r) => ({
       name: r.displayName,
       title: [r.jobTitle, r.department].filter(Boolean).join(", "),
@@ -456,8 +538,10 @@ export default function NewMemoPage() {
   /* ---------- submit ---------- */
 
   async function handleSubmit() {
-    if (!recipient || !subject.trim() || !memoBody.trim()) return;
-    if (!approverSameAsRecipient && !approver) return;
+    const hasTo =
+      toMode === "search" ? !!recipient : !!manualTo.trim();
+    if (!hasTo || !subject.trim() || !memoBody.trim()) return;
+    if (toMode === "search" && !approverSameAsRecipient && !approver) return;
 
     setIsSubmitting(true);
     setError(null);
@@ -467,13 +551,16 @@ export default function NewMemoPage() {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
-          to: recipient.id,
+          to: toMode === "search" ? recipient!.id : manualTo.trim(),
+          toIsManual: toMode === "manual",
           subject: subject.trim(),
           memoBody: memoBody.trim(),
           recommenders: recommenders.map((r) => r.id),
           approver: finalApprover?.id,
           cc: ccUsers.map((u) => u.id),
-          bcc: bccUsers.map((u) => u.id),
+          department: department.trim(),
+          departmentOffice: departmentOffice.trim(),
+          departmentAbbr: departmentAbbr.trim(),
           referenceNumber: referenceNumber.trim() || undefined,
         }),
       });
@@ -636,16 +723,107 @@ export default function NewMemoPage() {
               Compose Memo
             </h2>
 
-            {/* Row 1: To + Reference Number */}
+            {/* Row 1: Department */}
+            <div className="grid grid-cols-1 sm:grid-cols-3 gap-5">
+              <div>
+                <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1.5">
+                  Department
+                </label>
+                <input
+                  type="text"
+                  value={department}
+                  onChange={(e) => handleDepartmentChange(e.target.value)}
+                  placeholder="e.g., Registrar (AA)"
+                  className="w-full h-11 rounded-xl border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-900 px-4 text-sm text-gray-900 dark:text-gray-100 placeholder:text-gray-400 dark:placeholder:text-gray-500 transition-all focus:border-[#02773b] focus:ring-2 focus:ring-[#02773b]/20 outline-none"
+                />
+                <p className="text-xs text-gray-400 dark:text-gray-500 mt-1">
+                  Determines the memo header office
+                </p>
+              </div>
+              <div>
+                <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1.5">
+                  Office Title
+                </label>
+                <input
+                  type="text"
+                  value={departmentOffice}
+                  onChange={(e) => setDepartmentOffice(e.target.value)}
+                  placeholder="e.g., OFFICE OF THE REGISTRAR"
+                  className="w-full h-11 rounded-xl border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-900 px-4 text-sm text-gray-900 dark:text-gray-100 placeholder:text-gray-400 dark:placeholder:text-gray-500 transition-all focus:border-[#02773b] focus:ring-2 focus:ring-[#02773b]/20 outline-none"
+                />
+              </div>
+              <div>
+                <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1.5">
+                  Abbreviation
+                </label>
+                <input
+                  type="text"
+                  value={departmentAbbr}
+                  onChange={(e) => setDepartmentAbbr(e.target.value)}
+                  placeholder="e.g., ACADEMIC AFFAIRS"
+                  className="w-full h-11 rounded-xl border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-900 px-4 text-sm text-gray-900 dark:text-gray-100 placeholder:text-gray-400 dark:placeholder:text-gray-500 transition-all focus:border-[#02773b] focus:ring-2 focus:ring-[#02773b]/20 outline-none"
+                />
+              </div>
+            </div>
+
+            {/* Row 2: To (with toggle) + Reference Number */}
             <div className="grid grid-cols-1 sm:grid-cols-2 gap-5">
-              <UserSearch
-                label="To (Recipient)"
-                placeholder="Search by name, email, or department..."
-                onSelect={setRecipient}
-                excludeIds={[session?.user?.id ?? ""]}
-                selectedUser={recipient}
-                onClear={() => setRecipient(null)}
-              />
+              <div>
+                <div className="flex items-center justify-between mb-1.5">
+                  <label className="text-sm font-medium text-gray-700 dark:text-gray-300">
+                    To (Recipient)
+                  </label>
+                  <div className="flex items-center gap-1.5">
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setToMode("search");
+                        setManualTo("");
+                      }}
+                      className={`px-2 py-0.5 rounded text-xs font-medium transition-colors ${
+                        toMode === "search"
+                          ? "bg-[#02773b] text-white"
+                          : "bg-gray-100 dark:bg-gray-800 text-gray-500 dark:text-gray-400 hover:bg-gray-200 dark:hover:bg-gray-700"
+                      }`}
+                    >
+                      Search user
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setToMode("manual");
+                        setRecipient(null);
+                      }}
+                      className={`px-2 py-0.5 rounded text-xs font-medium transition-colors ${
+                        toMode === "manual"
+                          ? "bg-[#02773b] text-white"
+                          : "bg-gray-100 dark:bg-gray-800 text-gray-500 dark:text-gray-400 hover:bg-gray-200 dark:hover:bg-gray-700"
+                      }`}
+                    >
+                      Type manually
+                    </button>
+                  </div>
+                </div>
+
+                {toMode === "search" ? (
+                  <UserSearch
+                    label=""
+                    placeholder="Search by name, email, or department..."
+                    onSelect={setRecipient}
+                    excludeIds={[session?.user?.id ?? ""]}
+                    selectedUser={recipient}
+                    onClear={() => setRecipient(null)}
+                  />
+                ) : (
+                  <input
+                    type="text"
+                    value={manualTo}
+                    onChange={(e) => setManualTo(e.target.value)}
+                    placeholder='e.g., "Current Students (2025/2026 AY)"'
+                    className="w-full h-11 rounded-xl border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-900 px-4 text-sm text-gray-900 dark:text-gray-100 placeholder:text-gray-400 dark:placeholder:text-gray-500 transition-all focus:border-[#02773b] focus:ring-2 focus:ring-[#02773b]/20 outline-none"
+                  />
+                )}
+              </div>
               <div>
                 <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1.5">
                   Reference Number
@@ -654,7 +832,7 @@ export default function NewMemoPage() {
                   type="text"
                   value={referenceNumber}
                   onChange={(e) => setReferenceNumber(e.target.value)}
-                  placeholder="e.g., KarU/ICT/MEMO/2026/001"
+                  placeholder="e.g., KarU/Rg.AA/1/Vol.11"
                   className="w-full h-11 rounded-xl border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-900 px-4 text-sm text-gray-900 dark:text-gray-100 placeholder:text-gray-400 dark:placeholder:text-gray-500 font-mono transition-all focus:border-[#02773b] focus:ring-2 focus:ring-[#02773b]/20 outline-none"
                 />
                 <p className="text-xs text-gray-400 dark:text-gray-500 mt-1.5">
@@ -663,10 +841,10 @@ export default function NewMemoPage() {
               </div>
             </div>
 
-            {/* Row 2: CC + BCC always visible */}
-            <div className="grid grid-cols-1 sm:grid-cols-2 gap-5">
+            {/* Row 3: Copy to */}
+            <div>
               <MultiUserInput
-                label="CC"
+                label="Copy to"
                 sublabel="(receives a copy for information)"
                 users={ccUsers}
                 onAdd={(user) => setCcUsers([...ccUsers, user])}
@@ -676,20 +854,9 @@ export default function NewMemoPage() {
                 excludeIds={excludeIds}
                 tagColor="blue"
               />
-              <MultiUserInput
-                label="BCC"
-                sublabel="(hidden copy)"
-                users={bccUsers}
-                onAdd={(user) => setBccUsers([...bccUsers, user])}
-                onRemove={(id) =>
-                  setBccUsers(bccUsers.filter((u) => u.id !== id))
-                }
-                excludeIds={excludeIds}
-                tagColor="gray"
-              />
             </div>
 
-            {/* Row 3: Subject (full width) */}
+            {/* Row 4: Subject (full width) */}
             <div>
               <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1.5">
                 Subject
@@ -698,12 +865,12 @@ export default function NewMemoPage() {
                 type="text"
                 value={subject}
                 onChange={(e) => setSubject(e.target.value)}
-                placeholder="e.g., Request for Server Upgrade"
+                placeholder="e.g., REMINDER ON FEE PAYMENT"
                 className="w-full h-11 rounded-xl border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-900 px-4 text-sm text-gray-900 dark:text-gray-100 placeholder:text-gray-400 dark:placeholder:text-gray-500 transition-all focus:border-[#02773b] focus:ring-2 focus:ring-[#02773b]/20 outline-none"
               />
             </div>
 
-            {/* Row 4: Memo Body (full width, taller editor) */}
+            {/* Row 5: Memo Body (full width, taller editor) */}
             <div>
               <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1.5">
                 Memo Body
@@ -1181,27 +1348,27 @@ export default function NewMemoPage() {
               Final Approver
             </h2>
 
-            <label className="flex items-center gap-2.5 cursor-pointer">
-              <input
-                type="checkbox"
-                checked={approverSameAsRecipient}
-                onChange={(e) => {
-                  setApproverSameAsRecipient(e.target.checked);
-                  if (e.target.checked) setApprover(null);
-                }}
-                className="h-4 w-4 rounded border-gray-300 dark:border-gray-600 text-[#02773b] focus:ring-[#02773b] accent-[#02773b]"
-              />
-              <span className="text-sm text-gray-700 dark:text-gray-300">
-                Approver is same as recipient
-                {recipient && (
+            {toMode === "search" && recipient && (
+              <label className="flex items-center gap-2.5 cursor-pointer">
+                <input
+                  type="checkbox"
+                  checked={approverSameAsRecipient}
+                  onChange={(e) => {
+                    setApproverSameAsRecipient(e.target.checked);
+                    if (e.target.checked) setApprover(null);
+                  }}
+                  className="h-4 w-4 rounded border-gray-300 dark:border-gray-600 text-[#02773b] focus:ring-[#02773b] accent-[#02773b]"
+                />
+                <span className="text-sm text-gray-700 dark:text-gray-300">
+                  Approver is same as recipient
                   <span className="text-gray-400 ml-1">
                     ({recipient.displayName})
                   </span>
-                )}
-              </span>
-            </label>
+                </span>
+              </label>
+            )}
 
-            {!approverSameAsRecipient && (
+            {(toMode === "manual" || !approverSameAsRecipient) && (
               <UserSearch
                 label="Select Approver"
                 placeholder="Search for the approver..."
@@ -1340,18 +1507,12 @@ export default function NewMemoPage() {
 
             <div className="p-5 sm:p-6 space-y-4">
               {/* Summary rows */}
-              <SummaryRow label="To" value={recipient?.displayName ?? ""} />
+              <SummaryRow label="Department" value={department || "---"} />
+              <SummaryRow label="To" value={getToDisplay() || "---"} />
               {ccUsers.length > 0 && (
                 <SummaryRow
-                  label="CC"
+                  label="Copy to"
                   value={ccUsers.map((u) => u.displayName).join(", ")}
-                />
-              )}
-              {bccUsers.length > 0 && (
-                <SummaryRow
-                  label="BCC"
-                  value={`${bccUsers.length} recipient${bccUsers.length > 1 ? "s" : ""} (hidden)`}
-                  muted
                 />
               )}
               <SummaryRow label="Subject" value={subject} bold />
@@ -1436,7 +1597,7 @@ export default function NewMemoPage() {
               <span className="px-3 py-1.5 rounded-full bg-[#02773b]/10 text-[#02773b] dark:text-emerald-400 font-medium border border-[#02773b]/20">
                 You
               </span>
-              {recommenders.map((rec, index) => (
+              {recommenders.map((rec) => (
                 <span key={rec.id} className="contents">
                   <svg
                     className="w-4 h-4 text-gray-400 flex-shrink-0"

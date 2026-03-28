@@ -7,11 +7,32 @@ import TextAlign from "@tiptap/extension-text-align";
 import Placeholder from "@tiptap/extension-placeholder";
 import { TextStyle } from "@tiptap/extension-text-style";
 import { FontFamily } from "@tiptap/extension-font-family";
+import { FontSize } from "@/lib/font-size-extension";
 import { Table } from "@tiptap/extension-table";
 import { TableRow } from "@tiptap/extension-table-row";
 import { TableCell } from "@tiptap/extension-table-cell";
 import { TableHeader } from "@tiptap/extension-table-header";
 import { useEffect } from "react";
+
+/* ---------- constants ---------- */
+
+const FONT_SIZES = [
+  { label: "8", value: "8pt" },
+  { label: "9", value: "9pt" },
+  { label: "10", value: "10pt" },
+  { label: "11", value: "11pt" },
+  { label: "12", value: "12pt" },
+  { label: "14", value: "14pt" },
+  { label: "16", value: "16pt" },
+  { label: "18", value: "18pt" },
+  { label: "20", value: "20pt" },
+  { label: "24", value: "24pt" },
+  { label: "28", value: "28pt" },
+  { label: "36", value: "36pt" },
+];
+
+const DEFAULT_FONT = "Arial Narrow";
+const DEFAULT_FONT_SIZE = "12pt";
 
 /* ---------- types ---------- */
 
@@ -77,6 +98,7 @@ export default function RichTextEditor({
       Underline,
       TextStyle,
       FontFamily,
+      FontSize,
       TextAlign.configure({
         types: ["heading", "paragraph"],
       }),
@@ -90,7 +112,7 @@ export default function RichTextEditor({
       TableCell,
       TableHeader,
     ],
-    content,
+    content: content || `<p style="font-family: ${DEFAULT_FONT}; font-size: ${DEFAULT_FONT_SIZE}"></p>`,
     editable,
     onUpdate: ({ editor }) => {
       onChange?.(editor.getHTML());
@@ -99,6 +121,7 @@ export default function RichTextEditor({
       attributes: {
         class:
           "prose prose-sm dark:prose-invert max-w-none px-5 py-4 min-h-[280px] focus:outline-none text-gray-900 dark:text-gray-100",
+        style: `font-family: '${DEFAULT_FONT}', Arial, sans-serif; font-size: ${DEFAULT_FONT_SIZE};`,
       },
     },
   });
@@ -120,6 +143,12 @@ export default function RichTextEditor({
     );
   }
 
+  /* Determine the currently active font size */
+  const currentFontSize =
+    editor.getAttributes("textStyle").fontSize || DEFAULT_FONT_SIZE;
+  const currentFontFamily =
+    editor.getAttributes("textStyle").fontFamily || DEFAULT_FONT;
+
   return (
     <div className="rounded-xl border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-950 overflow-hidden shadow-sm transition-shadow focus-within:shadow-md focus-within:border-[#02773b]/40">
       {/* Toolbar */}
@@ -127,7 +156,7 @@ export default function RichTextEditor({
         <div className="flex flex-wrap items-center gap-0.5 px-2 py-1.5 bg-gray-50 dark:bg-gray-800/80 border-b border-gray-200 dark:border-gray-700">
           {/* Font family */}
           <select
-            value={editor.getAttributes("textStyle").fontFamily || ""}
+            value={currentFontFamily}
             onChange={(e) => {
               if (e.target.value) {
                 editor.chain().focus().setFontFamily(e.target.value).run();
@@ -137,16 +166,58 @@ export default function RichTextEditor({
             }}
             className="h-8 rounded-md border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-800 px-2 text-xs text-gray-700 dark:text-gray-300 outline-none focus:border-[#02773b]"
           >
-            <option value="">Default Font</option>
-            <option value="Arial" style={{ fontFamily: "Arial" }}>Arial</option>
-            <option value="Arial Narrow" style={{ fontFamily: "Arial Narrow" }}>Arial Narrow</option>
-            <option value="Times New Roman" style={{ fontFamily: "Times New Roman" }}>Times New Roman</option>
-            <option value="Georgia" style={{ fontFamily: "Georgia" }}>Georgia</option>
-            <option value="Verdana" style={{ fontFamily: "Verdana" }}>Verdana</option>
-            <option value="Courier New" style={{ fontFamily: "Courier New" }}>Courier New</option>
-            <option value="Trebuchet MS" style={{ fontFamily: "Trebuchet MS" }}>Trebuchet MS</option>
-            <option value="Tahoma" style={{ fontFamily: "Tahoma" }}>Tahoma</option>
-            <option value="Calibri" style={{ fontFamily: "Calibri" }}>Calibri</option>
+            <option value="Arial Narrow" style={{ fontFamily: "Arial Narrow" }}>
+              Arial Narrow
+            </option>
+            <option value="Arial" style={{ fontFamily: "Arial" }}>
+              Arial
+            </option>
+            <option
+              value="Times New Roman"
+              style={{ fontFamily: "Times New Roman" }}
+            >
+              Times New Roman
+            </option>
+            <option value="Georgia" style={{ fontFamily: "Georgia" }}>
+              Georgia
+            </option>
+            <option value="Verdana" style={{ fontFamily: "Verdana" }}>
+              Verdana
+            </option>
+            <option value="Courier New" style={{ fontFamily: "Courier New" }}>
+              Courier New
+            </option>
+            <option
+              value="Trebuchet MS"
+              style={{ fontFamily: "Trebuchet MS" }}
+            >
+              Trebuchet MS
+            </option>
+            <option value="Tahoma" style={{ fontFamily: "Tahoma" }}>
+              Tahoma
+            </option>
+            <option value="Calibri" style={{ fontFamily: "Calibri" }}>
+              Calibri
+            </option>
+          </select>
+
+          {/* Font size */}
+          <select
+            value={currentFontSize}
+            onChange={(e) => {
+              if (e.target.value) {
+                editor.chain().focus().setFontSize(e.target.value).run();
+              } else {
+                editor.chain().focus().unsetFontSize().run();
+              }
+            }}
+            className="h-8 w-16 rounded-md border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-800 px-1.5 text-xs text-gray-700 dark:text-gray-300 outline-none focus:border-[#02773b]"
+          >
+            {FONT_SIZES.map((s) => (
+              <option key={s.value} value={s.value}>
+                {s.label}
+              </option>
+            ))}
           </select>
 
           <ToolbarDivider />
@@ -184,21 +255,27 @@ export default function RichTextEditor({
 
           {/* Headings */}
           <ToolbarButton
-            onClick={() => editor.chain().focus().toggleHeading({ level: 1 }).run()}
+            onClick={() =>
+              editor.chain().focus().toggleHeading({ level: 1 }).run()
+            }
             isActive={editor.isActive("heading", { level: 1 })}
             title="Heading 1"
           >
             <span className="text-xs font-bold leading-none">H1</span>
           </ToolbarButton>
           <ToolbarButton
-            onClick={() => editor.chain().focus().toggleHeading({ level: 2 }).run()}
+            onClick={() =>
+              editor.chain().focus().toggleHeading({ level: 2 }).run()
+            }
             isActive={editor.isActive("heading", { level: 2 })}
             title="Heading 2"
           >
             <span className="text-xs font-bold leading-none">H2</span>
           </ToolbarButton>
           <ToolbarButton
-            onClick={() => editor.chain().focus().toggleHeading({ level: 3 }).run()}
+            onClick={() =>
+              editor.chain().focus().toggleHeading({ level: 3 }).run()
+            }
             isActive={editor.isActive("heading", { level: 3 })}
             title="Heading 3"
           >
@@ -258,7 +335,9 @@ export default function RichTextEditor({
             </svg>
           </ToolbarButton>
           <ToolbarButton
-            onClick={() => editor.chain().focus().setTextAlign("justify").run()}
+            onClick={() =>
+              editor.chain().focus().setTextAlign("justify").run()
+            }
             isActive={editor.isActive({ textAlign: "justify" })}
             title="Justify"
           >
@@ -271,7 +350,13 @@ export default function RichTextEditor({
 
           {/* Table */}
           <ToolbarButton
-            onClick={() => editor.chain().focus().insertTable({ rows: 3, cols: 3, withHeaderRow: true }).run()}
+            onClick={() =>
+              editor
+                .chain()
+                .focus()
+                .insertTable({ rows: 3, cols: 3, withHeaderRow: true })
+                .run()
+            }
             title="Insert Table"
           >
             <svg className="w-4 h-4" viewBox="0 0 24 24" fill="currentColor">
@@ -287,8 +372,18 @@ export default function RichTextEditor({
             disabled={!editor.can().undo()}
             title="Undo (Ctrl+Z)"
           >
-            <svg className="w-4 h-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2}>
-              <path strokeLinecap="round" strokeLinejoin="round" d="M3 10h10a5 5 0 0 1 0 10H9m-6-10 4-4m-4 4 4 4" />
+            <svg
+              className="w-4 h-4"
+              viewBox="0 0 24 24"
+              fill="none"
+              stroke="currentColor"
+              strokeWidth={2}
+            >
+              <path
+                strokeLinecap="round"
+                strokeLinejoin="round"
+                d="M3 10h10a5 5 0 0 1 0 10H9m-6-10 4-4m-4 4 4 4"
+              />
             </svg>
           </ToolbarButton>
           <ToolbarButton
@@ -296,8 +391,18 @@ export default function RichTextEditor({
             disabled={!editor.can().redo()}
             title="Redo (Ctrl+Shift+Z)"
           >
-            <svg className="w-4 h-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2}>
-              <path strokeLinecap="round" strokeLinejoin="round" d="M21 10H11a5 5 0 0 0 0 10h4m6-10-4-4m4 4-4 4" />
+            <svg
+              className="w-4 h-4"
+              viewBox="0 0 24 24"
+              fill="none"
+              stroke="currentColor"
+              strokeWidth={2}
+            >
+              <path
+                strokeLinecap="round"
+                strokeLinejoin="round"
+                d="M21 10H11a5 5 0 0 0 0 10h4m6-10-4-4m4 4-4 4"
+              />
             </svg>
           </ToolbarButton>
         </div>

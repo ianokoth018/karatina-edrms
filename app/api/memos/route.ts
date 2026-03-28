@@ -179,15 +179,31 @@ export async function POST(req: NextRequest) {
     }
 
     const body = await req.json();
-    const { to, subject, memoBody, recommenders, documentId, approver: approverId, cc, bcc, referenceNumber: customRef } = body as {
+    const {
+      to,
+      toIsManual,
+      subject,
+      memoBody,
+      recommenders,
+      documentId,
+      approver: approverId,
+      cc,
+      department: memoDepartment,
+      departmentOffice,
+      departmentAbbr,
+      referenceNumber: customRef,
+    } = body as {
       to: string;
+      toIsManual?: boolean;
       subject: string;
       memoBody: string;
       recommenders: string[];
       documentId?: string;
       approver?: string;
       cc?: string[];
-      bcc?: string[];
+      department?: string;
+      departmentOffice?: string;
+      departmentAbbr?: string;
       referenceNumber?: string;
     };
 
@@ -205,17 +221,32 @@ export async function POST(req: NextRequest) {
       return NextResponse.json({ error: "Maximum 5 recommenders allowed" }, { status: 400 });
     }
 
-    // Verify the recipient exists
-    const recipient = await db.user.findUnique({
-      where: { id: to },
-      select: { id: true, name: true, displayName: true, department: true, jobTitle: true },
-    });
-    if (!recipient) {
-      return NextResponse.json({ error: "Recipient not found" }, { status: 404 });
+    // Resolve the recipient -- either a user ID or a free-text string
+    let recipient: {
+      id: string;
+      name: string;
+      displayName: string;
+      department: string | null;
+      jobTitle: string | null;
+    } | null = null;
+    let manualToText: string | null = null;
+
+    if (toIsManual) {
+      // Free-text "To" (e.g., "Current Students (2025/2026 AY)")
+      manualToText = to.trim();
+    } else {
+      // User search -- verify the recipient exists
+      recipient = await db.user.findUnique({
+        where: { id: to },
+        select: { id: true, name: true, displayName: true, department: true, jobTitle: true },
+      });
+      if (!recipient) {
+        return NextResponse.json({ error: "Recipient not found" }, { status: 404 });
+      }
     }
 
     // Verify separate approver if provided
-    if (approverId && approverId !== recipient.id) {
+    if (approverId && (!recipient || approverId !== recipient.id)) {
       const approverUser = await db.user.findUnique({
         where: { id: approverId },
         select: { id: true },
@@ -250,8 +281,8 @@ export async function POST(req: NextRequest) {
       return NextResponse.json({ error: "Initiator not found" }, { status: 404 });
     }
 
-    const department = session.user.department || "GEN";
-    const deptAbbr = department.replace(/[^A-Z0-9]/gi, "").slice(0, 6).toUpperCase() || "GEN";
+    const department = memoDepartment || session.user.department || "GEN";
+    const deptAbbr = departmentAbbr || department.replace(/[^A-Z0-9]/gi, "").slice(0, 6).toUpperCase() || "GEN";
 
     // Use custom reference number or auto-generate
     let memoReference: string;
@@ -287,6 +318,9 @@ export async function POST(req: NextRequest) {
       });
     }
 
+    // Resolve display names for the "To" field
+    const toDisplayName = manualToText ?? (recipient?.displayName || to);
+
     // Create everything in a transaction
     const result = await db.$transaction(async (tx) => {
       // 1. Create the Document record (type: MEMO)
@@ -301,10 +335,14 @@ export async function POST(req: NextRequest) {
           status: "DRAFT",
           metadata: {
             memoType: "INTERNAL",
-            to: recipient.displayName,
-            toId: recipient.id,
+            to: toDisplayName,
+            toId: recipient?.id ?? null,
+            toIsManual: !!manualToText,
             from: initiator.displayName,
             fromId: initiator.id,
+            department,
+            departmentOffice: departmentOffice ?? "",
+            departmentAbbr: departmentAbbr ?? "",
             recommenders: recommenderUsers.map((r) => ({
               id: r.id,
               name: r.displayName,
@@ -312,7 +350,6 @@ export async function POST(req: NextRequest) {
               jobTitle: r.jobTitle,
             })),
             cc: cc ?? [],
-            bcc: bcc ?? [],
             bodyHtml: memoBody.trim(),
           },
           ...(documentId
@@ -344,18 +381,21 @@ export async function POST(req: NextRequest) {
           currentStepIndex: 1, // Skip self-review (auto-completed)
           formData: {
             body: memoBody.trim(),
-            toId: recipient.id,
-            toName: recipient.displayName,
-            toDepartment: recipient.department,
-            toJobTitle: recipient.jobTitle,
+            toId: recipient?.id ?? null,
+            toName: toDisplayName,
+            toIsManual: !!manualToText,
+            toDepartment: recipient?.department ?? null,
+            toJobTitle: recipient?.jobTitle ?? null,
             fromId: initiator.id,
             fromName: initiator.displayName,
             fromDepartment: initiator.department,
             fromJobTitle: initiator.jobTitle,
+            department,
+            departmentOffice: departmentOffice ?? "",
+            departmentAbbr: departmentAbbr ?? "",
             memoReference,
             documentId: document.id,
             cc: cc ?? [],
-            bcc: bcc ?? [],
           },
         },
       });
@@ -395,19 +435,22 @@ export async function POST(req: NextRequest) {
       }
 
       // Final Step: Approver (can be the "To" person or a separate approver)
-      const finalApproverId = approverId || recipient.id;
-      const finalStepIndex = recommenderUsers.length + 1;
-      tasks.push(
-        await tx.workflowTask.create({
-          data: {
-            instanceId: workflowInstance.id,
-            stepName: "Final Approval",
-            stepIndex: finalStepIndex,
-            assigneeId: finalApproverId,
-            status: "PENDING",
-          },
-        })
-      );
+      // For manual "To", an explicit approver must be provided
+      const finalApproverId = approverId || recipient?.id;
+      if (finalApproverId) {
+        const finalStepIndex = recommenderUsers.length + 1;
+        tasks.push(
+          await tx.workflowTask.create({
+            data: {
+              instanceId: workflowInstance.id,
+              stepName: "Final Approval",
+              stepIndex: finalStepIndex,
+              assigneeId: finalApproverId,
+              status: "PENDING",
+            },
+          })
+        );
+      }
 
       // 5. Create initial workflow event
       await tx.workflowEvent.create({
@@ -418,24 +461,37 @@ export async function POST(req: NextRequest) {
           data: {
             memoReference,
             subject: subject.trim(),
-            to: recipient.displayName,
+            to: toDisplayName,
             recommenderCount: recommenderUsers.length,
           },
         },
       });
 
       // 6. Notify the first person in the chain
-      const firstPendingUser =
-        recommenderUsers.length > 0 ? recommenderUsers[0] : recipient;
-      await tx.notification.create({
-        data: {
-          userId: firstPendingUser.id,
-          type: "MEMO_ACTION_REQUIRED",
-          title: "New Memo Requires Your Action",
-          body: `${initiator.displayName} has sent a memo "${subject.trim()}" that requires your ${recommenderUsers.length > 0 && firstPendingUser.id !== recipient.id ? "recommendation" : "approval"}.`,
-          linkUrl: `/memos/${workflowInstance.id}`,
-        },
-      });
+      const firstPendingUserId =
+        recommenderUsers.length > 0
+          ? recommenderUsers[0].id
+          : finalApproverId;
+      const firstPendingName =
+        recommenderUsers.length > 0
+          ? recommenderUsers[0].displayName
+          : toDisplayName;
+
+      if (firstPendingUserId) {
+        await tx.notification.create({
+          data: {
+            userId: firstPendingUserId,
+            type: "MEMO_ACTION_REQUIRED",
+            title: "New Memo Requires Your Action",
+            body: `${initiator.displayName} has sent a memo "${subject.trim()}" that requires your ${
+              recommenderUsers.length > 0 && firstPendingUserId !== (recipient?.id ?? "")
+                ? "recommendation"
+                : "approval"
+            }.`,
+            linkUrl: `/memos/${workflowInstance.id}`,
+          },
+        });
+      }
 
       return { workflowInstance, document, tasks };
     });
@@ -449,7 +505,7 @@ export async function POST(req: NextRequest) {
       metadata: {
         memoReference,
         subject: subject.trim(),
-        to: recipient.displayName,
+        to: toDisplayName,
         recommenderCount: recommenderUsers.length,
       },
     });
