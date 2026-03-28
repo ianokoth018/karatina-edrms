@@ -1,34 +1,39 @@
-import { auth } from "@/lib/auth";
-import { NextResponse } from "next/server";
+import { NextRequest, NextResponse } from "next/server";
+import { getToken } from "next-auth/jwt";
 
 /**
  * Protect all routes except /login and /api/auth.
- * Unauthenticated users are redirected to /login.
+ * Uses next-auth/jwt which is Edge Runtime compatible (no Node.js crypto).
  */
-export default auth((req) => {
+export async function middleware(req: NextRequest) {
   const { pathname } = req.nextUrl;
 
-  // Allow public routes through without authentication
+  // Allow public routes
   const isPublicRoute =
     pathname === "/login" ||
-    pathname.startsWith("/api/auth");
+    pathname.startsWith("/api/auth") ||
+    pathname.startsWith("/api/integration");
 
   if (isPublicRoute) {
     return NextResponse.next();
   }
 
-  // Redirect unauthenticated users to login
-  if (!req.auth) {
+  // Check JWT token (Edge-compatible)
+  const token = await getToken({
+    req,
+    secret: process.env.NEXTAUTH_SECRET,
+  });
+
+  if (!token) {
     const loginUrl = new URL("/login", req.url);
     loginUrl.searchParams.set("callbackUrl", pathname);
     return NextResponse.redirect(loginUrl);
   }
 
   return NextResponse.next();
-});
+}
 
 export const config = {
-  // Match all routes except static assets and Next.js internals
   matcher: [
     "/((?!_next/static|_next/image|favicon.ico|.*\\.(?:svg|png|jpg|jpeg|gif|webp|ico)$).*)",
   ],

@@ -1,7 +1,7 @@
 import NextAuth from "next-auth";
 import Credentials from "next-auth/providers/credentials";
 import bcrypt from "bcryptjs";
-import crypto from "crypto";
+import { v4 as uuidv4 } from "uuid";
 import { db } from "@/lib/db";
 
 /** Access token lifetime: 15 minutes (in milliseconds). */
@@ -107,7 +107,7 @@ export const { handlers, auth, signIn, signOut } = NextAuth({
 
         // Token rotation fields
         token.accessTokenExpires = Date.now() + ACCESS_TOKEN_MAX_AGE_MS;
-        token.refreshToken = crypto.randomUUID();
+        token.refreshToken = uuidv4();
         token.refreshTokenExpires = Date.now() + REFRESH_TOKEN_MAX_AGE_MS;
         token.error = undefined;
 
@@ -188,7 +188,7 @@ export const { handlers, auth, signIn, signOut } = NextAuth({
 
           // Rotate tokens
           token.accessTokenExpires = Date.now() + ACCESS_TOKEN_MAX_AGE_MS;
-          token.refreshToken = crypto.randomUUID();
+          token.refreshToken = uuidv4();
           token.refreshTokenExpires = Date.now() + REFRESH_TOKEN_MAX_AGE_MS;
           token.error = undefined;
 
