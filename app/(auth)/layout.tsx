@@ -23,8 +23,16 @@ export default function AuthLayout({
     localStorage.setItem("theme", next ? "dark" : "light");
   }
 
+  if (!mounted) {
+    return (
+      <div className="flex h-screen items-center justify-center bg-gray-50">
+        <div className="h-8 w-8 animate-spin rounded-full border-4 border-gray-200 border-t-[#02773b]" />
+      </div>
+    );
+  }
+
   return (
-    <div className="flex h-screen overflow-hidden">
+    <div className="flex h-screen overflow-hidden" suppressHydrationWarning>
       {/* Left Panel — Hidden on mobile */}
       <div className="hidden lg:flex lg:w-1/2 relative overflow-hidden">
         <Image
