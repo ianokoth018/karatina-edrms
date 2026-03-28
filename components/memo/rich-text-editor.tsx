@@ -5,6 +5,8 @@ import StarterKit from "@tiptap/starter-kit";
 import Underline from "@tiptap/extension-underline";
 import TextAlign from "@tiptap/extension-text-align";
 import Placeholder from "@tiptap/extension-placeholder";
+import { TextStyle } from "@tiptap/extension-text-style";
+import { FontFamily } from "@tiptap/extension-font-family";
 import { Table } from "@tiptap/extension-table";
 import { TableRow } from "@tiptap/extension-table-row";
 import { TableCell } from "@tiptap/extension-table-cell";
@@ -73,6 +75,8 @@ export default function RichTextEditor({
         orderedList: { keepMarks: true },
       }),
       Underline,
+      TextStyle,
+      FontFamily,
       TextAlign.configure({
         types: ["heading", "paragraph"],
       }),
@@ -121,6 +125,32 @@ export default function RichTextEditor({
       {/* Toolbar */}
       {editable && (
         <div className="flex flex-wrap items-center gap-0.5 px-2 py-1.5 bg-gray-50 dark:bg-gray-800/80 border-b border-gray-200 dark:border-gray-700">
+          {/* Font family */}
+          <select
+            value={editor.getAttributes("textStyle").fontFamily || ""}
+            onChange={(e) => {
+              if (e.target.value) {
+                editor.chain().focus().setFontFamily(e.target.value).run();
+              } else {
+                editor.chain().focus().unsetFontFamily().run();
+              }
+            }}
+            className="h-8 rounded-md border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-800 px-2 text-xs text-gray-700 dark:text-gray-300 outline-none focus:border-[#02773b]"
+          >
+            <option value="">Default Font</option>
+            <option value="Arial" style={{ fontFamily: "Arial" }}>Arial</option>
+            <option value="Arial Narrow" style={{ fontFamily: "Arial Narrow" }}>Arial Narrow</option>
+            <option value="Times New Roman" style={{ fontFamily: "Times New Roman" }}>Times New Roman</option>
+            <option value="Georgia" style={{ fontFamily: "Georgia" }}>Georgia</option>
+            <option value="Verdana" style={{ fontFamily: "Verdana" }}>Verdana</option>
+            <option value="Courier New" style={{ fontFamily: "Courier New" }}>Courier New</option>
+            <option value="Trebuchet MS" style={{ fontFamily: "Trebuchet MS" }}>Trebuchet MS</option>
+            <option value="Tahoma" style={{ fontFamily: "Tahoma" }}>Tahoma</option>
+            <option value="Calibri" style={{ fontFamily: "Calibri" }}>Calibri</option>
+          </select>
+
+          <ToolbarDivider />
+
           {/* Text formatting */}
           <ToolbarButton
             onClick={() => editor.chain().focus().toggleBold().run()}

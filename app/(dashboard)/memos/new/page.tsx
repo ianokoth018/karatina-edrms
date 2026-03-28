@@ -342,7 +342,6 @@ export default function NewMemoPage() {
   const [recipient, setRecipient] = useState<UserOption | null>(null);
   const [ccUsers, setCcUsers] = useState<UserOption[]>([]);
   const [bccUsers, setBccUsers] = useState<UserOption[]>([]);
-  const [showCcBcc, setShowCcBcc] = useState(false);
   const [referenceNumber, setReferenceNumber] = useState("");
   const [subject, setSubject] = useState("");
   const [memoBody, setMemoBody] = useState("");
@@ -637,84 +636,60 @@ export default function NewMemoPage() {
               Compose Memo
             </h2>
 
-            {/* To (recipient) */}
-            <UserSearch
-              label="To (Recipient)"
-              placeholder="Search by name, email, or department..."
-              onSelect={setRecipient}
-              excludeIds={[session?.user?.id ?? ""]}
-              selectedUser={recipient}
-              onClear={() => setRecipient(null)}
-            />
-
-            {/* CC / BCC section */}
-            <div>
-              {!showCcBcc ? (
-                <button
-                  type="button"
-                  onClick={() => setShowCcBcc(true)}
-                  className="inline-flex items-center gap-1.5 text-sm text-[#02773b] hover:text-[#014d28] font-medium transition-colors"
-                >
-                  <svg
-                    className="w-4 h-4"
-                    fill="none"
-                    viewBox="0 0 24 24"
-                    strokeWidth={2}
-                    stroke="currentColor"
-                  >
-                    <path
-                      strokeLinecap="round"
-                      strokeLinejoin="round"
-                      d="M12 4.5v15m7.5-7.5h-15"
-                    />
-                  </svg>
-                  Add CC / BCC
-                </button>
-              ) : (
-                <div className="space-y-4 p-4 rounded-xl bg-gray-50 dark:bg-gray-800/40 border border-gray-100 dark:border-gray-800">
-                  <div className="flex items-center justify-between">
-                    <span className="text-sm font-medium text-gray-700 dark:text-gray-300">
-                      Copy Recipients
-                    </span>
-                    <button
-                      type="button"
-                      onClick={() => {
-                        setShowCcBcc(false);
-                        setCcUsers([]);
-                        setBccUsers([]);
-                      }}
-                      className="text-xs text-gray-400 hover:text-gray-600 dark:hover:text-gray-300 transition-colors"
-                    >
-                      Clear & Close
-                    </button>
-                  </div>
-                  <MultiUserInput
-                    label="CC (Copy)"
-                    sublabel="-- will receive a copy for information"
-                    users={ccUsers}
-                    onAdd={(user) => setCcUsers([...ccUsers, user])}
-                    onRemove={(id) =>
-                      setCcUsers(ccUsers.filter((u) => u.id !== id))
-                    }
-                    excludeIds={excludeIds}
-                    tagColor="blue"
-                  />
-                  <MultiUserInput
-                    label="BCC (Blind Copy)"
-                    sublabel="-- will receive a copy, hidden from others"
-                    users={bccUsers}
-                    onAdd={(user) => setBccUsers([...bccUsers, user])}
-                    onRemove={(id) =>
-                      setBccUsers(bccUsers.filter((u) => u.id !== id))
-                    }
-                    excludeIds={excludeIds}
-                    tagColor="gray"
-                  />
-                </div>
-              )}
+            {/* Row 1: To + Reference Number */}
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-5">
+              <UserSearch
+                label="To (Recipient)"
+                placeholder="Search by name, email, or department..."
+                onSelect={setRecipient}
+                excludeIds={[session?.user?.id ?? ""]}
+                selectedUser={recipient}
+                onClear={() => setRecipient(null)}
+              />
+              <div>
+                <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1.5">
+                  Reference Number
+                </label>
+                <input
+                  type="text"
+                  value={referenceNumber}
+                  onChange={(e) => setReferenceNumber(e.target.value)}
+                  placeholder="e.g., KarU/ICT/MEMO/2026/001"
+                  className="w-full h-11 rounded-xl border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-900 px-4 text-sm text-gray-900 dark:text-gray-100 placeholder:text-gray-400 dark:placeholder:text-gray-500 font-mono transition-all focus:border-[#02773b] focus:ring-2 focus:ring-[#02773b]/20 outline-none"
+                />
+                <p className="text-xs text-gray-400 dark:text-gray-500 mt-1.5">
+                  If left blank, one will be auto-generated.
+                </p>
+              </div>
             </div>
 
-            {/* Subject */}
+            {/* Row 2: CC + BCC always visible */}
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-5">
+              <MultiUserInput
+                label="CC"
+                sublabel="(receives a copy for information)"
+                users={ccUsers}
+                onAdd={(user) => setCcUsers([...ccUsers, user])}
+                onRemove={(id) =>
+                  setCcUsers(ccUsers.filter((u) => u.id !== id))
+                }
+                excludeIds={excludeIds}
+                tagColor="blue"
+              />
+              <MultiUserInput
+                label="BCC"
+                sublabel="(hidden copy)"
+                users={bccUsers}
+                onAdd={(user) => setBccUsers([...bccUsers, user])}
+                onRemove={(id) =>
+                  setBccUsers(bccUsers.filter((u) => u.id !== id))
+                }
+                excludeIds={excludeIds}
+                tagColor="gray"
+              />
+            </div>
+
+            {/* Row 3: Subject (full width) */}
             <div>
               <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1.5">
                 Subject
@@ -728,34 +703,18 @@ export default function NewMemoPage() {
               />
             </div>
 
-            {/* Reference Number */}
-            <div>
-              <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1.5">
-                Reference Number
-              </label>
-              <input
-                type="text"
-                value={referenceNumber}
-                onChange={(e) => setReferenceNumber(e.target.value)}
-                placeholder="e.g., KarU/ICT/MEMO/2026/001"
-                className="w-full h-11 rounded-xl border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-900 px-4 text-sm text-gray-900 dark:text-gray-100 placeholder:text-gray-400 dark:placeholder:text-gray-500 font-mono transition-all focus:border-[#02773b] focus:ring-2 focus:ring-[#02773b]/20 outline-none"
-              />
-              <p className="text-xs text-gray-400 dark:text-gray-500 mt-1.5">
-                Enter a reference number for this memo. If left blank, one will
-                be auto-generated.
-              </p>
-            </div>
-
-            {/* Body (Rich Text Editor) */}
+            {/* Row 4: Memo Body (full width, taller editor) */}
             <div>
               <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1.5">
                 Memo Body
               </label>
-              <RichTextEditor
-                content={memoBody}
-                onChange={(html) => setMemoBody(html)}
-                placeholder="Type your memo content here..."
-              />
+              <div className="[&_.ProseMirror]:min-h-[400px]">
+                <RichTextEditor
+                  content={memoBody}
+                  onChange={(html) => setMemoBody(html)}
+                  placeholder="Type your memo content here..."
+                />
+              </div>
             </div>
           </div>
 
