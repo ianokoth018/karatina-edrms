@@ -50,6 +50,7 @@ const navItems: NavItem[] = [
       { label: "Start New", href: "/workflows/start" },
       { label: "History", href: "/workflows/history" },
       { label: "Templates", href: "/workflows/templates" },
+      { label: "Designer", href: "/workflows/designer" },
     ],
   },
   {

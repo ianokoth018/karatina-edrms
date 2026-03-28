@@ -86,9 +86,72 @@ export async function GET(req: NextRequest) {
 }
 
 /**
+ * Extract ordered task steps from a visual designer definition.
+ * Traverses the node graph from start nodes via edges, collecting task nodes.
+ */
+function extractTasksFromDefinition(
+  definition: Record<string, unknown>
+): { stepIndex: number; stepName: string; assigneeRule: string; assigneeValue?: string; escalationDays?: number }[] {
+  const defNodes = definition.nodes as { id: string; type: string; data: Record<string, unknown> }[] | undefined;
+  const defEdges = definition.edges as { source: string; target: string }[] | undefined;
+
+  if (!defNodes || !defEdges) return [];
+
+  // Build adjacency map
+  const adj: Record<string, string[]> = {};
+  for (const e of defEdges) {
+    if (!adj[e.source]) adj[e.source] = [];
+    adj[e.source].push(e.target);
+  }
+
+  const startNodes = defNodes.filter((n) => n.type === "start");
+  if (startNodes.length === 0) return [];
+
+  const visited = new Set<string>();
+  const queue = [...startNodes.map((n) => n.id)];
+  const tasks: { stepIndex: number; stepName: string; assigneeRule: string; assigneeValue?: string; escalationDays?: number }[] = [];
+  let stepIndex = 0;
+
+  while (queue.length > 0) {
+    const currentId = queue.shift()!;
+    if (visited.has(currentId)) continue;
+    visited.add(currentId);
+
+    const currentNode = defNodes.find((n) => n.id === currentId);
+    if (!currentNode) continue;
+
+    if (currentNode.type === "task") {
+      tasks.push({
+        stepIndex: stepIndex++,
+        stepName: (currentNode.data.label as string) || "Untitled",
+        assigneeRule: (currentNode.data.assigneeRule as string) || "dynamic",
+        assigneeValue: (currentNode.data.assigneeValue as string) || undefined,
+        escalationDays: (currentNode.data.escalationDays as number) || undefined,
+      });
+    }
+
+    const children = adj[currentId] ?? [];
+    for (const childId of children) {
+      if (!visited.has(childId)) {
+        queue.push(childId);
+      }
+    }
+  }
+
+  return tasks;
+}
+
+/**
  * POST /api/workflows
  * Start a new workflow instance.
- * Body: { templateId, documentId?, subject, assignees: [{ userId, stepIndex, stepName }] }
+ *
+ * Body options:
+ * 1. Explicit assignees (existing):
+ *    { templateId, documentId?, subject, assignees: [{ userId, stepIndex, stepName }] }
+ *
+ * 2. Template-definition-driven (new):
+ *    { templateId, documentId?, subject, useTemplateDefinition: true,
+ *      dynamicAssignees?: { stepIndex: number; userId: string }[] }
  */
 export async function POST(req: NextRequest) {
   try {
@@ -101,16 +164,25 @@ export async function POST(req: NextRequest) {
     }
 
     const body = await req.json();
-    const { templateId, documentId, subject, assignees } = body as {
+    const {
+      templateId,
+      documentId,
+      subject,
+      assignees,
+      useTemplateDefinition,
+      dynamicAssignees,
+    } = body as {
       templateId: string;
       documentId?: string;
       subject: string;
-      assignees: { userId: string; stepIndex: number; stepName: string }[];
+      assignees?: { userId: string; stepIndex: number; stepName: string }[];
+      useTemplateDefinition?: boolean;
+      dynamicAssignees?: { stepIndex: number; userId: string }[];
     };
 
-    if (!templateId || !subject || !assignees?.length) {
+    if (!templateId || !subject) {
       return NextResponse.json(
-        { error: "templateId, subject and assignees are required" },
+        { error: "templateId and subject are required" },
         { status: 400 }
       );
     }
@@ -126,10 +198,102 @@ export async function POST(req: NextRequest) {
       );
     }
 
+    let resolvedAssignees: { userId: string; stepIndex: number; stepName: string }[];
+
+    if (useTemplateDefinition) {
+      // Parse the template definition to auto-create tasks
+      const definition = template.definition as Record<string, unknown>;
+      const taskSteps = extractTasksFromDefinition(definition);
+
+      if (taskSteps.length === 0) {
+        // Fall back to legacy steps format
+        const legacySteps = (definition.steps as { index: number; name: string; type: string }[] | undefined) ?? [];
+        if (legacySteps.length === 0) {
+          return NextResponse.json(
+            { error: "Template definition has no task steps" },
+            { status: 400 }
+          );
+        }
+        // Legacy steps require explicit assignees
+        if (!assignees?.length) {
+          return NextResponse.json(
+            { error: "Assignees are required for legacy template definitions" },
+            { status: 400 }
+          );
+        }
+        resolvedAssignees = assignees;
+      } else {
+        // Build dynamic assignee lookup map
+        const dynamicMap = new Map<number, string>();
+        if (dynamicAssignees) {
+          for (const da of dynamicAssignees) {
+            dynamicMap.set(da.stepIndex, da.userId);
+          }
+        }
+
+        resolvedAssignees = [];
+        for (const step of taskSteps) {
+          let userId: string | undefined;
+
+          if (step.assigneeRule === "specific_user" && step.assigneeValue) {
+            // Verify the user exists
+            const user = await db.user.findUnique({ where: { id: step.assigneeValue } });
+            if (user) {
+              userId = user.id;
+            }
+          } else if (step.assigneeRule === "role_based" && step.assigneeValue) {
+            // Find a user with the specified role
+            const userRole = await db.userRole.findFirst({
+              where: {
+                role: { name: step.assigneeValue },
+                user: { isActive: true },
+              },
+              include: { user: { select: { id: true } } },
+            });
+            if (userRole) {
+              userId = userRole.user.id;
+            }
+          } else if (step.assigneeRule === "initiator_manager") {
+            // For now, fall back to the initiator (manager lookup would require org hierarchy)
+            userId = session.user.id;
+          }
+
+          // Check dynamic assignees map
+          if (!userId) {
+            userId = dynamicMap.get(step.stepIndex);
+          }
+
+          if (!userId) {
+            return NextResponse.json(
+              {
+                error: `No assignee could be resolved for step ${step.stepIndex} ("${step.stepName}"). Provide a dynamicAssignees entry for this step.`,
+              },
+              { status: 400 }
+            );
+          }
+
+          resolvedAssignees.push({
+            userId,
+            stepIndex: step.stepIndex,
+            stepName: step.stepName,
+          });
+        }
+      }
+    } else {
+      // Original behavior: explicit assignees
+      if (!assignees?.length) {
+        return NextResponse.json(
+          { error: "assignees are required when useTemplateDefinition is not set" },
+          { status: 400 }
+        );
+      }
+      resolvedAssignees = assignees;
+    }
+
     const referenceNumber = await generateWorkflowReference();
 
     // Sort assignees by stepIndex
-    const sortedAssignees = [...assignees].sort(
+    const sortedAssignees = [...resolvedAssignees].sort(
       (a, b) => a.stepIndex - b.stepIndex
     );
 
@@ -148,11 +312,11 @@ export async function POST(req: NextRequest) {
         currentStepIndex: sortedAssignees[0].stepIndex,
         dueAt,
         tasks: {
-          create: sortedAssignees.map((a, idx) => ({
+          create: sortedAssignees.map((a) => ({
             stepName: a.stepName,
             stepIndex: a.stepIndex,
             assigneeId: a.userId,
-            status: idx === 0 ? "PENDING" : "PENDING",
+            status: "PENDING" as const,
             dueAt,
           })),
         },
@@ -196,7 +360,8 @@ export async function POST(req: NextRequest) {
         referenceNumber,
         templateId,
         documentId,
-        assigneeCount: assignees.length,
+        assigneeCount: sortedAssignees.length,
+        useTemplateDefinition: !!useTemplateDefinition,
       },
     });
 

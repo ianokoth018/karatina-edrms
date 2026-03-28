@@ -1,4 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
+import type { Prisma } from "@prisma/client";
 import { auth } from "@/lib/auth";
 import { db } from "@/lib/db";
 import { writeAudit } from "@/lib/audit";
@@ -61,27 +62,38 @@ export async function POST(req: NextRequest) {
     }
 
     const body = await req.json();
-    const { name, description, steps } = body as {
+    const { name, description, steps, definition: rawDefinition } = body as {
       name: string;
       description?: string;
-      steps: { name: string; type: "approval" | "review" }[];
+      steps?: { name: string; type: "approval" | "review" }[];
+      definition?: Record<string, unknown>;
     };
 
-    if (!name || !steps?.length) {
+    if (!name) {
       return NextResponse.json(
-        { error: "Name and at least one step are required" },
+        { error: "Name is required" },
         { status: 400 }
       );
     }
 
-    // Validate step types
-    const validTypes = ["approval", "review"];
-    for (const step of steps) {
-      if (!step.name || !validTypes.includes(step.type)) {
-        return NextResponse.json(
-          { error: "Each step must have a name and a valid type (approval or review)" },
-          { status: 400 }
-        );
+    // Must have either steps or a full definition from the designer
+    if (!steps?.length && !rawDefinition) {
+      return NextResponse.json(
+        { error: "At least one step or a workflow definition is required" },
+        { status: 400 }
+      );
+    }
+
+    // Validate step types if steps are provided
+    if (steps?.length) {
+      const validTypes = ["approval", "review", "notification"];
+      for (const step of steps) {
+        if (!step.name || !validTypes.includes(step.type)) {
+          return NextResponse.json(
+            { error: "Each step must have a name and a valid type (approval, review, or notification)" },
+            { status: 400 }
+          );
+        }
       }
     }
 
@@ -96,8 +108,10 @@ export async function POST(req: NextRequest) {
       );
     }
 
-    const definition = {
-      steps: steps.map((step, index) => ({
+    // If a full definition was provided (from the visual designer), use it.
+    // Otherwise, build one from the steps array.
+    const definition = rawDefinition ?? {
+      steps: (steps ?? []).map((step, index) => ({
         index,
         name: step.name,
         type: step.type,
@@ -108,7 +122,7 @@ export async function POST(req: NextRequest) {
       data: {
         name,
         description: description ?? null,
-        definition,
+        definition: definition as Prisma.InputJsonValue,
         createdById: session.user.id,
       },
       select: {
@@ -127,7 +141,7 @@ export async function POST(req: NextRequest) {
       action: "WORKFLOW_TEMPLATE_CREATED",
       resourceType: "workflow_template",
       resourceId: template.id,
-      metadata: { name, stepCount: steps.length },
+      metadata: { name, stepCount: steps?.length ?? 0 },
     });
 
     logger.info("Workflow template created", {
