@@ -215,6 +215,10 @@ export default function NewMemoPage() {
   const [memoBody, setMemoBody] = useState("");
   const [referencePreview, setReferencePreview] = useState("");
 
+  // Approver (can be different from recipient)
+  const [approverSameAsRecipient, setApproverSameAsRecipient] = useState(true);
+  const [approver, setApprover] = useState<UserOption | null>(null);
+
   // Step 2: Recommenders
   const [recommenders, setRecommenders] = useState<UserOption[]>([]);
 
@@ -262,8 +266,11 @@ export default function NewMemoPage() {
     });
   }
 
+  const finalApprover = approverSameAsRecipient ? recipient : approver;
+
   async function handleSubmit() {
     if (!recipient || !subject.trim() || !memoBody.trim()) return;
+    if (!approverSameAsRecipient && !approver) return;
 
     setIsSubmitting(true);
     setError(null);
@@ -277,6 +284,7 @@ export default function NewMemoPage() {
           subject: subject.trim(),
           memoBody: memoBody.trim(),
           recommenders: recommenders.map((r) => r.id),
+          approver: finalApprover?.id,
         }),
       });
 
@@ -389,15 +397,44 @@ export default function NewMemoPage() {
             </p>
           </div>
 
-          {/* To (recipient / approver) */}
+          {/* To (recipient) */}
           <UserSearch
-            label="To (Recipient / Final Approver)"
+            label="To (Recipient)"
             placeholder="Search by name, email, or department..."
             onSelect={setRecipient}
             excludeIds={[session?.user?.id ?? ""]}
             selectedUser={recipient}
             onClear={() => setRecipient(null)}
           />
+
+          {/* Approver */}
+          <div className="space-y-3">
+            <label className="flex items-center gap-2.5 cursor-pointer">
+              <input
+                type="checkbox"
+                checked={approverSameAsRecipient}
+                onChange={(e) => {
+                  setApproverSameAsRecipient(e.target.checked);
+                  if (e.target.checked) setApprover(null);
+                }}
+                className="h-4 w-4 rounded border-gray-300 dark:border-gray-600 text-[#02773b] focus:ring-[#02773b]"
+              />
+              <span className="text-sm text-gray-700 dark:text-gray-300">
+                Final approver is the same as recipient
+              </span>
+            </label>
+
+            {!approverSameAsRecipient && (
+              <UserSearch
+                label="Final Approver"
+                placeholder="Search for the approver..."
+                onSelect={setApprover}
+                excludeIds={[session?.user?.id ?? "", recipient?.id ?? ""]}
+                selectedUser={approver}
+                onClear={() => setApprover(null)}
+              />
+            )}
+          </div>
 
           {/* Subject */}
           <div>
@@ -716,8 +753,8 @@ export default function NewMemoPage() {
                       <div className="flex-1">
                         <div className="border-b border-dashed border-gray-400 dark:border-gray-600 pb-1 mb-1 min-w-[200px]" />
                         <p className="text-xs text-gray-500 dark:text-gray-400">
-                          {recipient?.displayName}
-                          {recipient?.jobTitle && `, ${recipient.jobTitle}`}
+                          {finalApprover?.displayName}
+                          {finalApprover?.jobTitle && `, ${finalApprover.jobTitle}`}
                         </p>
                       </div>
                       <div className="text-right">

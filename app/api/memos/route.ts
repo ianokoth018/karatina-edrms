@@ -179,12 +179,13 @@ export async function POST(req: NextRequest) {
     }
 
     const body = await req.json();
-    const { to, subject, memoBody, recommenders, documentId } = body as {
+    const { to, subject, memoBody, recommenders, documentId, approver: approverId } = body as {
       to: string;
       subject: string;
       memoBody: string;
       recommenders: string[];
       documentId?: string;
+      approver?: string;
     };
 
     // Validate required fields
@@ -208,6 +209,17 @@ export async function POST(req: NextRequest) {
     });
     if (!recipient) {
       return NextResponse.json({ error: "Recipient not found" }, { status: 404 });
+    }
+
+    // Verify separate approver if provided
+    if (approverId && approverId !== recipient.id) {
+      const approverUser = await db.user.findUnique({
+        where: { id: approverId },
+        select: { id: true },
+      });
+      if (!approverUser) {
+        return NextResponse.json({ error: "Approver not found" }, { status: 404 });
+      }
     }
 
     // Verify recommenders exist
@@ -362,7 +374,8 @@ export async function POST(req: NextRequest) {
         );
       }
 
-      // Final Step: Approver (the "To" person)
+      // Final Step: Approver (can be the "To" person or a separate approver)
+      const finalApproverId = approverId || recipient.id;
       const finalStepIndex = recommenderUsers.length + 1;
       tasks.push(
         await tx.workflowTask.create({
@@ -370,7 +383,7 @@ export async function POST(req: NextRequest) {
             instanceId: workflowInstance.id,
             stepName: "Final Approval",
             stepIndex: finalStepIndex,
-            assigneeId: recipient.id,
+            assigneeId: finalApproverId,
             status: "PENDING",
           },
         })
