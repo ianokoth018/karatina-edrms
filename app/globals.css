@@ -1,5 +1,7 @@
 @import "tailwindcss";
 
+@custom-variant dark (&:where(.dark, .dark *));
+
 :root {
   --background: #ffffff;
   --foreground: #171717;
@@ -21,8 +23,17 @@
   --font-sans: var(--font-inter);
 }
 
+/* Class-based dark mode (toggled via JS) */
+.dark {
+  --background: #0a0a0a;
+  --foreground: #ededed;
+  --karu-green-light: #052e16;
+  --karu-gold-light: #422006;
+}
+
+/* System-preference dark mode (fallback when no explicit choice) */
 @media (prefers-color-scheme: dark) {
-  :root {
+  :root:not(.light) {
     --background: #0a0a0a;
     --foreground: #ededed;
     --karu-green-light: #052e16;

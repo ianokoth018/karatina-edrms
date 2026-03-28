@@ -1,0 +1,169 @@
+import { NextRequest, NextResponse } from "next/server";
+import { auth } from "@/lib/auth";
+import { db } from "@/lib/db";
+import { writeAudit } from "@/lib/audit";
+import { logger } from "@/lib/logger";
+
+// ---------------------------------------------------------------------------
+// POST /api/documents/[id]/checkout — check out a document
+// ---------------------------------------------------------------------------
+export async function POST(
+  _req: NextRequest,
+  { params }: { params: Promise<{ id: string }> }
+) {
+  try {
+    const session = await auth();
+    if (!session?.user?.id) {
+      return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+    }
+
+    const { id } = await params;
+
+    const document = await db.document.findUnique({
+      where: { id },
+      select: {
+        id: true,
+        status: true,
+        referenceNumber: true,
+        checkoutUserId: true,
+      },
+    });
+
+    if (!document) {
+      return NextResponse.json({ error: "Document not found" }, { status: 404 });
+    }
+
+    if (document.status === "DISPOSED" || document.status === "ARCHIVED") {
+      return NextResponse.json(
+        { error: `Cannot check out a document with status ${document.status}` },
+        { status: 400 }
+      );
+    }
+
+    if (document.checkoutUserId) {
+      return NextResponse.json(
+        { error: "Document is already checked out" },
+        { status: 409 }
+      );
+    }
+
+    const updated = await db.document.update({
+      where: { id },
+      data: {
+        status: "CHECKED_OUT",
+        checkoutUserId: session.user.id,
+        checkoutAt: new Date(),
+      },
+    });
+
+    await writeAudit({
+      userId: session.user.id,
+      action: "document.checked_out",
+      resourceType: "Document",
+      resourceId: id,
+      metadata: { referenceNumber: document.referenceNumber },
+    });
+
+    logger.info("Document checked out", {
+      userId: session.user.id,
+      action: "document.checked_out",
+      route: `/api/documents/${id}/checkout`,
+      method: "POST",
+    });
+
+    return NextResponse.json({
+      message: "Document checked out successfully",
+      checkoutUserId: updated.checkoutUserId,
+      checkoutAt: updated.checkoutAt,
+    });
+  } catch (error) {
+    logger.error("Failed to check out document", error, {
+      route: "/api/documents/[id]/checkout",
+      method: "POST",
+    });
+    return NextResponse.json({ error: "Internal server error" }, { status: 500 });
+  }
+}
+
+// ---------------------------------------------------------------------------
+// DELETE /api/documents/[id]/checkout — check in a document
+// ---------------------------------------------------------------------------
+export async function DELETE(
+  _req: NextRequest,
+  { params }: { params: Promise<{ id: string }> }
+) {
+  try {
+    const session = await auth();
+    if (!session?.user?.id) {
+      return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+    }
+
+    const { id } = await params;
+
+    const document = await db.document.findUnique({
+      where: { id },
+      select: {
+        id: true,
+        status: true,
+        referenceNumber: true,
+        checkoutUserId: true,
+      },
+    });
+
+    if (!document) {
+      return NextResponse.json({ error: "Document not found" }, { status: 404 });
+    }
+
+    if (!document.checkoutUserId) {
+      return NextResponse.json(
+        { error: "Document is not checked out" },
+        { status: 400 }
+      );
+    }
+
+    // Only the user who checked it out (or an admin) can check it back in
+    if (document.checkoutUserId !== session.user.id) {
+      const isAdmin = session.user.roles?.some(
+        (r: string) => r.toLowerCase() === "admin" || r.toLowerCase() === "super_admin"
+      );
+      if (!isAdmin) {
+        return NextResponse.json(
+          { error: "Only the user who checked out this document (or an admin) can check it in" },
+          { status: 403 }
+        );
+      }
+    }
+
+    await db.document.update({
+      where: { id },
+      data: {
+        status: "ACTIVE",
+        checkoutUserId: null,
+        checkoutAt: null,
+      },
+    });
+
+    await writeAudit({
+      userId: session.user.id,
+      action: "document.checked_in",
+      resourceType: "Document",
+      resourceId: id,
+      metadata: { referenceNumber: document.referenceNumber },
+    });
+
+    logger.info("Document checked in", {
+      userId: session.user.id,
+      action: "document.checked_in",
+      route: `/api/documents/${id}/checkout`,
+      method: "DELETE",
+    });
+
+    return NextResponse.json({ message: "Document checked in successfully" });
+  } catch (error) {
+    logger.error("Failed to check in document", error, {
+      route: "/api/documents/[id]/checkout",
+      method: "DELETE",
+    });
+    return NextResponse.json({ error: "Internal server error" }, { status: 500 });
+  }
+}

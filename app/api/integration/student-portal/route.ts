@@ -1,7 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { db } from "@/lib/db";
 import { writeAudit } from "@/lib/audit";
-import { generateDocumentReference } from "@/lib/reference";
+import { generateReference } from "@/lib/reference";
 import { logger } from "@/lib/logger";
 
 /**
@@ -56,7 +56,7 @@ export async function POST(req: NextRequest) {
     switch (event) {
       case "STUDENT_REGISTERED": {
         // Create a student file folder in EDRMS
-        const refNumber = await generateDocumentReference("ADM");
+        const refNumber = await generateReference("DOC", "ADM");
         const studentDoc = await db.document.create({
           data: {
             referenceNumber: refNumber,
@@ -126,7 +126,7 @@ export async function POST(req: NextRequest) {
 
         // Create or link document under the student's file
         const parentDocId = existingSync?.documentId;
-        const docRef = await generateDocumentReference("STU-DOC");
+        const docRef = await generateReference("DOC", "STU");
 
         const edrmsDoc = await db.document.create({
           data: {
@@ -182,7 +182,7 @@ export async function POST(req: NextRequest) {
           );
         }
 
-        const payRef = await generateDocumentReference("FIN");
+        const payRef = await generateReference("DOC", "FIN");
         const payDoc = await db.document.create({
           data: {
             referenceNumber: payRef,
