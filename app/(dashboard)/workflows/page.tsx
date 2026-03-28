@@ -1,6 +1,7 @@
 "use client";
 
 import { useState, useEffect, useCallback } from "react";
+import Link from "next/link";
 
 interface TaskDocument {
   id: string;
@@ -165,13 +166,24 @@ export default function WorkflowsPage() {
   return (
     <div className="p-6 space-y-6">
       {/* Header */}
-      <div>
-        <h1 className="text-2xl font-bold text-gray-900 dark:text-gray-100">
-          My Tasks
-        </h1>
-        <p className="text-sm text-gray-500 dark:text-gray-400 mt-1">
-          Workflow tasks assigned to you
-        </p>
+      <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-4">
+        <div>
+          <h1 className="text-2xl font-bold text-gray-900 dark:text-gray-100">
+            My Tasks
+          </h1>
+          <p className="text-sm text-gray-500 dark:text-gray-400 mt-1">
+            Workflow tasks assigned to you
+          </p>
+        </div>
+        <Link
+          href="/workflows/start"
+          className="inline-flex items-center gap-2 px-4 py-2.5 rounded-xl bg-karu-green text-white text-sm font-medium hover:bg-karu-green-dark transition-colors"
+        >
+          <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" strokeWidth={2} stroke="currentColor">
+            <path strokeLinecap="round" strokeLinejoin="round" d="M12 4.5v15m7.5-7.5h-15" />
+          </svg>
+          Start Workflow
+        </Link>
       </div>
 
       {/* Filter tabs */}
@@ -272,6 +284,17 @@ export default function WorkflowsPage() {
                         <p className="text-xs text-gray-500 dark:text-gray-400 mt-0.5">
                           {task.instance.template.name}
                         </p>
+                        {task.instance.document && (
+                          <Link
+                            href={`/documents/${task.instance.document.id}`}
+                            className="inline-flex items-center gap-1 mt-1 text-xs text-karu-green hover:text-karu-green-dark transition-colors"
+                          >
+                            <svg className="w-3 h-3" fill="none" viewBox="0 0 24 24" strokeWidth={1.5} stroke="currentColor">
+                              <path strokeLinecap="round" strokeLinejoin="round" d="M19.5 14.25v-2.625a3.375 3.375 0 0 0-3.375-3.375h-1.5A1.125 1.125 0 0 1 13.5 7.125v-1.5a3.375 3.375 0 0 0-3.375-3.375H8.25m2.25 0H5.625c-.621 0-1.125.504-1.125 1.125v17.25c0 .621.504 1.125 1.125 1.125h12.75c.621 0 1.125-.504 1.125-1.125V11.25a9 9 0 0 0-9-9Z" />
+                            </svg>
+                            {task.instance.document.referenceNumber}
+                          </Link>
+                        )}
                       </div>
                     </td>
                     <td className="px-4 py-3 text-gray-600 dark:text-gray-300 hidden md:table-cell">

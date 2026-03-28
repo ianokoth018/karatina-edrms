@@ -47,8 +47,9 @@ const navItems: NavItem[] = [
     ),
     children: [
       { label: "My Tasks", href: "/workflows", badge: 3 },
+      { label: "Start New", href: "/workflows/start" },
       { label: "History", href: "/workflows/history" },
-      { label: "Designer", href: "/workflows/designer" },
+      { label: "Templates", href: "/workflows/templates" },
     ],
   },
   {
