@@ -43,7 +43,7 @@ export default function LoginPage() {
       {/* Header with crest */}
       <div className="text-center mb-6 lg:mb-8">
         <div className="flex justify-center mb-5 animate-scale-in">
-          <div className="rounded-2xl bg-white dark:bg-gray-800 p-3 shadow-md shadow-gray-200/50 dark:shadow-black/20 ring-1 ring-gray-100 dark:ring-gray-700">
+          <div className="rounded-2xl bg-white dark:bg-gray-800 p-3 ring-1 ring-gray-100 dark:ring-gray-700">
             <Image
               src="/karu-crest.png"
               alt="Karatina University Crest"
