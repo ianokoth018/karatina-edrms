@@ -12,8 +12,12 @@
   "dependencies": {
     "@hookform/resolvers": "^5.2.2",
     "@prisma/client": "^6.19.2",
+    "@tiptap/extension-color": "^3.21.0",
     "@tiptap/extension-font-family": "^3.21.0",
+    "@tiptap/extension-highlight": "^3.21.0",
     "@tiptap/extension-placeholder": "^3.21.0",
+    "@tiptap/extension-subscript": "^3.21.0",
+    "@tiptap/extension-superscript": "^3.21.0",
     "@tiptap/extension-table": "^3.21.0",
     "@tiptap/extension-table-cell": "^3.21.0",
     "@tiptap/extension-table-header": "^3.21.0",

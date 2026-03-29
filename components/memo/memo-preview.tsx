@@ -7,10 +7,10 @@
 export interface MemoPreviewProps {
   universityName?: string;
   departmentOffice: string; // e.g., "OFFICE OF THE REGISTRAR"
-  departmentAbbr: string; // e.g., "ACADEMIC AFFAIRS"
+  designation?: string; // e.g., "Registrar (AA)", "ICT Officer", "Dean SESS"
   phone?: string; // e.g., "+254 0716135171/0723683150"
   poBox?: string; // e.g., "P.O Box 1957-10101,KARATINA"
-  from: string; // e.g., "Registrar (AA)"
+  from: string; // e.g., "Dr. Wangari Gathuthi"
   date: string; // e.g., "23rd March, 2026"
   to: string; // e.g., "Current Students (2025/2026 AY)"
   refNumber: string; // e.g., "KarU/Rg.AA/1/Vol.11"
@@ -35,19 +35,13 @@ export interface MemoPreviewProps {
 }
 
 /* ========================================================================== */
-/*  Horizontal rule character                                                 */
-/* ========================================================================== */
-
-const HR_CHAR = "\u2550"; // ═
-
-/* ========================================================================== */
 /*  Component                                                                 */
 /* ========================================================================== */
 
 export default function MemoPreview({
   universityName = "KARATINA UNIVERSITY",
   departmentOffice = "OFFICE OF THE REGISTRAR",
-  departmentAbbr = "ACADEMIC AFFAIRS",
+  designation,
   phone = "+254 0716135171/0723683150",
   poBox = "P.O Box 1957-10101,KARATINA",
   from,
@@ -61,28 +55,42 @@ export default function MemoPreview({
   copyTo,
   isDraft = true,
   recommenders,
-  approver,
+  approver: _approver,
 }: MemoPreviewProps) {
+  // approver is accepted via props for interface compatibility but not rendered
+  // on the memo document itself (it is used by the workflow system)
+  void _approver;
+
+  /** Build the FROM display: "Name, Designation" if designation provided */
+  const fromDisplay = designation
+    ? `${from}, ${designation}`
+    : from;
+
   return (
     <div
-      className="relative bg-white text-black shadow-lg rounded-lg overflow-hidden max-w-[210mm] mx-auto print:shadow-none print:rounded-none"
+      className="relative bg-white text-black shadow-lg overflow-hidden mx-auto print:shadow-none"
       style={{
         fontFamily: "'Arial Narrow', Arial, sans-serif",
         fontSize: "12pt",
         lineHeight: "1.4",
+        maxWidth: "210mm",
+        minHeight: "297mm",
       }}
     >
       {/* DRAFT watermark */}
       {isDraft && (
-        <div className="absolute inset-0 flex items-center justify-center pointer-events-none z-10 overflow-hidden">
+        <div
+          className="absolute inset-0 flex items-center justify-center pointer-events-none overflow-hidden"
+          style={{ zIndex: 1 }}
+        >
           <span
             className="select-none whitespace-nowrap"
             style={{
-              fontSize: "100pt",
+              fontSize: "120pt",
               fontWeight: 900,
-              color: "rgba(200, 200, 200, 0.3)",
-              letterSpacing: "0.2em",
-              transform: "rotate(-35deg)",
+              color: "rgba(0, 0, 0, 0.06)",
+              letterSpacing: "0.15em",
+              transform: "rotate(-45deg)",
             }}
           >
             DRAFT
@@ -92,16 +100,19 @@ export default function MemoPreview({
 
       {/* Content wrapper */}
       <div
-        className="relative z-20"
-        style={{ padding: "12mm 16mm 10mm 16mm" }}
+        style={{
+          position: "relative",
+          zIndex: 2,
+          padding: "15mm 20mm 10mm 20mm",
+        }}
       >
         {/* ---- University Header (centered, bold) ---- */}
-        <div style={{ textAlign: "center", marginBottom: "2mm" }}>
+        <div style={{ textAlign: "center", marginBottom: "1mm" }}>
           <div
             style={{
               fontWeight: "bold",
-              fontSize: "14pt",
-              letterSpacing: "1px",
+              fontSize: "16pt",
+              letterSpacing: "0.5px",
               textTransform: "uppercase",
             }}
           >
@@ -116,15 +127,6 @@ export default function MemoPreview({
           >
             {departmentOffice}
           </div>
-          <div
-            style={{
-              fontWeight: "bold",
-              fontSize: "12pt",
-              marginTop: "0.5mm",
-            }}
-          >
-            ({departmentAbbr})
-          </div>
         </div>
 
         {/* ---- TEL / P.O. Box line ---- */}
@@ -132,30 +134,24 @@ export default function MemoPreview({
           style={{
             display: "flex",
             justifyContent: "space-between",
-            fontSize: "11pt",
+            fontSize: "10pt",
             marginTop: "2mm",
-            marginBottom: "2mm",
+            marginBottom: "1.5mm",
           }}
         >
           <span>TEL:{phone}</span>
           <span>{poBox}</span>
         </div>
 
-        {/* ---- Horizontal rule (═══) ---- */}
+        {/* ---- Horizontal rule (solid line) ---- */}
         <div
           style={{
-            fontSize: "10pt",
-            lineHeight: "1",
-            letterSpacing: "-0.5px",
-            overflow: "hidden",
-            whiteSpace: "nowrap",
-            marginBottom: "3mm",
+            borderTop: "2px solid #000",
+            marginBottom: "4mm",
           }}
-        >
-          {HR_CHAR.repeat(120)}
-        </div>
+        />
 
-        {/* ---- INTERNAL MEMO (centered, bold) ---- */}
+        {/* ---- INTERNAL MEMO (centered, bold, underlined) ---- */}
         <div
           style={{
             textAlign: "center",
@@ -168,41 +164,39 @@ export default function MemoPreview({
           INTERNAL MEMO
         </div>
 
-        {/* ---- FROM / DATE line ---- */}
+        {/* ---- FROM / DATE row ---- */}
         <div
           style={{
             display: "flex",
-            justifyContent: "space-between",
-            marginBottom: "2mm",
+            marginBottom: "1.5mm",
             fontSize: "12pt",
           }}
         >
-          <div>
+          <div style={{ flex: 1 }}>
             <span style={{ fontWeight: "bold" }}>FROM:</span>
-            <span style={{ marginLeft: "8px" }}>{from || "---"}</span>
+            <span style={{ marginLeft: "6px" }}>{fromDisplay || "---"}</span>
           </div>
-          <div>
+          <div style={{ textAlign: "right", minWidth: "40%" }}>
             <span style={{ fontWeight: "bold" }}>DATE:</span>
-            <span style={{ marginLeft: "8px" }}>{date || "---"}</span>
+            <span style={{ marginLeft: "4px" }}>{date || "---"}</span>
           </div>
         </div>
 
-        {/* ---- TO / REF line ---- */}
+        {/* ---- TO / REF row ---- */}
         <div
           style={{
             display: "flex",
-            justifyContent: "space-between",
             marginBottom: "4mm",
             fontSize: "12pt",
           }}
         >
-          <div>
+          <div style={{ flex: 1 }}>
             <span style={{ fontWeight: "bold" }}>TO:</span>
             <span style={{ marginLeft: "24px" }}>{to || "---"}</span>
           </div>
-          <div>
+          <div style={{ textAlign: "right", minWidth: "40%" }}>
             <span style={{ fontWeight: "bold" }}>REF:</span>
-            <span style={{ marginLeft: "8px" }}>{refNumber || "---"}</span>
+            <span style={{ marginLeft: "6px" }}>{refNumber || "---"}</span>
           </div>
         </div>
 
@@ -237,16 +231,93 @@ export default function MemoPreview({
           dangerouslySetInnerHTML={{ __html: bodyHtml }}
         />
 
-        {/* ---- Signature area ---- */}
-        {(senderName || senderTitle) && (
-          <div style={{ marginTop: "10mm", marginBottom: "6mm" }}>
+        {/* ---- Recommenders ---- */}
+        {recommenders && recommenders.length > 0 && (
+          <div style={{ marginTop: "8mm", marginBottom: "6mm" }}>
             <div
               style={{
-                borderBottom: "1px solid #000",
-                width: "50mm",
-                marginBottom: "2mm",
+                fontWeight: "bold",
+                fontSize: "12pt",
+                marginBottom: "4mm",
+                textDecoration: "underline",
               }}
-            />
+            >
+              RECOMMENDED BY:
+            </div>
+            {recommenders.map((rec, index) => (
+              <div
+                key={index}
+                style={{
+                  marginBottom: "6mm",
+                  fontSize: "12pt",
+                }}
+              >
+                <div
+                  style={{
+                    display: "flex",
+                    alignItems: "flex-end",
+                    gap: "4mm",
+                    marginBottom: "2mm",
+                  }}
+                >
+                  <span style={{ fontWeight: 600, minWidth: "6mm" }}>
+                    {index + 1}.
+                  </span>
+                  <div style={{ flex: 1 }}>
+                    {rec.signed ? (
+                      <div
+                        style={{
+                          color: "#02773b",
+                          fontStyle: "italic",
+                          marginBottom: "1mm",
+                        }}
+                      >
+                        Signed{rec.date ? ` on ${rec.date}` : ""}
+                      </div>
+                    ) : (
+                      <div
+                        style={{
+                          borderBottom: "1px dashed #999",
+                          minWidth: "50mm",
+                          height: "7mm",
+                          marginBottom: "1mm",
+                        }}
+                      />
+                    )}
+                    <div style={{ fontWeight: "bold" }}>
+                      {rec.name}
+                    </div>
+                    {rec.title && (
+                      <div
+                        style={{
+                          fontWeight: "bold",
+                          textTransform: "uppercase",
+                        }}
+                      >
+                        {rec.title}
+                      </div>
+                    )}
+                  </div>
+                  <div
+                    style={{
+                      textAlign: "right",
+                      fontSize: "11pt",
+                      color: "#444",
+                      minWidth: "30mm",
+                    }}
+                  >
+                    Date:{" "}
+                    {rec.signed && rec.date ? rec.date : "___________"}
+                  </div>
+                </div>
+              </div>
+            ))}
+          </div>
+        )}
+
+        {/* ---- Signature area ---- */}
+        {(senderName || senderTitle) && (
+          <div style={{ marginTop: "12mm", marginBottom: "6mm" }}>
             {senderName && (
               <div style={{ fontWeight: "bold", fontSize: "12pt" }}>
                 {senderName}
@@ -263,143 +334,6 @@ export default function MemoPreview({
                 {senderTitle}
               </div>
             )}
-          </div>
-        )}
-
-        {/* ---- Recommenders ---- */}
-        {recommenders && recommenders.length > 0 && (
-          <div style={{ marginTop: "8mm", marginBottom: "6mm" }}>
-            <div
-              style={{
-                fontWeight: "bold",
-                fontSize: "12pt",
-                marginBottom: "3mm",
-              }}
-            >
-              RECOMMENDED BY:
-            </div>
-            {recommenders.map((rec, index) => (
-              <div
-                key={index}
-                style={{
-                  display: "flex",
-                  alignItems: "flex-end",
-                  gap: "8mm",
-                  marginBottom: "5mm",
-                  fontSize: "11pt",
-                }}
-              >
-                <span
-                  style={{
-                    width: "6mm",
-                    fontWeight: 600,
-                    textAlign: "right",
-                  }}
-                >
-                  {index + 1}.
-                </span>
-                <div style={{ flex: 1 }}>
-                  {rec.signed ? (
-                    <div
-                      style={{
-                        color: "#02773b",
-                        fontStyle: "italic",
-                        marginBottom: "1mm",
-                      }}
-                    >
-                      Signed{rec.date ? ` on ${rec.date}` : ""}
-                    </div>
-                  ) : (
-                    <div
-                      style={{
-                        borderBottom: "1px dashed #999",
-                        minWidth: "50mm",
-                        height: "7mm",
-                        marginBottom: "1mm",
-                      }}
-                    />
-                  )}
-                  <div style={{ fontSize: "10pt", color: "#444" }}>
-                    {rec.name}
-                    {rec.title ? `, ${rec.title}` : ""}
-                  </div>
-                </div>
-                <div
-                  style={{
-                    textAlign: "right",
-                    fontSize: "10pt",
-                    color: "#666",
-                    minWidth: "30mm",
-                  }}
-                >
-                  Date:{" "}
-                  {rec.signed && rec.date ? rec.date : "___________"}
-                </div>
-              </div>
-            ))}
-          </div>
-        )}
-
-        {/* ---- Approver ---- */}
-        {approver && (
-          <div style={{ marginTop: "6mm", marginBottom: "6mm" }}>
-            <div
-              style={{
-                fontWeight: "bold",
-                fontSize: "12pt",
-                marginBottom: "3mm",
-              }}
-            >
-              APPROVED BY:
-            </div>
-            <div
-              style={{
-                display: "flex",
-                alignItems: "flex-end",
-                gap: "8mm",
-                fontSize: "11pt",
-              }}
-            >
-              <div style={{ flex: 1 }}>
-                {approver.signed ? (
-                  <div
-                    style={{
-                      color: "#02773b",
-                      fontStyle: "italic",
-                      marginBottom: "1mm",
-                    }}
-                  >
-                    Signed{approver.date ? ` on ${approver.date}` : ""}
-                  </div>
-                ) : (
-                  <div
-                    style={{
-                      borderBottom: "1px dashed #999",
-                      minWidth: "50mm",
-                      height: "7mm",
-                      marginBottom: "1mm",
-                    }}
-                  />
-                )}
-                <div style={{ fontSize: "10pt", color: "#444" }}>
-                  {approver.name}
-                  {approver.title ? `, ${approver.title}` : ""}
-                </div>
-              </div>
-              <div
-                style={{
-                  textAlign: "right",
-                  fontSize: "10pt",
-                  color: "#666",
-                  minWidth: "30mm",
-                }}
-              >
-                Date:{" "}
-                {approver.signed && approver.date
-                  ? approver.date
-                  : "___________"}
-              </div>
-            </div>
           </div>
         )}
 

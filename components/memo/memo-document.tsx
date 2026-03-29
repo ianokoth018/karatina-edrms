@@ -4,12 +4,6 @@ import { forwardRef } from "react";
 import type { MemoPreviewProps } from "./memo-preview";
 
 /* ========================================================================== */
-/*  Horizontal rule character                                                 */
-/* ========================================================================== */
-
-const HR_CHAR = "\u2550"; // ═
-
-/* ========================================================================== */
 /*  Printable / downloadable memo document                                    */
 /*                                                                            */
 /*  Same layout as MemoPreview but uses ONLY inline styles (no Tailwind)      */
@@ -21,7 +15,7 @@ const MemoDocument = forwardRef<HTMLDivElement, MemoPreviewProps>(
     {
       universityName = "KARATINA UNIVERSITY",
       departmentOffice = "OFFICE OF THE REGISTRAR",
-      departmentAbbr = "ACADEMIC AFFAIRS",
+      designation,
       phone = "+254 0716135171/0723683150",
       poBox = "P.O Box 1957-10101,KARATINA",
       from,
@@ -35,10 +29,19 @@ const MemoDocument = forwardRef<HTMLDivElement, MemoPreviewProps>(
       copyTo,
       isDraft = true,
       recommenders,
-      approver,
+      approver: _approver,
     },
     refProp
   ) {
+    // approver is accepted via props for interface compatibility but not rendered
+    // on the memo document itself (it is used by the workflow system)
+    void _approver;
+
+    /** Build the FROM display: "Name, Designation" if designation provided */
+    const fromDisplay = designation
+      ? `${from}, ${designation}`
+      : from;
+
     return (
       <div
         ref={refProp}
@@ -68,13 +71,13 @@ const MemoDocument = forwardRef<HTMLDivElement, MemoPreviewProps>(
               top: 0 !important;
               width: 100% !important;
               margin: 0 !important;
-              padding: 15mm 20mm !important;
+              padding: 0 !important;
               -webkit-print-color-adjust: exact !important;
               print-color-adjust: exact !important;
             }
             @page {
               size: A4;
-              margin: 10mm 15mm;
+              margin: 20mm 25mm;
             }
             .no-print { display: none !important; }
           }
@@ -87,14 +90,15 @@ const MemoDocument = forwardRef<HTMLDivElement, MemoPreviewProps>(
               position: "absolute",
               top: "50%",
               left: "50%",
-              transform: "translate(-50%, -50%) rotate(-35deg)",
-              fontSize: "100pt",
+              transform: "translate(-50%, -50%) rotate(-45deg)",
+              fontSize: "120pt",
               fontWeight: 900,
-              color: "rgba(200,200,200,0.3)",
-              letterSpacing: "0.2em",
+              color: "rgba(0, 0, 0, 0.06)",
+              letterSpacing: "0.15em",
               pointerEvents: "none",
               zIndex: 1,
               whiteSpace: "nowrap",
+              userSelect: "none",
             }}
           >
             DRAFT
@@ -110,12 +114,12 @@ const MemoDocument = forwardRef<HTMLDivElement, MemoPreviewProps>(
           }}
         >
           {/* ---- University Header (centered, bold) ---- */}
-          <div style={{ textAlign: "center", marginBottom: "2mm" }}>
+          <div style={{ textAlign: "center", marginBottom: "1mm" }}>
             <div
               style={{
                 fontWeight: "bold",
-                fontSize: "14pt",
-                letterSpacing: "1px",
+                fontSize: "16pt",
+                letterSpacing: "0.5px",
                 textTransform: "uppercase",
               }}
             >
@@ -130,15 +134,6 @@ const MemoDocument = forwardRef<HTMLDivElement, MemoPreviewProps>(
             >
               {departmentOffice}
             </div>
-            <div
-              style={{
-                fontWeight: "bold",
-                fontSize: "12pt",
-                marginTop: "0.5mm",
-              }}
-            >
-              ({departmentAbbr})
-            </div>
           </div>
 
           {/* ---- TEL / P.O. Box line ---- */}
@@ -147,36 +142,30 @@ const MemoDocument = forwardRef<HTMLDivElement, MemoPreviewProps>(
               width: "100%",
               borderCollapse: "collapse",
               marginTop: "2mm",
-              marginBottom: "2mm",
+              marginBottom: "1.5mm",
             }}
           >
             <tbody>
               <tr>
-                <td style={{ fontSize: "11pt", textAlign: "left" }}>
+                <td style={{ fontSize: "10pt", textAlign: "left", padding: 0 }}>
                   TEL:{phone}
                 </td>
-                <td style={{ fontSize: "11pt", textAlign: "right" }}>
+                <td style={{ fontSize: "10pt", textAlign: "right", padding: 0 }}>
                   {poBox}
                 </td>
               </tr>
             </tbody>
           </table>
 
-          {/* ---- Horizontal rule (═══) ---- */}
+          {/* ---- Horizontal rule (solid line) ---- */}
           <div
             style={{
-              fontSize: "10pt",
-              lineHeight: "1",
-              letterSpacing: "-0.5px",
-              overflow: "hidden",
-              whiteSpace: "nowrap",
-              marginBottom: "3mm",
+              borderTop: "2px solid #000",
+              marginBottom: "4mm",
             }}
-          >
-            {HR_CHAR.repeat(120)}
-          </div>
+          />
 
-          {/* ---- INTERNAL MEMO (centered, bold) ---- */}
+          {/* ---- INTERNAL MEMO (centered, bold, underlined) ---- */}
           <div
             style={{
               textAlign: "center",
@@ -189,25 +178,32 @@ const MemoDocument = forwardRef<HTMLDivElement, MemoPreviewProps>(
             INTERNAL MEMO
           </div>
 
-          {/* ---- FROM / DATE line ---- */}
+          {/* ---- FROM / DATE row ---- */}
           <table
             style={{
               width: "100%",
               borderCollapse: "collapse",
-              marginBottom: "2mm",
+              marginBottom: "1.5mm",
             }}
           >
             <tbody>
               <tr>
-                <td style={{ fontSize: "12pt" }}>
+                <td style={{ fontSize: "12pt", padding: 0 }}>
                   <strong>FROM:</strong>
-                  <span style={{ marginLeft: "8px" }}>
-                    {from || "---"}
+                  <span style={{ marginLeft: "6px" }}>
+                    {fromDisplay || "---"}
                   </span>
                 </td>
-                <td style={{ fontSize: "12pt", textAlign: "right" }}>
+                <td
+                  style={{
+                    fontSize: "12pt",
+                    textAlign: "right",
+                    padding: 0,
+                    minWidth: "40%",
+                  }}
+                >
                   <strong>DATE:</strong>
-                  <span style={{ marginLeft: "8px" }}>
+                  <span style={{ marginLeft: "4px" }}>
                     {date || "---"}
                   </span>
                 </td>
@@ -215,7 +211,7 @@ const MemoDocument = forwardRef<HTMLDivElement, MemoPreviewProps>(
             </tbody>
           </table>
 
-          {/* ---- TO / REF line ---- */}
+          {/* ---- TO / REF row ---- */}
           <table
             style={{
               width: "100%",
@@ -225,15 +221,22 @@ const MemoDocument = forwardRef<HTMLDivElement, MemoPreviewProps>(
           >
             <tbody>
               <tr>
-                <td style={{ fontSize: "12pt" }}>
+                <td style={{ fontSize: "12pt", padding: 0 }}>
                   <strong>TO:</strong>
                   <span style={{ marginLeft: "24px" }}>
                     {to || "---"}
                   </span>
                 </td>
-                <td style={{ fontSize: "12pt", textAlign: "right" }}>
+                <td
+                  style={{
+                    fontSize: "12pt",
+                    textAlign: "right",
+                    padding: 0,
+                    minWidth: "40%",
+                  }}
+                >
                   <strong>REF:</strong>
-                  <span style={{ marginLeft: "8px" }}>
+                  <span style={{ marginLeft: "6px" }}>
                     {refNumber || "---"}
                   </span>
                 </td>
@@ -263,16 +266,101 @@ const MemoDocument = forwardRef<HTMLDivElement, MemoPreviewProps>(
             dangerouslySetInnerHTML={{ __html: bodyHtml }}
           />
 
-          {/* ---- Signature area ---- */}
-          {(senderName || senderTitle) && (
-            <div style={{ marginTop: "10mm", marginBottom: "6mm" }}>
+          {/* ---- Recommenders ---- */}
+          {recommenders && recommenders.length > 0 && (
+            <div style={{ marginTop: "8mm", marginBottom: "6mm" }}>
               <div
                 style={{
-                  borderBottom: "1px solid #000",
-                  width: "50mm",
-                  marginBottom: "2mm",
+                  fontWeight: "bold",
+                  fontSize: "12pt",
+                  marginBottom: "4mm",
+                  textDecoration: "underline",
                 }}
-              />
+              >
+                RECOMMENDED BY:
+              </div>
+              {recommenders.map((rec, index) => (
+                <table
+                  key={index}
+                  style={{
+                    width: "100%",
+                    borderCollapse: "collapse",
+                    marginBottom: "6mm",
+                    fontSize: "12pt",
+                  }}
+                >
+                  <tbody>
+                    <tr>
+                      <td
+                        style={{
+                          width: "8mm",
+                          fontWeight: 600,
+                          verticalAlign: "top",
+                          padding: 0,
+                        }}
+                      >
+                        {index + 1}.
+                      </td>
+                      <td style={{ verticalAlign: "top", padding: 0 }}>
+                        {rec.signed ? (
+                          <div
+                            style={{
+                              color: "#02773b",
+                              fontStyle: "italic",
+                              marginBottom: "1mm",
+                            }}
+                          >
+                            Signed{rec.date ? ` on ${rec.date}` : ""}
+                          </div>
+                        ) : (
+                          <div
+                            style={{
+                              borderBottom: "1px dashed #999",
+                              minWidth: "50mm",
+                              height: "7mm",
+                              marginBottom: "1mm",
+                            }}
+                          />
+                        )}
+                        <div style={{ fontWeight: "bold" }}>
+                          {rec.name}
+                        </div>
+                        {rec.title && (
+                          <div
+                            style={{
+                              fontWeight: "bold",
+                              textTransform: "uppercase",
+                            }}
+                          >
+                            {rec.title}
+                          </div>
+                        )}
+                      </td>
+                      <td
+                        style={{
+                          textAlign: "right",
+                          fontSize: "11pt",
+                          color: "#444",
+                          minWidth: "30mm",
+                          verticalAlign: "top",
+                          padding: 0,
+                        }}
+                      >
+                        Date:{" "}
+                        {rec.signed && rec.date
+                          ? rec.date
+                          : "___________"}
+                      </td>
+                    </tr>
+                  </tbody>
+                </table>
+              ))}
+            </div>
+          )}
+
+          {/* ---- Signature area ---- */}
+          {(senderName || senderTitle) && (
+            <div style={{ marginTop: "12mm", marginBottom: "6mm" }}>
               {senderName && (
                 <div style={{ fontWeight: "bold", fontSize: "12pt" }}>
                   {senderName}
@@ -292,144 +380,7 @@ const MemoDocument = forwardRef<HTMLDivElement, MemoPreviewProps>(
             </div>
           )}
 
-          {/* ---- Recommenders ---- */}
-          {recommenders && recommenders.length > 0 && (
-            <div style={{ marginTop: "8mm", marginBottom: "6mm" }}>
-              <div
-                style={{
-                  fontWeight: "bold",
-                  fontSize: "12pt",
-                  marginBottom: "3mm",
-                }}
-              >
-                RECOMMENDED BY:
-              </div>
-              {recommenders.map((rec, index) => (
-                <div
-                  key={index}
-                  style={{
-                    display: "flex",
-                    alignItems: "flex-end",
-                    gap: "8mm",
-                    marginBottom: "5mm",
-                    fontSize: "11pt",
-                  }}
-                >
-                  <span
-                    style={{
-                      width: "6mm",
-                      fontWeight: 600,
-                      textAlign: "right",
-                    }}
-                  >
-                    {index + 1}.
-                  </span>
-                  <div style={{ flex: 1 }}>
-                    {rec.signed ? (
-                      <div
-                        style={{
-                          color: "#02773b",
-                          fontStyle: "italic",
-                          marginBottom: "1mm",
-                        }}
-                      >
-                        Signed{rec.date ? ` on ${rec.date}` : ""}
-                      </div>
-                    ) : (
-                      <div
-                        style={{
-                          borderBottom: "1px dashed #999",
-                          minWidth: "50mm",
-                          height: "7mm",
-                          marginBottom: "1mm",
-                        }}
-                      />
-                    )}
-                    <div style={{ fontSize: "10pt", color: "#444" }}>
-                      {rec.name}
-                      {rec.title ? `, ${rec.title}` : ""}
-                    </div>
-                  </div>
-                  <div
-                    style={{
-                      textAlign: "right",
-                      fontSize: "10pt",
-                      color: "#666",
-                      minWidth: "30mm",
-                    }}
-                  >
-                    Date:{" "}
-                    {rec.signed && rec.date ? rec.date : "___________"}
-                  </div>
-                </div>
-              ))}
-            </div>
-          )}
-
-          {/* ---- Approver ---- */}
-          {approver && (
-            <div style={{ marginTop: "6mm", marginBottom: "6mm" }}>
-              <div
-                style={{
-                  fontWeight: "bold",
-                  fontSize: "12pt",
-                  marginBottom: "3mm",
-                }}
-              >
-                APPROVED BY:
-              </div>
-              <div
-                style={{
-                  display: "flex",
-                  alignItems: "flex-end",
-                  gap: "8mm",
-                  fontSize: "11pt",
-                }}
-              >
-                <div style={{ flex: 1 }}>
-                  {approver.signed ? (
-                    <div
-                      style={{
-                        color: "#02773b",
-                        fontStyle: "italic",
-                        marginBottom: "1mm",
-                      }}
-                    >
-                      Signed{approver.date ? ` on ${approver.date}` : ""}
-                    </div>
-                  ) : (
-                    <div
-                      style={{
-                        borderBottom: "1px dashed #999",
-                        minWidth: "50mm",
-                        height: "7mm",
-                        marginBottom: "1mm",
-                      }}
-                    />
-                  )}
-                  <div style={{ fontSize: "10pt", color: "#444" }}>
-                    {approver.name}
-                    {approver.title ? `, ${approver.title}` : ""}
-                  </div>
-                </div>
-                <div
-                  style={{
-                    textAlign: "right",
-                    fontSize: "10pt",
-                    color: "#666",
-                    minWidth: "30mm",
-                  }}
-                >
-                  Date:{" "}
-                  {approver.signed && approver.date
-                    ? approver.date
-                    : "___________"}
-                </div>
-              </div>
-            </div>
-          )}
-
-          {/* ---- Copy to: (two-column layout) ---- */}
+          {/* ---- Copy to: (two-column table) ---- */}
           {copyTo && copyTo.length > 0 && (
             <div style={{ marginTop: "8mm" }}>
               <div

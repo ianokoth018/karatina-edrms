@@ -8,11 +8,15 @@ import Placeholder from "@tiptap/extension-placeholder";
 import { TextStyle } from "@tiptap/extension-text-style";
 import { FontFamily } from "@tiptap/extension-font-family";
 import { FontSize } from "@/lib/font-size-extension";
+import { Color } from "@tiptap/extension-color";
+import Highlight from "@tiptap/extension-highlight";
+import Superscript from "@tiptap/extension-superscript";
+import Subscript from "@tiptap/extension-subscript";
 import { Table } from "@tiptap/extension-table";
 import { TableRow } from "@tiptap/extension-table-row";
 import { TableCell } from "@tiptap/extension-table-cell";
 import { TableHeader } from "@tiptap/extension-table-header";
-import { useEffect } from "react";
+import { useEffect, useState, useRef, useCallback } from "react";
 
 /* ---------- constants ---------- */
 
@@ -34,6 +38,30 @@ const FONT_SIZES = [
 const DEFAULT_FONT = "Arial Narrow";
 const DEFAULT_FONT_SIZE = "12pt";
 
+const TEXT_COLORS = [
+  { label: "Black", value: "#000000" },
+  { label: "Dark Gray", value: "#4B5563" },
+  { label: "Red", value: "#DC2626" },
+  { label: "Orange", value: "#EA580C" },
+  { label: "Green", value: "#16A34A" },
+  { label: "Blue", value: "#2563EB" },
+  { label: "Purple", value: "#9333EA" },
+];
+
+const HIGHLIGHT_COLORS = [
+  { label: "Yellow", value: "#FEF08A" },
+  { label: "Green", value: "#BBF7D0" },
+  { label: "Blue", value: "#BFDBFE" },
+  { label: "Pink", value: "#FBCFE8" },
+];
+
+const LINE_HEIGHTS = [
+  { label: "1.0", value: "1" },
+  { label: "1.15", value: "1.15" },
+  { label: "1.5", value: "1.5" },
+  { label: "2.0", value: "2" },
+];
+
 /* ---------- types ---------- */
 
 interface RichTextEditorProps {
@@ -51,12 +79,14 @@ function ToolbarButton({
   disabled,
   title,
   children,
+  className: extraClass,
 }: {
   onClick: () => void;
   isActive?: boolean;
   disabled?: boolean;
   title: string;
   children: React.ReactNode;
+  className?: string;
 }) {
   return (
     <button
@@ -68,7 +98,7 @@ function ToolbarButton({
         isActive
           ? "bg-[#02773b] text-white shadow-sm"
           : "text-gray-600 dark:text-gray-400 hover:bg-gray-100 dark:hover:bg-gray-700 hover:text-gray-900 dark:hover:text-gray-200"
-      }`}
+      } ${extraClass ?? ""}`}
     >
       {children}
     </button>
@@ -79,6 +109,149 @@ function ToolbarDivider() {
   return <div className="w-px h-6 bg-gray-200 dark:bg-gray-700 mx-0.5" />;
 }
 
+/* ---------- dropdown picker ---------- */
+
+function ColorPicker({
+  colors,
+  onSelect,
+  activeColor,
+  title,
+  icon,
+}: {
+  colors: { label: string; value: string }[];
+  onSelect: (color: string) => void;
+  activeColor?: string;
+  title: string;
+  icon: React.ReactNode;
+}) {
+  const [isOpen, setIsOpen] = useState(false);
+  const ref = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    function handleClickOutside(e: MouseEvent) {
+      if (ref.current && !ref.current.contains(e.target as Node)) {
+        setIsOpen(false);
+      }
+    }
+    document.addEventListener("mousedown", handleClickOutside);
+    return () => document.removeEventListener("mousedown", handleClickOutside);
+  }, []);
+
+  return (
+    <div ref={ref} className="relative">
+      <button
+        type="button"
+        onClick={() => setIsOpen(!isOpen)}
+        title={title}
+        className="p-1.5 rounded-md transition-colors text-gray-600 dark:text-gray-400 hover:bg-gray-100 dark:hover:bg-gray-700 hover:text-gray-900 dark:hover:text-gray-200 flex items-center gap-0.5"
+      >
+        {icon}
+        <svg className="w-2.5 h-2.5 opacity-60" viewBox="0 0 10 6" fill="currentColor">
+          <path d="M1 1l4 4 4-4" stroke="currentColor" strokeWidth="1.5" fill="none" strokeLinecap="round" strokeLinejoin="round" />
+        </svg>
+      </button>
+      {isOpen && (
+        <div className="absolute z-50 mt-1 left-0 bg-white dark:bg-gray-800 border border-gray-200 dark:border-gray-700 rounded-lg shadow-xl p-2 flex flex-wrap gap-1 min-w-[120px]">
+          {colors.map((color) => (
+            <button
+              key={color.value}
+              type="button"
+              title={color.label}
+              onClick={() => {
+                onSelect(color.value);
+                setIsOpen(false);
+              }}
+              className={`w-6 h-6 rounded border-2 transition-all hover:scale-110 ${
+                activeColor === color.value
+                  ? "border-[#02773b] ring-1 ring-[#02773b]/30"
+                  : "border-gray-200 dark:border-gray-600"
+              }`}
+              style={{ backgroundColor: color.value }}
+            />
+          ))}
+          {/* Remove color option */}
+          <button
+            type="button"
+            title="Remove"
+            onClick={() => {
+              onSelect("");
+              setIsOpen(false);
+            }}
+            className="w-6 h-6 rounded border-2 border-gray-200 dark:border-gray-600 bg-white dark:bg-gray-800 flex items-center justify-center text-gray-400 hover:text-red-500 hover:border-red-300 transition-all hover:scale-110"
+          >
+            <svg className="w-3.5 h-3.5" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2}>
+              <path strokeLinecap="round" strokeLinejoin="round" d="M6 18L18 6M6 6l12 12" />
+            </svg>
+          </button>
+        </div>
+      )}
+    </div>
+  );
+}
+
+/* ---------- line height picker ---------- */
+
+function LineHeightPicker({
+  onSelect,
+  currentValue,
+}: {
+  onSelect: (value: string) => void;
+  currentValue?: string;
+}) {
+  const [isOpen, setIsOpen] = useState(false);
+  const ref = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    function handleClickOutside(e: MouseEvent) {
+      if (ref.current && !ref.current.contains(e.target as Node)) {
+        setIsOpen(false);
+      }
+    }
+    document.addEventListener("mousedown", handleClickOutside);
+    return () => document.removeEventListener("mousedown", handleClickOutside);
+  }, []);
+
+  return (
+    <div ref={ref} className="relative">
+      <button
+        type="button"
+        onClick={() => setIsOpen(!isOpen)}
+        title="Line Spacing"
+        className="p-1.5 rounded-md transition-colors text-gray-600 dark:text-gray-400 hover:bg-gray-100 dark:hover:bg-gray-700 hover:text-gray-900 dark:hover:text-gray-200 flex items-center gap-0.5"
+      >
+        <svg className="w-4 h-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2}>
+          <path strokeLinecap="round" strokeLinejoin="round" d="M3 6h18M3 12h18M3 18h18" />
+          <path strokeLinecap="round" strokeLinejoin="round" d="M7 3v18" strokeWidth={1} strokeDasharray="2 2" />
+        </svg>
+        <svg className="w-2.5 h-2.5 opacity-60" viewBox="0 0 10 6" fill="currentColor">
+          <path d="M1 1l4 4 4-4" stroke="currentColor" strokeWidth="1.5" fill="none" strokeLinecap="round" strokeLinejoin="round" />
+        </svg>
+      </button>
+      {isOpen && (
+        <div className="absolute z-50 mt-1 left-0 bg-white dark:bg-gray-800 border border-gray-200 dark:border-gray-700 rounded-lg shadow-xl py-1 min-w-[90px]">
+          {LINE_HEIGHTS.map((lh) => (
+            <button
+              key={lh.value}
+              type="button"
+              onClick={() => {
+                onSelect(lh.value);
+                setIsOpen(false);
+              }}
+              className={`w-full text-left px-3 py-1.5 text-xs transition-colors ${
+                currentValue === lh.value
+                  ? "bg-[#02773b]/10 text-[#02773b] font-semibold"
+                  : "text-gray-700 dark:text-gray-300 hover:bg-gray-100 dark:hover:bg-gray-700"
+              }`}
+            >
+              {lh.label}
+            </button>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
 /* ---------- main component ---------- */
 
 export default function RichTextEditor({
@@ -87,6 +260,8 @@ export default function RichTextEditor({
   placeholder = "Type your memo content here...",
   editable = true,
 }: RichTextEditorProps) {
+  const [lineHeight, setLineHeight] = useState("1.5");
+
   const editor = useEditor({
     immediatelyRender: false,
     extensions: [
@@ -94,11 +269,17 @@ export default function RichTextEditor({
         heading: { levels: [1, 2, 3] },
         bulletList: { keepMarks: true },
         orderedList: { keepMarks: true },
+        strike: {},
+        horizontalRule: {},
       }),
       Underline,
       TextStyle,
       FontFamily,
       FontSize,
+      Color,
+      Highlight.configure({ multicolor: true }),
+      Superscript,
+      Subscript,
       TextAlign.configure({
         types: ["heading", "paragraph"],
       }),
@@ -120,8 +301,8 @@ export default function RichTextEditor({
     editorProps: {
       attributes: {
         class:
-          "prose prose-sm dark:prose-invert max-w-none px-5 py-4 min-h-[280px] focus:outline-none text-gray-900 dark:text-gray-100",
-        style: `font-family: '${DEFAULT_FONT}', Arial, sans-serif; font-size: ${DEFAULT_FONT_SIZE};`,
+          "prose prose-sm dark:prose-invert max-w-none px-6 py-5 min-h-[280px] focus:outline-none text-gray-900 dark:text-gray-100",
+        style: `font-family: '${DEFAULT_FONT}', Arial, sans-serif; font-size: ${DEFAULT_FONT_SIZE}; background: white;`,
       },
     },
   });
@@ -133,6 +314,55 @@ export default function RichTextEditor({
     // Only run when content prop changes externally
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [content]);
+
+  const handleIndent = useCallback(() => {
+    if (!editor) return;
+    // Use sinkListItem for lists, otherwise wrap in a blockquote-like padding via CSS
+    if (editor.isActive("listItem")) {
+      editor.chain().focus().sinkListItem("listItem").run();
+    } else {
+      // Apply padding-left via inline style on the current node
+      const { from } = editor.state.selection;
+      const node = editor.state.doc.resolve(from).parent;
+      const currentPadding = parseInt(
+        (node.attrs as Record<string, string>)?.style?.match(/padding-left:\s*(\d+)/)?.[1] || "0"
+      );
+      const newPadding = currentPadding + 40;
+      editor.chain().focus().updateAttributes("paragraph", {
+        style: `padding-left: ${newPadding}px`,
+      }).run();
+    }
+  }, [editor]);
+
+  const handleOutdent = useCallback(() => {
+    if (!editor) return;
+    if (editor.isActive("listItem")) {
+      editor.chain().focus().liftListItem("listItem").run();
+    } else {
+      const { from } = editor.state.selection;
+      const node = editor.state.doc.resolve(from).parent;
+      const currentPadding = parseInt(
+        (node.attrs as Record<string, string>)?.style?.match(/padding-left:\s*(\d+)/)?.[1] || "0"
+      );
+      const newPadding = Math.max(0, currentPadding - 40);
+      editor.chain().focus().updateAttributes("paragraph", {
+        style: newPadding > 0 ? `padding-left: ${newPadding}px` : "",
+      }).run();
+    }
+  }, [editor]);
+
+  const handleLineHeight = useCallback(
+    (value: string) => {
+      if (!editor) return;
+      setLineHeight(value);
+      // Apply line-height to the editor wrapper
+      const editorEl = document.querySelector(".ProseMirror");
+      if (editorEl) {
+        (editorEl as HTMLElement).style.lineHeight = value;
+      }
+    },
+    [editor]
+  );
 
   if (!editor) {
     return (
@@ -148,6 +378,8 @@ export default function RichTextEditor({
     editor.getAttributes("textStyle").fontSize || DEFAULT_FONT_SIZE;
   const currentFontFamily =
     editor.getAttributes("textStyle").fontFamily || DEFAULT_FONT;
+  const currentColor = editor.getAttributes("textStyle").color || "#000000";
+  const currentHighlight = editor.getAttributes("highlight").color || "";
 
   return (
     <div className="rounded-xl border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-950 overflow-hidden shadow-sm transition-shadow focus-within:shadow-md focus-within:border-[#02773b]/40">
@@ -205,8 +437,9 @@ export default function RichTextEditor({
           <select
             value={currentFontSize}
             onChange={(e) => {
-              if (e.target.value) {
-                editor.chain().focus().setFontSize(e.target.value).run();
+              const newSize = e.target.value;
+              if (newSize) {
+                editor.chain().focus().setFontSize(newSize).run();
               } else {
                 editor.chain().focus().unsetFontSize().run();
               }
@@ -215,14 +448,14 @@ export default function RichTextEditor({
           >
             {FONT_SIZES.map((s) => (
               <option key={s.value} value={s.value}>
-                {s.label}
+                {s.label}pt
               </option>
             ))}
           </select>
 
           <ToolbarDivider />
 
-          {/* Text formatting */}
+          {/* Text formatting: B I U S */}
           <ToolbarButton
             onClick={() => editor.chain().focus().toggleBold().run()}
             isActive={editor.isActive("bold")}
@@ -250,59 +483,63 @@ export default function RichTextEditor({
               <path d="M5 21h14v-2H5v2zm7-4a6 6 0 0 0 6-6V3h-2.5v8a3.5 3.5 0 1 1-7 0V3H6v8a6 6 0 0 0 6 6z" />
             </svg>
           </ToolbarButton>
-
-          <ToolbarDivider />
-
-          {/* Headings */}
           <ToolbarButton
-            onClick={() =>
-              editor.chain().focus().toggleHeading({ level: 1 }).run()
-            }
-            isActive={editor.isActive("heading", { level: 1 })}
-            title="Heading 1"
+            onClick={() => editor.chain().focus().toggleStrike().run()}
+            isActive={editor.isActive("strike")}
+            title="Strikethrough"
           >
-            <span className="text-xs font-bold leading-none">H1</span>
-          </ToolbarButton>
-          <ToolbarButton
-            onClick={() =>
-              editor.chain().focus().toggleHeading({ level: 2 }).run()
-            }
-            isActive={editor.isActive("heading", { level: 2 })}
-            title="Heading 2"
-          >
-            <span className="text-xs font-bold leading-none">H2</span>
-          </ToolbarButton>
-          <ToolbarButton
-            onClick={() =>
-              editor.chain().focus().toggleHeading({ level: 3 }).run()
-            }
-            isActive={editor.isActive("heading", { level: 3 })}
-            title="Heading 3"
-          >
-            <span className="text-xs font-bold leading-none">H3</span>
+            <svg className="w-4 h-4" viewBox="0 0 24 24" fill="currentColor">
+              <path d="M3 12h18v2H3v-2zm3-6h12v2H6V6zm2 10h8v2H8v-2z" />
+            </svg>
           </ToolbarButton>
 
           <ToolbarDivider />
 
-          {/* Lists */}
-          <ToolbarButton
-            onClick={() => editor.chain().focus().toggleBulletList().run()}
-            isActive={editor.isActive("bulletList")}
-            title="Bullet List"
-          >
-            <svg className="w-4 h-4" viewBox="0 0 24 24" fill="currentColor">
-              <path d="M4 6a1.5 1.5 0 1 1 0-3 1.5 1.5 0 0 1 0 3zm0 7.5a1.5 1.5 0 1 1 0-3 1.5 1.5 0 0 1 0 3zM4 21a1.5 1.5 0 1 1 0-3 1.5 1.5 0 0 1 0 3zM8 5h13v2H8V5zm0 7h13v2H8v-2zm0 7h13v2H8v-2z" />
-            </svg>
-          </ToolbarButton>
-          <ToolbarButton
-            onClick={() => editor.chain().focus().toggleOrderedList().run()}
-            isActive={editor.isActive("orderedList")}
-            title="Numbered List"
-          >
-            <svg className="w-4 h-4" viewBox="0 0 24 24" fill="currentColor">
-              <path d="M2 5V3.5h2V2h1.5v3.5H7V7H2V5zm0 10.5v-1h1.5v-.5H2v-1.5h3v1h-1.5v.5H5V16H2v-0.5zM3.25 19H2v1.5h3V22H2v-1.5h1.25v-.5H2V18.5h3v1h-1.75v-.5zM8 5h13v2H8V5zm0 7h13v2H8v-2zm0 7h13v2H8v-2z" />
-            </svg>
-          </ToolbarButton>
+          {/* Font color */}
+          <ColorPicker
+            colors={TEXT_COLORS}
+            activeColor={currentColor}
+            title="Font Color"
+            onSelect={(color) => {
+              if (color) {
+                editor.chain().focus().setColor(color).run();
+              } else {
+                editor.chain().focus().unsetColor().run();
+              }
+            }}
+            icon={
+              <div className="flex flex-col items-center">
+                <span className="text-xs font-bold leading-none" style={{ color: currentColor }}>A</span>
+                <div
+                  className="w-4 h-1 rounded-sm mt-0.5"
+                  style={{ backgroundColor: currentColor }}
+                />
+              </div>
+            }
+          />
+
+          {/* Highlight color */}
+          <ColorPicker
+            colors={HIGHLIGHT_COLORS}
+            activeColor={currentHighlight}
+            title="Highlight Color"
+            onSelect={(color) => {
+              if (color) {
+                editor.chain().focus().toggleHighlight({ color }).run();
+              } else {
+                editor.chain().focus().unsetHighlight().run();
+              }
+            }}
+            icon={
+              <div className="flex flex-col items-center">
+                <span className="text-xs font-bold leading-none">A</span>
+                <div
+                  className="w-4 h-1 rounded-sm mt-0.5"
+                  style={{ backgroundColor: currentHighlight || "#FEF08A" }}
+                />
+              </div>
+            }
+          />
 
           <ToolbarDivider />
 
@@ -348,6 +585,79 @@ export default function RichTextEditor({
 
           <ToolbarDivider />
 
+          {/* Indent / Outdent */}
+          <ToolbarButton onClick={handleIndent} title="Increase Indent">
+            <svg className="w-4 h-4" viewBox="0 0 24 24" fill="currentColor">
+              <path d="M3 3h18v2H3V3zm6 4h12v2H9V7zm0 4h12v2H9v-2zm0 4h12v2H9v-2zm-6 4h18v2H3v-2zM3 8l4 3-4 3V8z" />
+            </svg>
+          </ToolbarButton>
+          <ToolbarButton onClick={handleOutdent} title="Decrease Indent">
+            <svg className="w-4 h-4" viewBox="0 0 24 24" fill="currentColor">
+              <path d="M3 3h18v2H3V3zm6 4h12v2H9V7zm0 4h12v2H9v-2zm0 4h12v2H9v-2zm-6 4h18v2H3v-2zM7 8l-4 3 4 3V8z" />
+            </svg>
+          </ToolbarButton>
+
+          {/* Line height */}
+          <LineHeightPicker onSelect={handleLineHeight} currentValue={lineHeight} />
+
+          <ToolbarDivider />
+
+          {/* Lists */}
+          <ToolbarButton
+            onClick={() => editor.chain().focus().toggleBulletList().run()}
+            isActive={editor.isActive("bulletList")}
+            title="Bullet List"
+          >
+            <svg className="w-4 h-4" viewBox="0 0 24 24" fill="currentColor">
+              <path d="M4 6a1.5 1.5 0 1 1 0-3 1.5 1.5 0 0 1 0 3zm0 7.5a1.5 1.5 0 1 1 0-3 1.5 1.5 0 0 1 0 3zM4 21a1.5 1.5 0 1 1 0-3 1.5 1.5 0 0 1 0 3zM8 5h13v2H8V5zm0 7h13v2H8v-2zm0 7h13v2H8v-2z" />
+            </svg>
+          </ToolbarButton>
+          <ToolbarButton
+            onClick={() => editor.chain().focus().toggleOrderedList().run()}
+            isActive={editor.isActive("orderedList")}
+            title="Numbered List"
+          >
+            <svg className="w-4 h-4" viewBox="0 0 24 24" fill="currentColor">
+              <path d="M2 5V3.5h2V2h1.5v3.5H7V7H2V5zm0 10.5v-1h1.5v-.5H2v-1.5h3v1h-1.5v.5H5V16H2v-0.5zM3.25 19H2v1.5h3V22H2v-1.5h1.25v-.5H2V18.5h3v1h-1.75v-.5zM8 5h13v2H8V5zm0 7h13v2H8v-2zm0 7h13v2H8v-2z" />
+            </svg>
+          </ToolbarButton>
+
+          <ToolbarDivider />
+
+          {/* Horizontal rule */}
+          <ToolbarButton
+            onClick={() => editor.chain().focus().setHorizontalRule().run()}
+            title="Horizontal Rule"
+          >
+            <svg className="w-4 h-4" viewBox="0 0 24 24" fill="currentColor">
+              <path d="M3 11h18v2H3z" />
+            </svg>
+          </ToolbarButton>
+
+          {/* Superscript */}
+          <ToolbarButton
+            onClick={() => editor.chain().focus().toggleSuperscript().run()}
+            isActive={editor.isActive("superscript")}
+            title="Superscript"
+          >
+            <span className="text-xs font-bold leading-none">
+              T<sup className="text-[8px]">1</sup>
+            </span>
+          </ToolbarButton>
+
+          {/* Subscript */}
+          <ToolbarButton
+            onClick={() => editor.chain().focus().toggleSubscript().run()}
+            isActive={editor.isActive("subscript")}
+            title="Subscript"
+          >
+            <span className="text-xs font-bold leading-none">
+              T<sub className="text-[8px]">1</sub>
+            </span>
+          </ToolbarButton>
+
+          <ToolbarDivider />
+
           {/* Table */}
           <ToolbarButton
             onClick={() =>
@@ -362,6 +672,37 @@ export default function RichTextEditor({
             <svg className="w-4 h-4" viewBox="0 0 24 24" fill="currentColor">
               <path d="M4 4h16v16H4V4zm2 4v4h4V8H6zm6 0v4h4V8h-4zm-6 6v4h4v-4H6zm6 0v4h4v-4h-4z" />
             </svg>
+          </ToolbarButton>
+
+          <ToolbarDivider />
+
+          {/* Headings */}
+          <ToolbarButton
+            onClick={() =>
+              editor.chain().focus().toggleHeading({ level: 1 }).run()
+            }
+            isActive={editor.isActive("heading", { level: 1 })}
+            title="Heading 1"
+          >
+            <span className="text-xs font-bold leading-none">H1</span>
+          </ToolbarButton>
+          <ToolbarButton
+            onClick={() =>
+              editor.chain().focus().toggleHeading({ level: 2 }).run()
+            }
+            isActive={editor.isActive("heading", { level: 2 })}
+            title="Heading 2"
+          >
+            <span className="text-xs font-bold leading-none">H2</span>
+          </ToolbarButton>
+          <ToolbarButton
+            onClick={() =>
+              editor.chain().focus().toggleHeading({ level: 3 }).run()
+            }
+            isActive={editor.isActive("heading", { level: 3 })}
+            title="Heading 3"
+          >
+            <span className="text-xs font-bold leading-none">H3</span>
           </ToolbarButton>
 
           <ToolbarDivider />
@@ -408,8 +749,12 @@ export default function RichTextEditor({
         </div>
       )}
 
-      {/* Editor area */}
-      <EditorContent editor={editor} />
+      {/* Editor area - white background like a document page */}
+      <div className="bg-gray-100 dark:bg-gray-950 p-4">
+        <div className="bg-white dark:bg-white rounded shadow-sm max-w-[210mm] mx-auto">
+          <EditorContent editor={editor} />
+        </div>
+      </div>
     </div>
   );
 }

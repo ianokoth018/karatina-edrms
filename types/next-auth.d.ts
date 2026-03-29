@@ -11,6 +11,7 @@ declare module "next-auth" {
       permissions: string[];
       department: string;
       employeeId: string;
+      jobTitle: string;
     };
     error?: string;
   }
@@ -23,6 +24,7 @@ declare module "next-auth" {
     permissions: string[];
     department: string;
     employeeId: string;
+    jobTitle: string;
   }
 }
 
@@ -33,6 +35,7 @@ declare module "next-auth/jwt" {
     permissions: string[];
     department: string;
     employeeId: string;
+    jobTitle: string;
     accessTokenExpires: number;
     refreshToken: string;
     refreshTokenExpires: number;

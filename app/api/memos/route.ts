@@ -190,7 +190,7 @@ export async function POST(req: NextRequest) {
       cc,
       department: memoDepartment,
       departmentOffice,
-      departmentAbbr,
+      designation,
       referenceNumber: customRef,
     } = body as {
       to: string;
@@ -203,7 +203,7 @@ export async function POST(req: NextRequest) {
       cc?: string[];
       department?: string;
       departmentOffice?: string;
-      departmentAbbr?: string;
+      designation?: string;
       referenceNumber?: string;
     };
 
@@ -282,7 +282,7 @@ export async function POST(req: NextRequest) {
     }
 
     const department = memoDepartment || session.user.department || "GEN";
-    const deptAbbr = departmentAbbr || department.replace(/[^A-Z0-9]/gi, "").slice(0, 6).toUpperCase() || "GEN";
+    const deptAbbr = department.replace(/[^A-Z0-9]/gi, "").slice(0, 6).toUpperCase() || "GEN";
 
     // Use custom reference number or auto-generate
     let memoReference: string;
@@ -342,7 +342,7 @@ export async function POST(req: NextRequest) {
             fromId: initiator.id,
             department,
             departmentOffice: departmentOffice ?? "",
-            departmentAbbr: departmentAbbr ?? "",
+            designation: designation ?? "",
             recommenders: recommenderUsers.map((r) => ({
               id: r.id,
               name: r.displayName,
@@ -392,7 +392,7 @@ export async function POST(req: NextRequest) {
             fromJobTitle: initiator.jobTitle,
             department,
             departmentOffice: departmentOffice ?? "",
-            departmentAbbr: departmentAbbr ?? "",
+            designation: designation ?? "",
             memoReference,
             documentId: document.id,
             cc: cc ?? [],

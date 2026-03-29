@@ -75,6 +75,7 @@ export const { handlers, auth, signIn, signOut } = NextAuth({
           permissions: [...new Set(permissions)],
           department: user.department ?? "",
           employeeId: user.employeeId ?? "",
+          jobTitle: user.jobTitle ?? "",
         };
       },
     }),
@@ -98,12 +99,14 @@ export const { handlers, auth, signIn, signOut } = NextAuth({
           permissions: string[];
           department: string;
           employeeId: string;
+          jobTitle: string;
         };
         token.id = user.id;
         token.roles = u.roles;
         token.permissions = u.permissions;
         token.department = u.department;
         token.employeeId = u.employeeId;
+        token.jobTitle = u.jobTitle;
 
         // Token rotation fields
         token.accessTokenExpires = Date.now() + ACCESS_TOKEN_MAX_AGE_MS;
@@ -141,6 +144,7 @@ export const { handlers, auth, signIn, signOut } = NextAuth({
           ];
           token.department = freshUser.department ?? "";
           token.employeeId = freshUser.employeeId ?? "";
+          token.jobTitle = freshUser.jobTitle ?? "";
           token.name = freshUser.displayName;
         }
 
@@ -203,6 +207,7 @@ export const { handlers, auth, signIn, signOut } = NextAuth({
           ];
           token.department = freshUser.department ?? "";
           token.employeeId = freshUser.employeeId ?? "";
+          token.jobTitle = freshUser.jobTitle ?? "";
           token.name = freshUser.displayName;
 
           return token;
@@ -224,6 +229,7 @@ export const { handlers, auth, signIn, signOut } = NextAuth({
         session.user.permissions = token.permissions as string[];
         session.user.department = token.department as string;
         session.user.employeeId = token.employeeId as string;
+        session.user.jobTitle = token.jobTitle as string;
       }
 
       // Surface token-refresh errors to the client so it can redirect to login

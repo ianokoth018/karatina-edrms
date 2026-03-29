@@ -31,35 +31,28 @@ const STEPS = [
   { num: 4, label: "Submit" },
 ];
 
-/** Maps department names to department office / abbreviation for memo header */
-const DEPARTMENT_MAP: Record<string, { office: string; abbr: string }> = {
+/** Maps department names to department office title for memo header */
+const DEPARTMENT_MAP: Record<string, { office: string }> = {
   "Registrar (AA)": {
     office: "OFFICE OF THE REGISTRAR",
-    abbr: "ACADEMIC AFFAIRS",
   },
   "Vice Chancellor": {
     office: "OFFICE OF THE VICE CHANCELLOR",
-    abbr: "VC",
   },
   "Deputy Vice Chancellor (ARSA)": {
     office: "OFFICE OF THE DEPUTY VICE CHANCELLOR",
-    abbr: "ACADEMIC, RESEARCH & STUDENT AFFAIRS",
   },
   "Deputy Vice Chancellor (AFD)": {
     office: "OFFICE OF THE DEPUTY VICE CHANCELLOR",
-    abbr: "ADMINISTRATION, FINANCE & DEVELOPMENT",
   },
   Finance: {
     office: "OFFICE OF THE FINANCE OFFICER",
-    abbr: "FINANCE",
   },
   ICT: {
     office: "DIRECTORATE OF ICT",
-    abbr: "ICT",
   },
   "Human Resources": {
     office: "DIRECTORATE OF HUMAN RESOURCES",
-    abbr: "HR",
   },
 };
 
@@ -377,7 +370,7 @@ export default function NewMemoPage() {
   const [ccUsers, setCcUsers] = useState<UserOption[]>([]);
   const [department, setDepartment] = useState("");
   const [departmentOffice, setDepartmentOffice] = useState("");
-  const [departmentAbbr, setDepartmentAbbr] = useState("");
+  const [designation, setDesignation] = useState("");
   const [referenceNumber, setReferenceNumber] = useState("");
   const [subject, setSubject] = useState("");
   const [memoBody, setMemoBody] = useState("");
@@ -394,7 +387,7 @@ export default function NewMemoPage() {
   const finalApprover =
     approverSameAsRecipient && toMode === "search" ? recipient : approver;
 
-  /* ---------- auto-fill department from session ---------- */
+  /* ---------- auto-fill department & designation from session ---------- */
   useEffect(() => {
     if (session?.user?.department && !department) {
       const dept = session.user.department;
@@ -402,14 +395,15 @@ export default function NewMemoPage() {
       const mapped = DEPARTMENT_MAP[dept];
       if (mapped) {
         setDepartmentOffice(mapped.office);
-        setDepartmentAbbr(mapped.abbr);
       } else {
         setDepartmentOffice(`OFFICE OF THE ${dept.toUpperCase()}`);
-        setDepartmentAbbr(dept.toUpperCase());
       }
     }
+    if (session?.user?.jobTitle && !designation) {
+      setDesignation(session.user.jobTitle);
+    }
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [session?.user?.department]);
+  }, [session?.user?.department, session?.user?.jobTitle]);
 
   /* ---------- helpers ---------- */
 
@@ -489,10 +483,8 @@ export default function NewMemoPage() {
     const mapped = DEPARTMENT_MAP[dept];
     if (mapped) {
       setDepartmentOffice(mapped.office);
-      setDepartmentAbbr(mapped.abbr);
     } else {
       setDepartmentOffice(`OFFICE OF THE ${dept.toUpperCase()}`);
-      setDepartmentAbbr(dept.toUpperCase());
     }
   }
 
@@ -508,7 +500,7 @@ export default function NewMemoPage() {
   const memoPreviewProps = {
     universityName: "KARATINA UNIVERSITY",
     departmentOffice: departmentOffice || "OFFICE OF THE REGISTRAR",
-    departmentAbbr: departmentAbbr || "ACADEMIC AFFAIRS",
+    designation: designation || "",
     phone: "+254 0716135171/0723683150",
     poBox: "P.O Box 1957-10101,KARATINA",
     from: session?.user?.name ?? "",
@@ -518,7 +510,7 @@ export default function NewMemoPage() {
     subject,
     bodyHtml: memoBody,
     senderName: session?.user?.name ?? "",
-    senderTitle: session?.user?.department ?? "",
+    senderTitle: designation || (session?.user?.department ?? ""),
     copyTo: ccUsers.map((u) => u.displayName),
     recommenders: recommenders.map((r) => ({
       name: r.displayName,
@@ -560,7 +552,7 @@ export default function NewMemoPage() {
           cc: ccUsers.map((u) => u.id),
           department: department.trim(),
           departmentOffice: departmentOffice.trim(),
-          departmentAbbr: departmentAbbr.trim(),
+          designation: designation.trim(),
           referenceNumber: referenceNumber.trim() || undefined,
         }),
       });
@@ -723,7 +715,7 @@ export default function NewMemoPage() {
               Compose Memo
             </h2>
 
-            {/* Row 1: Department */}
+            {/* Row 1: Department, Office Title, Designation (all read-only) */}
             <div className="grid grid-cols-1 sm:grid-cols-3 gap-5">
               <div>
                 <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1.5">
@@ -732,12 +724,12 @@ export default function NewMemoPage() {
                 <input
                   type="text"
                   value={department}
-                  onChange={(e) => handleDepartmentChange(e.target.value)}
-                  placeholder="e.g., Registrar (AA)"
-                  className="w-full h-11 rounded-xl border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-900 px-4 text-sm text-gray-900 dark:text-gray-100 placeholder:text-gray-400 dark:placeholder:text-gray-500 transition-all focus:border-[#02773b] focus:ring-2 focus:ring-[#02773b]/20 outline-none"
+                  placeholder="Auto-filled from your profile"
+                  className="w-full h-11 rounded-xl border border-gray-200 dark:border-gray-700 bg-gray-100 dark:bg-gray-800 text-gray-500 dark:text-gray-400 cursor-not-allowed px-4 text-sm placeholder:text-gray-400 dark:placeholder:text-gray-500 outline-none"
+                  disabled
                 />
                 <p className="text-xs text-gray-400 dark:text-gray-500 mt-1">
-                  Determines the memo header office
+                  Auto-filled from your profile
                 </p>
               </div>
               <div>
@@ -747,22 +739,25 @@ export default function NewMemoPage() {
                 <input
                   type="text"
                   value={departmentOffice}
-                  onChange={(e) => setDepartmentOffice(e.target.value)}
-                  placeholder="e.g., OFFICE OF THE REGISTRAR"
-                  className="w-full h-11 rounded-xl border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-900 px-4 text-sm text-gray-900 dark:text-gray-100 placeholder:text-gray-400 dark:placeholder:text-gray-500 transition-all focus:border-[#02773b] focus:ring-2 focus:ring-[#02773b]/20 outline-none"
+                  placeholder="Auto-filled from department"
+                  className="w-full h-11 rounded-xl border border-gray-200 dark:border-gray-700 bg-gray-100 dark:bg-gray-800 text-gray-500 dark:text-gray-400 cursor-not-allowed px-4 text-sm placeholder:text-gray-400 dark:placeholder:text-gray-500 outline-none"
+                  disabled
                 />
               </div>
               <div>
                 <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1.5">
-                  Abbreviation
+                  Designation
                 </label>
                 <input
                   type="text"
-                  value={departmentAbbr}
-                  onChange={(e) => setDepartmentAbbr(e.target.value)}
-                  placeholder="e.g., ACADEMIC AFFAIRS"
-                  className="w-full h-11 rounded-xl border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-900 px-4 text-sm text-gray-900 dark:text-gray-100 placeholder:text-gray-400 dark:placeholder:text-gray-500 transition-all focus:border-[#02773b] focus:ring-2 focus:ring-[#02773b]/20 outline-none"
+                  value={designation}
+                  placeholder="Auto-filled from your profile"
+                  className="w-full h-11 rounded-xl border border-gray-200 dark:border-gray-700 bg-gray-100 dark:bg-gray-800 text-gray-500 dark:text-gray-400 cursor-not-allowed px-4 text-sm placeholder:text-gray-400 dark:placeholder:text-gray-500 outline-none"
+                  disabled
                 />
+                <p className="text-xs text-gray-400 dark:text-gray-500 mt-1">
+                  Your job title / role
+                </p>
               </div>
             </div>
 
