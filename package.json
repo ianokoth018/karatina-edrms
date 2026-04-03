@@ -3,7 +3,9 @@
   "version": "0.1.0",
   "private": true,
   "scripts": {
-    "dev": "next dev",
+    "dev": "npx tsx scripts/dev-with-capture.ts",
+    "dev:next": "next dev",
+    "dev:capture": "npx tsx scripts/capture-worker.ts",
     "build": "next build",
     "start": "next start",
     "lint": "eslint",
@@ -32,6 +34,7 @@
     "@types/nodemailer": "^7.0.11",
     "@types/uuid": "^10.0.0",
     "bcryptjs": "^3.0.3",
+    "chokidar": "^5.0.0",
     "date-fns": "^4.1.0",
     "nanoid": "^5.1.7",
     "next": "16.2.1",

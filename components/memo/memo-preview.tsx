@@ -103,29 +103,46 @@ export default function MemoPreview({
         style={{
           position: "relative",
           zIndex: 2,
-          padding: "15mm 20mm 10mm 20mm",
+          padding: "10mm 18mm 10mm 18mm",
         }}
       >
-        {/* ---- University Header (centered, bold) ---- */}
+        {/* ---- University Header with crest ---- */}
         <div style={{ textAlign: "center", marginBottom: "1mm" }}>
           <div
             style={{
-              fontWeight: "bold",
-              fontSize: "16pt",
-              letterSpacing: "0.5px",
-              textTransform: "uppercase",
+              display: "flex",
+              alignItems: "center",
+              justifyContent: "center",
+              gap: "3mm",
             }}
           >
-            {universityName}
-          </div>
-          <div
-            style={{
-              fontWeight: "bold",
-              fontSize: "12pt",
-              marginTop: "1mm",
-            }}
-          >
-            {departmentOffice}
+            {/* eslint-disable-next-line @next/next/no-img-element */}
+            <img
+              src="/karu-crest.png"
+              alt="KarU Crest"
+              style={{ height: "14mm", width: "14mm", objectFit: "contain" }}
+            />
+            <div>
+              <div
+                style={{
+                  fontWeight: "bold",
+                  fontSize: "16pt",
+                  letterSpacing: "0.5px",
+                  textTransform: "uppercase",
+                }}
+              >
+                {universityName}
+              </div>
+              <div
+                style={{
+                  fontWeight: "bold",
+                  fontSize: "12pt",
+                  marginTop: "1mm",
+                }}
+              >
+                {departmentOffice}
+              </div>
+            </div>
           </div>
         </div>
 
@@ -151,17 +168,17 @@ export default function MemoPreview({
           }}
         />
 
-        {/* ---- INTERNAL MEMO (centered, bold, underlined) ---- */}
+        {/* ---- Internal Memo (centered, bold, underlined) ---- */}
         <div
           style={{
             textAlign: "center",
             fontWeight: "bold",
             fontSize: "13pt",
-            marginBottom: "4mm",
+            marginBottom: "3mm",
             textDecoration: "underline",
           }}
         >
-          INTERNAL MEMO
+          Internal Memo
         </div>
 
         {/* ---- FROM / DATE row ---- */}
@@ -224,16 +241,47 @@ export default function MemoPreview({
           style={{
             fontSize: "12pt",
             lineHeight: "1.5",
-            minHeight: "60mm",
-            marginBottom: "8mm",
+            minHeight: "40mm",
+            marginBottom: "6mm",
             fontFamily: "'Arial Narrow', Arial, sans-serif",
           }}
           dangerouslySetInnerHTML={{ __html: bodyHtml }}
         />
 
+        {/* ---- Initiator / Sender signature ---- */}
+        {(senderName || senderTitle) && (
+          <div style={{ marginBottom: "6mm" }}>
+            <div
+              style={{
+                borderBottom: "1px dashed #999",
+                minWidth: "50mm",
+                maxWidth: "60mm",
+                height: "7mm",
+                marginBottom: "1mm",
+              }}
+            />
+            {senderName && (
+              <div style={{ fontWeight: "bold", fontSize: "12pt" }}>
+                {senderName}
+              </div>
+            )}
+            {senderTitle && (
+              <div
+                style={{
+                  fontWeight: "bold",
+                  fontSize: "12pt",
+                  textTransform: "uppercase",
+                }}
+              >
+                {senderTitle}
+              </div>
+            )}
+          </div>
+        )}
+
         {/* ---- Recommenders ---- */}
         {recommenders && recommenders.length > 0 && (
-          <div style={{ marginTop: "8mm", marginBottom: "6mm" }}>
+          <div style={{ marginBottom: "4mm" }}>
             <div
               style={{
                 fontWeight: "bold",
@@ -312,28 +360,6 @@ export default function MemoPreview({
                 </div>
               </div>
             ))}
-          </div>
-        )}
-
-        {/* ---- Signature area ---- */}
-        {(senderName || senderTitle) && (
-          <div style={{ marginTop: "12mm", marginBottom: "6mm" }}>
-            {senderName && (
-              <div style={{ fontWeight: "bold", fontSize: "12pt" }}>
-                {senderName}
-              </div>
-            )}
-            {senderTitle && (
-              <div
-                style={{
-                  fontWeight: "bold",
-                  fontSize: "12pt",
-                  textTransform: "uppercase",
-                }}
-              >
-                {senderTitle}
-              </div>
-            )}
           </div>
         )}
 

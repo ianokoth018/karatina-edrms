@@ -217,7 +217,7 @@ export default function Header({ onMenuToggle }: HeaderProps) {
   }
 
   return (
-    <header className="sticky top-0 z-30 h-16 bg-white dark:bg-gray-900 border-b border-gray-200 dark:border-gray-800 flex items-center gap-4 px-4 lg:px-6">
+    <header className="flex-shrink-0 z-30 h-16 bg-white dark:bg-gray-900 border-b border-gray-200 dark:border-gray-800 flex items-center gap-4 px-4 lg:px-6">
       {/* Mobile hamburger */}
       <button
         onClick={onMenuToggle}

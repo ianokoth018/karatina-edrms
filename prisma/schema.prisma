@@ -342,6 +342,31 @@ enum TaskAction {
   DELEGATED
 }
 
+// === Casefolder Access Control ===
+model CasefolderACL {
+  id              String   @id @default(cuid())
+  formTemplateId  String   // the casefolder (FormTemplate) this ACL applies to
+  userId          String?  // grant to a specific user
+  roleId          String?  // OR grant to a role
+  departmentId    String?  // OR grant to an entire department (by name)
+  canView         Boolean  @default(true)   // can see the casefolder and its documents
+  canCreate       Boolean  @default(false)  // can file new documents into the casefolder
+  canEdit         Boolean  @default(false)  // can edit document metadata
+  canDelete       Boolean  @default(false)  // can dispose/delete documents
+  canShare        Boolean  @default(false)  // can share/circulate documents
+  canDownload     Boolean  @default(false)  // can download/print documents
+  canManageACL    Boolean  @default(false)  // can manage access controls on this casefolder
+  grantedById     String                    // who granted this access
+  grantedAt       DateTime @default(now())
+  expiresAt       DateTime?                 // optional expiry for temporary access
+  notes           String?                   // reason for granting
+
+  @@index([formTemplateId])
+  @@index([userId])
+  @@index([roleId])
+  @@map("casefolder_acls")
+}
+
 // === Forms ===
 model FormTemplate {
   id          String @id @default(cuid())
@@ -447,6 +472,62 @@ enum PhysicalRecordStatus {
   TRANSFERRED
   ARCHIVED
   DISPOSED
+}
+
+// === Document Capture (Hot Folder) ===
+model CaptureProfile {
+  id                String   @id @default(cuid())
+  name              String   @unique
+  description       String?
+  folderPath        String   // absolute path to the watched folder
+  processedPath     String?  // move files here after processing (null = delete)
+  errorPath         String?  // move failed files here
+  fileTypes         String[] // allowed extensions: ["pdf", "docx", "tiff", "jpg"]
+  pollingInterval   Int      @default(30) // seconds between scans
+  isActive          Boolean  @default(true)
+  formTemplateId    String?  // target casefolder (FormTemplate) for auto-classification
+  department        String?  // default department for captured documents
+  classificationNodeId String?
+  metadataMapping   Json     @default("{}") // filename pattern → field mapping rules
+  duplicateAction   String   @default("SKIP") // SKIP, VERSION, FLAG
+  autoWorkflow      Boolean  @default(false)
+  workflowTemplateId String?
+  lastScanAt        DateTime?
+  createdById       String
+  createdAt         DateTime @default(now())
+  updatedAt         DateTime @updatedAt
+  logs              CaptureLog[]
+
+  @@map("capture_profiles")
+}
+
+model CaptureLog {
+  id              String   @id @default(cuid())
+  profileId       String
+  profile         CaptureProfile @relation(fields: [profileId], references: [id], onDelete: Cascade)
+  fileName        String
+  filePath        String
+  fileSize        BigInt?
+  fileHash        String?  // SHA-256 for duplicate detection
+  status          CaptureStatus @default(PENDING)
+  documentId      String?  // linked document if successfully captured
+  errorMessage    String?
+  metadata        Json     @default("{}")  // extracted metadata
+  processedAt     DateTime?
+  createdAt       DateTime @default(now())
+
+  @@index([profileId, status])
+  @@index([fileHash])
+  @@map("capture_logs")
+}
+
+enum CaptureStatus {
+  PENDING
+  PROCESSING
+  CAPTURED
+  DUPLICATE
+  ERROR
+  SKIPPED
 }
 
 // === Student Portal Integration ===

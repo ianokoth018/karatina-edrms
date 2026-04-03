@@ -151,6 +151,116 @@ export default function DocumentDetailPage({
   /* confirm delete */
   const [showDeleteConfirm, setShowDeleteConfirm] = useState(false);
 
+  /* access control */
+  const [showGrantAccess, setShowGrantAccess] = useState(false);
+  const [grantType, setGrantType] = useState<"user" | "role">("user");
+  const [grantSearch, setGrantSearch] = useState("");
+  const [grantSearchResults, setGrantSearchResults] = useState<{ id: string; name: string; displayName?: string; email?: string }[]>([]);
+  const [grantSelectedId, setGrantSelectedId] = useState("");
+  const [grantSelectedName, setGrantSelectedName] = useState("");
+  const [grantPerms, setGrantPerms] = useState({ canRead: true, canWrite: false, canDelete: false, canShare: false });
+  const [isGranting, setIsGranting] = useState(false);
+  const grantDebounce = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  /* legal hold */
+  const [showLegalHold, setShowLegalHold] = useState(false);
+  const [legalHoldReason, setLegalHoldReason] = useState("");
+  const [isTogglingHold, setIsTogglingHold] = useState(false);
+
+  /* access control search */
+  function searchGrantTarget(query: string) {
+    setGrantSearch(query);
+    setGrantSelectedId("");
+    setGrantSelectedName("");
+    if (grantDebounce.current) clearTimeout(grantDebounce.current);
+    if (query.trim().length < 2) { setGrantSearchResults([]); return; }
+    grantDebounce.current = setTimeout(async () => {
+      try {
+        const endpoint = grantType === "user"
+          ? `/api/users/search?q=${encodeURIComponent(query.trim())}&limit=8`
+          : `/api/admin/roles?q=${encodeURIComponent(query.trim())}`;
+        const res = await fetch(endpoint);
+        if (res.ok) {
+          const data = await res.json();
+          setGrantSearchResults(grantType === "user" ? (data.users ?? []) : (data.roles ?? []));
+        }
+      } catch { /* ignore */ }
+    }, 300);
+  }
+
+  async function handleGrantAccess() {
+    if (!grantSelectedId || !doc) return;
+    setIsGranting(true);
+    try {
+      const body = grantType === "user"
+        ? { userId: grantSelectedId, ...grantPerms }
+        : { roleId: grantSelectedId, ...grantPerms };
+      const res = await fetch(`/api/documents/${id}/access`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(body),
+      });
+      if (!res.ok) {
+        const err = await res.json().catch(() => null);
+        throw new Error(err?.error ?? "Failed to grant access");
+      }
+      setShowGrantAccess(false);
+      setGrantSearch("");
+      setGrantSelectedId("");
+      setGrantSelectedName("");
+      setGrantPerms({ canRead: true, canWrite: false, canDelete: false, canShare: false });
+      setGrantSearchResults([]);
+      fetchDocument();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Failed to grant access");
+    } finally {
+      setIsGranting(false);
+    }
+  }
+
+  async function handleRevokeAccess(accessId: string) {
+    try {
+      const res = await fetch(`/api/documents/${id}/access`, {
+        method: "DELETE",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ accessId }),
+      });
+      if (!res.ok) {
+        const err = await res.json().catch(() => null);
+        throw new Error(err?.error ?? "Failed to revoke access");
+      }
+      fetchDocument();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Failed to revoke access");
+    }
+  }
+
+  async function handleToggleLegalHold() {
+    if (!doc) return;
+    setIsTogglingHold(true);
+    try {
+      if (doc.isOnLegalHold) {
+        const res = await fetch(`/api/documents/${id}/legal-hold`, { method: "DELETE" });
+        if (!res.ok) throw new Error("Failed to release legal hold");
+      } else {
+        if (!legalHoldReason.trim()) return;
+        const res = await fetch(`/api/documents/${id}/legal-hold`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ reason: legalHoldReason.trim() }),
+        });
+        if (!res.ok) throw new Error("Failed to place legal hold");
+      }
+      setShowLegalHold(false);
+      setLegalHoldReason("");
+      fetchDocument();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Legal hold action failed");
+    } finally {
+      setIsTogglingHold(false);
+    }
+  }
+
   /* fetch document */
   async function fetchDocument() {
     setIsLoading(true);
@@ -775,50 +885,297 @@ export default function DocumentDetailPage({
           </div>
         )}
 
-        {/* Access tab */}
+        {/* Access & Legal Hold tab */}
         {activeTab === "access" && (
-          <div className="bg-white dark:bg-gray-900 rounded-xl border border-gray-200 dark:border-gray-800 overflow-hidden">
-            <table className="w-full text-sm">
-              <thead>
-                <tr className="border-b border-gray-200 dark:border-gray-800 bg-gray-50 dark:bg-gray-800/50">
-                  <th className="text-left px-4 py-3 font-medium text-gray-500 dark:text-gray-400">User / Role</th>
-                  <th className="text-center px-4 py-3 font-medium text-gray-500 dark:text-gray-400">Read</th>
-                  <th className="text-center px-4 py-3 font-medium text-gray-500 dark:text-gray-400">Write</th>
-                  <th className="text-center px-4 py-3 font-medium text-gray-500 dark:text-gray-400">Delete</th>
-                  <th className="text-center px-4 py-3 font-medium text-gray-500 dark:text-gray-400">Share</th>
-                </tr>
-              </thead>
-              <tbody className="divide-y divide-gray-100 dark:divide-gray-800">
-                {doc.accessControls.length === 0 ? (
-                  <tr>
-                    <td colSpan={5} className="px-4 py-8 text-center text-gray-400 dark:text-gray-500">
-                      No specific access controls set. Default permissions apply.
-                    </td>
-                  </tr>
+          <div className="space-y-5">
+            {/* Legal Hold Card */}
+            <div className={`rounded-2xl border overflow-hidden ${doc.isOnLegalHold ? "border-red-300 dark:border-red-700 bg-red-50/50 dark:bg-red-950/20" : "border-gray-200 dark:border-gray-800 bg-white dark:bg-gray-900"}`}>
+              <div className="px-5 py-3 border-b border-gray-100 dark:border-gray-800 flex items-center justify-between">
+                <h3 className="text-sm font-semibold text-gray-900 dark:text-gray-100 flex items-center gap-2">
+                  <svg className="w-4 h-4 text-red-500" fill="none" viewBox="0 0 24 24" strokeWidth={1.5} stroke="currentColor">
+                    <path strokeLinecap="round" strokeLinejoin="round" d="M16.5 10.5V6.75a4.5 4.5 0 1 0-9 0v3.75m-.75 11.25h10.5a2.25 2.25 0 0 0 2.25-2.25v-6.75a2.25 2.25 0 0 0-2.25-2.25H6.75a2.25 2.25 0 0 0-2.25 2.25v6.75a2.25 2.25 0 0 0 2.25 2.25Z" />
+                  </svg>
+                  Legal Hold
+                </h3>
+                <button
+                  onClick={() => {
+                    setShowLegalHold(true);
+                    setLegalHoldReason(doc.legalHoldReason ?? "");
+                  }}
+                  className={`h-8 px-3 rounded-lg text-xs font-medium transition-colors ${
+                    doc.isOnLegalHold
+                      ? "bg-red-100 dark:bg-red-900/30 text-red-700 dark:text-red-400 hover:bg-red-200 dark:hover:bg-red-900/50"
+                      : "bg-gray-100 dark:bg-gray-800 text-gray-700 dark:text-gray-300 hover:bg-gray-200 dark:hover:bg-gray-700"
+                  }`}
+                >
+                  {doc.isOnLegalHold ? "Release Hold" : "Place on Hold"}
+                </button>
+              </div>
+              <div className="px-5 py-3">
+                {doc.isOnLegalHold ? (
+                  <div className="flex items-start gap-3">
+                    <div className="w-8 h-8 rounded-full bg-red-100 dark:bg-red-900/30 flex items-center justify-center flex-shrink-0 mt-0.5">
+                      <svg className="w-4 h-4 text-red-600 dark:text-red-400" fill="none" viewBox="0 0 24 24" strokeWidth={2} stroke="currentColor">
+                        <path strokeLinecap="round" strokeLinejoin="round" d="M12 9v3.75m-9.303 3.376c-.866 1.5.217 3.374 1.948 3.374h14.71c1.73 0 2.813-1.874 1.948-3.374L13.949 3.378c-.866-1.5-3.032-1.5-3.898 0L2.697 16.126ZM12 15.75h.007v.008H12v-.008Z" />
+                      </svg>
+                    </div>
+                    <div>
+                      <p className="text-sm font-medium text-red-700 dark:text-red-400">Document is under legal hold</p>
+                      <p className="text-xs text-red-600/80 dark:text-red-400/70 mt-0.5">This document cannot be modified, disposed, or deleted.</p>
+                      {doc.legalHoldReason && (
+                        <p className="text-sm text-gray-700 dark:text-gray-300 mt-2">
+                          <span className="font-medium">Reason:</span> {doc.legalHoldReason}
+                        </p>
+                      )}
+                    </div>
+                  </div>
                 ) : (
-                  doc.accessControls.map((ac) => (
-                    <tr key={ac.id} className="hover:bg-gray-50 dark:hover:bg-gray-800/50">
-                      <td className="px-4 py-3 text-gray-900 dark:text-gray-100 font-medium">
-                        {ac.userId ? `User: ${ac.userId}` : ac.roleId ? `Role: ${ac.roleId}` : "Unknown"}
-                      </td>
-                      {([ac.canRead, ac.canWrite, ac.canDelete, ac.canShare] as boolean[]).map((perm, i) => (
-                        <td key={i} className="px-4 py-3 text-center">
-                          {perm ? (
-                            <svg className="w-4 h-4 text-emerald-500 mx-auto" fill="none" viewBox="0 0 24 24" strokeWidth={2} stroke="currentColor">
-                              <path strokeLinecap="round" strokeLinejoin="round" d="m4.5 12.75 6 6 9-13.5" />
-                            </svg>
-                          ) : (
-                            <svg className="w-4 h-4 text-gray-300 dark:text-gray-600 mx-auto" fill="none" viewBox="0 0 24 24" strokeWidth={2} stroke="currentColor">
-                              <path strokeLinecap="round" strokeLinejoin="round" d="M6 18 18 6M6 6l12 12" />
-                            </svg>
-                          )}
-                        </td>
-                      ))}
-                    </tr>
-                  ))
+                  <p className="text-sm text-gray-500 dark:text-gray-400">
+                    No legal hold is active on this document. Place a legal hold to prevent modification or disposal.
+                  </p>
                 )}
-              </tbody>
-            </table>
+              </div>
+            </div>
+
+            {/* Access Controls Card */}
+            <div className="bg-white dark:bg-gray-900 rounded-2xl border border-gray-200 dark:border-gray-800 overflow-hidden">
+              <div className="px-5 py-3 border-b border-gray-100 dark:border-gray-800 flex items-center justify-between">
+                <h3 className="text-sm font-semibold text-gray-900 dark:text-gray-100 flex items-center gap-2">
+                  <svg className="w-4 h-4 text-[#02773b]" fill="none" viewBox="0 0 24 24" strokeWidth={1.5} stroke="currentColor">
+                    <path strokeLinecap="round" strokeLinejoin="round" d="M9 12.75 11.25 15 15 9.75m-3-7.036A11.959 11.959 0 0 1 3.598 6 11.99 11.99 0 0 0 3 9.749c0 5.592 3.824 10.29 9 11.623 5.176-1.332 9-6.03 9-11.622 0-1.31-.21-2.571-.598-3.751h-.152c-3.196 0-6.1-1.248-8.25-3.285Z" />
+                  </svg>
+                  Access Controls
+                  <span className="text-xs font-normal text-gray-400">({doc.accessControls.length})</span>
+                </h3>
+                <button
+                  onClick={() => {
+                    setShowGrantAccess(true);
+                    setGrantSearch("");
+                    setGrantSelectedId("");
+                    setGrantSelectedName("");
+                    setGrantSearchResults([]);
+                    setGrantPerms({ canRead: true, canWrite: false, canDelete: false, canShare: false });
+                  }}
+                  className="inline-flex items-center gap-1.5 h-8 px-3 rounded-lg bg-[#02773b] text-white text-xs font-medium hover:bg-[#014d28] transition-colors"
+                >
+                  <svg className="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" strokeWidth={2} stroke="currentColor">
+                    <path strokeLinecap="round" strokeLinejoin="round" d="M12 4.5v15m7.5-7.5h-15" />
+                  </svg>
+                  Grant Access
+                </button>
+              </div>
+
+              <table className="w-full text-sm">
+                <thead>
+                  <tr className="border-b border-gray-200 dark:border-gray-800 bg-gray-50 dark:bg-gray-800/50">
+                    <th className="text-left px-4 py-2.5 font-medium text-gray-500 dark:text-gray-400">User / Role</th>
+                    <th className="text-center px-3 py-2.5 font-medium text-gray-500 dark:text-gray-400">Read</th>
+                    <th className="text-center px-3 py-2.5 font-medium text-gray-500 dark:text-gray-400">Write</th>
+                    <th className="text-center px-3 py-2.5 font-medium text-gray-500 dark:text-gray-400">Delete</th>
+                    <th className="text-center px-3 py-2.5 font-medium text-gray-500 dark:text-gray-400">Share</th>
+                    <th className="text-center px-3 py-2.5 font-medium text-gray-500 dark:text-gray-400 w-16"></th>
+                  </tr>
+                </thead>
+                <tbody className="divide-y divide-gray-100 dark:divide-gray-800">
+                  {doc.accessControls.length === 0 ? (
+                    <tr>
+                      <td colSpan={6} className="px-4 py-8 text-center text-gray-400 dark:text-gray-500">
+                        No specific access controls. Default permissions apply.
+                      </td>
+                    </tr>
+                  ) : (
+                    doc.accessControls.map((ac) => (
+                      <tr key={ac.id} className="hover:bg-gray-50 dark:hover:bg-gray-800/50">
+                        <td className="px-4 py-2.5">
+                          <div className="flex items-center gap-2">
+                            <span className={`inline-flex items-center px-1.5 py-0.5 rounded text-[10px] font-medium ${
+                              ac.userId ? "bg-blue-50 dark:bg-blue-900/20 text-blue-600 dark:text-blue-400" : "bg-purple-50 dark:bg-purple-900/20 text-purple-600 dark:text-purple-400"
+                            }`}>
+                              {ac.userId ? "User" : "Role"}
+                            </span>
+                            <span className="text-gray-900 dark:text-gray-100 font-medium text-xs">
+                              {ac.userId ?? ac.roleId ?? "Unknown"}
+                            </span>
+                          </div>
+                        </td>
+                        {([ac.canRead, ac.canWrite, ac.canDelete, ac.canShare] as boolean[]).map((perm, i) => (
+                          <td key={i} className="px-3 py-2.5 text-center">
+                            {perm ? (
+                              <svg className="w-4 h-4 text-emerald-500 mx-auto" fill="none" viewBox="0 0 24 24" strokeWidth={2} stroke="currentColor">
+                                <path strokeLinecap="round" strokeLinejoin="round" d="m4.5 12.75 6 6 9-13.5" />
+                              </svg>
+                            ) : (
+                              <svg className="w-4 h-4 text-gray-300 dark:text-gray-600 mx-auto" fill="none" viewBox="0 0 24 24" strokeWidth={2} stroke="currentColor">
+                                <path strokeLinecap="round" strokeLinejoin="round" d="M6 18 18 6M6 6l12 12" />
+                              </svg>
+                            )}
+                          </td>
+                        ))}
+                        <td className="px-3 py-2.5 text-center">
+                          <button
+                            onClick={() => handleRevokeAccess(ac.id)}
+                            className="p-1 rounded text-gray-400 hover:text-red-500 hover:bg-red-50 dark:hover:bg-red-950/30 transition-colors"
+                            title="Revoke"
+                          >
+                            <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" strokeWidth={2} stroke="currentColor">
+                              <path strokeLinecap="round" strokeLinejoin="round" d="m14.74 9-.346 9m-4.788 0L9.26 9m9.968-3.21c.342.052.682.107 1.022.166m-1.022-.165L18.16 19.673a2.25 2.25 0 0 1-2.244 2.077H8.084a2.25 2.25 0 0 1-2.244-2.077L4.772 5.79m14.456 0a48.108 48.108 0 0 0-3.478-.397m-12 .562c.34-.059.68-.114 1.022-.165m0 0a48.11 48.11 0 0 1 3.478-.397m7.5 0v-.916c0-1.18-.91-2.164-2.09-2.201a51.964 51.964 0 0 0-3.32 0c-1.18.037-2.09 1.022-2.09 2.201v.916m7.5 0a48.667 48.667 0 0 0-7.5 0" />
+                            </svg>
+                          </button>
+                        </td>
+                      </tr>
+                    ))
+                  )}
+                </tbody>
+              </table>
+            </div>
+
+            {/* Grant Access Modal */}
+            {showGrantAccess && (
+              <div className="fixed inset-0 z-50 flex items-center justify-center p-4">
+                <div className="absolute inset-0 bg-black/50 backdrop-blur-sm" onClick={() => setShowGrantAccess(false)} />
+                <div className="relative bg-white dark:bg-gray-900 rounded-2xl border border-gray-200 dark:border-gray-800 shadow-xl w-full max-w-md">
+                  <div className="px-6 py-4 border-b border-gray-200 dark:border-gray-800">
+                    <h3 className="text-lg font-semibold text-gray-900 dark:text-gray-100">Grant Access</h3>
+                  </div>
+                  <div className="px-6 py-4 space-y-4">
+                    {/* Type toggle */}
+                    <div className="flex gap-2">
+                      {(["user", "role"] as const).map((t) => (
+                        <button
+                          key={t}
+                          onClick={() => { setGrantType(t); setGrantSearch(""); setGrantSelectedId(""); setGrantSelectedName(""); setGrantSearchResults([]); }}
+                          className={`flex-1 h-9 rounded-lg text-sm font-medium transition-colors ${
+                            grantType === t ? "bg-[#02773b] text-white" : "bg-gray-100 dark:bg-gray-800 text-gray-600 dark:text-gray-400"
+                          }`}
+                        >
+                          {t === "user" ? "User" : "Role"}
+                        </button>
+                      ))}
+                    </div>
+
+                    {/* Search */}
+                    <div>
+                      <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">
+                        {grantType === "user" ? "Search User" : "Search Role"}
+                      </label>
+                      {grantSelectedId ? (
+                        <div className="flex items-center gap-2 px-3 py-2 rounded-lg border border-gray-200 dark:border-gray-700 bg-gray-50 dark:bg-gray-800">
+                          <span className="text-sm font-medium text-gray-900 dark:text-gray-100 flex-1">{grantSelectedName}</span>
+                          <button onClick={() => { setGrantSelectedId(""); setGrantSelectedName(""); setGrantSearch(""); }} className="text-gray-400 hover:text-red-500">
+                            <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" strokeWidth={2} stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" d="M6 18 18 6M6 6l12 12" /></svg>
+                          </button>
+                        </div>
+                      ) : (
+                        <div className="relative">
+                          <input
+                            type="text"
+                            value={grantSearch}
+                            onChange={(e) => searchGrantTarget(e.target.value)}
+                            placeholder={grantType === "user" ? "Search by name or email..." : "Search role name..."}
+                            className="w-full h-10 rounded-lg border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-800 px-3 text-sm outline-none focus:border-[#02773b] focus:ring-1 focus:ring-[#02773b]/20"
+                          />
+                          {grantSearchResults.length > 0 && (
+                            <div className="absolute z-10 mt-1 w-full max-h-40 overflow-y-auto rounded-lg border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-900 shadow-lg">
+                              {grantSearchResults.map((r) => (
+                                <button
+                                  key={r.id}
+                                  onClick={() => {
+                                    setGrantSelectedId(r.id);
+                                    setGrantSelectedName(r.displayName ?? r.name);
+                                    setGrantSearchResults([]);
+                                    setGrantSearch("");
+                                  }}
+                                  className="w-full text-left px-3 py-2 text-sm hover:bg-gray-50 dark:hover:bg-gray-800"
+                                >
+                                  <p className="font-medium text-gray-900 dark:text-gray-100">{r.displayName ?? r.name}</p>
+                                  {r.email && <p className="text-xs text-gray-500">{r.email}</p>}
+                                </button>
+                              ))}
+                            </div>
+                          )}
+                        </div>
+                      )}
+                    </div>
+
+                    {/* Permissions */}
+                    <div>
+                      <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-2">Permissions</label>
+                      <div className="grid grid-cols-2 gap-2">
+                        {(["canRead", "canWrite", "canDelete", "canShare"] as const).map((perm) => (
+                          <label key={perm} className="flex items-center gap-2 cursor-pointer">
+                            <input
+                              type="checkbox"
+                              checked={grantPerms[perm]}
+                              onChange={(e) => setGrantPerms({ ...grantPerms, [perm]: e.target.checked })}
+                              className="h-4 w-4 rounded border-gray-300 text-[#02773b] focus:ring-[#02773b] accent-[#02773b]"
+                            />
+                            <span className="text-sm text-gray-700 dark:text-gray-300 capitalize">
+                              {perm.replace("can", "")}
+                            </span>
+                          </label>
+                        ))}
+                      </div>
+                    </div>
+                  </div>
+                  <div className="px-6 py-4 border-t border-gray-200 dark:border-gray-800 flex justify-end gap-2">
+                    <button onClick={() => setShowGrantAccess(false)} className="h-9 px-4 rounded-lg border border-gray-200 dark:border-gray-700 text-sm font-medium text-gray-700 dark:text-gray-300 hover:bg-gray-50 dark:hover:bg-gray-800">Cancel</button>
+                    <button
+                      onClick={handleGrantAccess}
+                      disabled={!grantSelectedId || isGranting}
+                      className="h-9 px-4 rounded-lg bg-[#02773b] text-white text-sm font-medium hover:bg-[#014d28] disabled:opacity-50 disabled:cursor-not-allowed"
+                    >
+                      {isGranting ? "Granting..." : "Grant Access"}
+                    </button>
+                  </div>
+                </div>
+              </div>
+            )}
+
+            {/* Legal Hold Modal */}
+            {showLegalHold && (
+              <div className="fixed inset-0 z-50 flex items-center justify-center p-4">
+                <div className="absolute inset-0 bg-black/50 backdrop-blur-sm" onClick={() => setShowLegalHold(false)} />
+                <div className="relative bg-white dark:bg-gray-900 rounded-2xl border border-gray-200 dark:border-gray-800 shadow-xl w-full max-w-sm">
+                  <div className="px-6 py-4 border-b border-gray-200 dark:border-gray-800">
+                    <h3 className="text-lg font-semibold text-gray-900 dark:text-gray-100">
+                      {doc.isOnLegalHold ? "Release Legal Hold" : "Place Legal Hold"}
+                    </h3>
+                  </div>
+                  <div className="px-6 py-4 space-y-3">
+                    {doc.isOnLegalHold ? (
+                      <p className="text-sm text-gray-600 dark:text-gray-400">
+                        Are you sure you want to release the legal hold on this document? It will become eligible for modification and disposal again.
+                      </p>
+                    ) : (
+                      <div>
+                        <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">
+                          Reason for Legal Hold <span className="text-red-500">*</span>
+                        </label>
+                        <textarea
+                          value={legalHoldReason}
+                          onChange={(e) => setLegalHoldReason(e.target.value)}
+                          rows={3}
+                          placeholder="e.g., Ongoing litigation — Case Ref #2026-001"
+                          className="w-full rounded-lg border border-gray-200 dark:border-gray-700 bg-gray-50 dark:bg-gray-800 px-3 py-2 text-sm outline-none focus:border-[#02773b] focus:ring-1 focus:ring-[#02773b]/20 resize-none"
+                        />
+                      </div>
+                    )}
+                  </div>
+                  <div className="px-6 py-4 border-t border-gray-200 dark:border-gray-800 flex justify-end gap-2">
+                    <button onClick={() => setShowLegalHold(false)} className="h-9 px-4 rounded-lg border border-gray-200 dark:border-gray-700 text-sm font-medium text-gray-700 dark:text-gray-300 hover:bg-gray-50 dark:hover:bg-gray-800">Cancel</button>
+                    <button
+                      onClick={handleToggleLegalHold}
+                      disabled={isTogglingHold || (!doc.isOnLegalHold && !legalHoldReason.trim())}
+                      className={`h-9 px-4 rounded-lg text-white text-sm font-medium disabled:opacity-50 disabled:cursor-not-allowed ${
+                        doc.isOnLegalHold ? "bg-emerald-600 hover:bg-emerald-700" : "bg-red-600 hover:bg-red-700"
+                      }`}
+                    >
+                      {isTogglingHold ? "Processing..." : doc.isOnLegalHold ? "Release Hold" : "Place Hold"}
+                    </button>
+                  </div>
+                </div>
+              </div>
+            )}
           </div>
         )}
 

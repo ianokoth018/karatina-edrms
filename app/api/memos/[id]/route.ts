@@ -164,6 +164,9 @@ export async function GET(
         : null,
       initiatedById: memo.initiatedById,
       isInitiator: memo.initiatedById === userId,
+      departmentOffice: (formData?.departmentOffice as string) ?? "",
+      designation: (formData?.designation as string) ?? "",
+      cc: (formData?.cc as string[]) ?? [],
     };
 
     return NextResponse.json(enriched);

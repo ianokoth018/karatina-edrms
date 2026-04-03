@@ -16,8 +16,45 @@ export async function GET(req: NextRequest) {
 
     const { searchParams } = req.nextUrl;
     const query = searchParams.get("q")?.trim() ?? "";
-    const limit = Math.min(20, Math.max(1, parseInt(searchParams.get("limit") ?? "10", 10)));
+    const department = searchParams.get("department")?.trim() ?? "";
+    const listDepartments = searchParams.get("departments") === "true";
+    const limit = Math.min(50, Math.max(1, parseInt(searchParams.get("limit") ?? "10", 10)));
     const exclude = searchParams.get("exclude"); // comma-separated user IDs to exclude
+
+    // Return all roles (for ACL pickers — no admin permission needed)
+    const listRoles = searchParams.get("roles") === "true";
+    if (listRoles) {
+      const roles = await db.role.findMany({
+        select: { id: true, name: true, description: true, _count: { select: { users: true } } },
+        orderBy: { name: "asc" },
+      });
+      const q = searchParams.get("q")?.trim().toLowerCase();
+      const filtered = q
+        ? roles.filter((r) => r.name.toLowerCase().includes(q) || r.description?.toLowerCase().includes(q))
+        : roles;
+      return NextResponse.json({
+        roles: filtered.map((r) => ({ id: r.id, name: r.name, description: r.description, userCount: r._count.users })),
+      });
+    }
+
+    // Return distinct departments with user counts
+    if (listDepartments) {
+      const departments = await db.user.groupBy({
+        by: ["department"],
+        where: { isActive: true, department: { not: null } },
+        _count: { id: true },
+        orderBy: { department: "asc" },
+      });
+
+      return NextResponse.json({
+        departments: departments
+          .filter((d) => d.department)
+          .map((d) => ({
+            name: d.department!,
+            userCount: d._count.id,
+          })),
+      });
+    }
 
     const excludeIds = exclude
       ? exclude.split(",").map((id) => id.trim()).filter(Boolean)
@@ -30,6 +67,11 @@ export async function GET(req: NextRequest) {
 
     if (excludeIds.length > 0) {
       where.id = { notIn: excludeIds };
+    }
+
+    // Filter by department (exact match)
+    if (department) {
+      where.department = department;
     }
 
     if (query) {

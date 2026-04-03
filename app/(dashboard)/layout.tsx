@@ -106,7 +106,7 @@ export default function DashboardLayout({
         <Header onMenuToggle={() => setSidebarOpen((prev) => !prev)} />
 
         {/* Page content */}
-        <main className="flex-1 overflow-y-auto">
+        <main className="flex-1 overflow-y-auto pt-2">
           {children}
         </main>
       </div>
