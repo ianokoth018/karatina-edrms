@@ -6,7 +6,8 @@
     "dev": "npx tsx scripts/dev-with-capture.ts",
     "dev:next": "next dev",
     "dev:capture": "npx tsx scripts/capture-worker.ts",
-    "build": "next build",
+    "postinstall": "prisma generate",
+    "build": "prisma generate && next build",
     "start": "next start",
     "lint": "eslint",
     "db:seed": "npx tsx prisma/seed.ts"
