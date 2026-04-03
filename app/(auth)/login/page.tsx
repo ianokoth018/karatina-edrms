@@ -19,17 +19,32 @@ export default function LoginPage() {
     setError(null);
 
     try {
-      const result = await signIn("credentials", {
-        email,
-        password,
-        redirect: false,
+      // Use direct fetch instead of signIn() for better Vercel compatibility
+      const csrfRes = await fetch("/api/auth/csrf");
+      const { csrfToken } = await csrfRes.json();
+
+      const res = await fetch("/api/auth/callback/credentials", {
+        method: "POST",
+        headers: { "Content-Type": "application/x-www-form-urlencoded" },
+        body: new URLSearchParams({
+          csrfToken,
+          email,
+          password,
+          redirect: "false",
+        }),
+        redirect: "manual",
       });
 
-      if (result?.error) {
-        setError("Invalid email or password. Please try again.");
+      // 302 = success (redirect to dashboard), 401 = bad creds
+      if (res.status === 302 || res.status === 200) {
+        window.location.href = "/dashboard";
       } else {
-        router.push("/dashboard");
-        router.refresh();
+        const text = await res.text().catch(() => "");
+        if (text.includes("error") || res.status === 401) {
+          setError("Invalid email or password. Please try again.");
+        } else {
+          window.location.href = "/dashboard";
+        }
       }
     } catch {
       setError("An unexpected error occurred. Please try again.");
