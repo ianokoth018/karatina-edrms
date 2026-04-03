@@ -968,7 +968,7 @@ export default function NewMemoPage() {
   /* ======================================================================== */
 
   return (
-    <div className="p-4 sm:p-6 max-w-5xl mx-auto space-y-6 animate-fade-in">
+    <div className="p-4 sm:p-6 space-y-6 animate-fade-in">
       {/* Hidden print document */}
       <div className="hidden print-only">
         <MemoDocument ref={printRef} {...memoPreviewProps} />
