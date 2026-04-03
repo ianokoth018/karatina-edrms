@@ -21,7 +21,7 @@ export async function proxy(req: NextRequest) {
   // Check JWT token (Edge-compatible)
   const token = await getToken({
     req,
-    secret: process.env.NEXTAUTH_SECRET,
+    secret: process.env.AUTH_SECRET ?? process.env.NEXTAUTH_SECRET,
   });
 
   if (!token) {
