@@ -1,17 +1,27 @@
 "use client";
 
-import { useState } from "react";
+import { useState, useEffect } from "react";
 import { signIn } from "next-auth/react";
-import { useRouter } from "next/navigation";
+import { useSearchParams } from "next/navigation";
 import Image from "next/image";
 
 export default function LoginPage() {
-  const router = useRouter();
+  const searchParams = useSearchParams();
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
   const [showPassword, setShowPassword] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [isLoading, setIsLoading] = useState(false);
+
+  // Detect auth errors from URL (NextAuth redirects with ?error=)
+  useEffect(() => {
+    const err = searchParams.get("error");
+    if (err === "CredentialsSignin") {
+      setError("Invalid email or password. Please try again.");
+    } else if (err) {
+      setError("Authentication error. Please try again.");
+    }
+  }, [searchParams]);
 
   async function handleSubmit(e: React.FormEvent<HTMLFormElement>) {
     e.preventDefault();
@@ -19,36 +29,23 @@ export default function LoginPage() {
     setError(null);
 
     try {
-      // Use direct fetch instead of signIn() for better Vercel compatibility
-      const csrfRes = await fetch("/api/auth/csrf");
-      const { csrfToken } = await csrfRes.json();
-
-      const res = await fetch("/api/auth/callback/credentials", {
-        method: "POST",
-        headers: { "Content-Type": "application/x-www-form-urlencoded" },
-        body: new URLSearchParams({
-          csrfToken,
-          email,
-          password,
-          redirect: "false",
-        }),
-        redirect: "manual",
+      const result = await signIn("credentials", {
+        email,
+        password,
+        callbackUrl: "/dashboard",
+        redirect: true,
       });
 
-      // 302 = success (redirect to dashboard), 401 = bad creds
-      if (res.status === 302 || res.status === 200) {
-        window.location.href = "/dashboard";
-      } else {
-        const text = await res.text().catch(() => "");
-        if (text.includes("error") || res.status === 401) {
-          setError("Invalid email or password. Please try again.");
-        } else {
-          window.location.href = "/dashboard";
-        }
-      }
+      // signIn with redirect:true should navigate away — if we're still here, something failed
+      void result;
+      setIsLoading(false);
     } catch {
-      setError("An unexpected error occurred. Please try again.");
-    } finally {
+      // signIn with redirect:true navigates away on success
+      // If we reach here, check URL for error param
+      const params = new URLSearchParams(window.location.search);
+      if (params.get("error")) {
+        setError("Invalid email or password. Please try again.");
+      }
       setIsLoading(false);
     }
   }
