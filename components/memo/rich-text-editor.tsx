@@ -751,7 +751,7 @@ export default function RichTextEditor({
 
       {/* Editor area - white background like a document page */}
       <div className="bg-gray-100 dark:bg-gray-950 p-4">
-        <div className="bg-white dark:bg-white rounded shadow-sm max-w-[210mm] mx-auto">
+        <div className="bg-white dark:bg-white rounded shadow-sm max-w-[210mm] mx-auto text-black [&_.ProseMirror]:text-black [&_.ProseMirror]:caret-black">
           <EditorContent editor={editor} />
         </div>
       </div>
