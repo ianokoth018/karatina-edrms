@@ -395,6 +395,8 @@ function FormDesignerInner() {
   const [saveMsg, setSaveMsg] = useState<{ type: "success" | "error"; text: string } | null>(null);
   const [loading, setLoading] = useState(!!formId);
   const [existingId, setExistingId] = useState<string | null>(formId);
+  const [workflowTemplateId, setWorkflowTemplateId] = useState<string | null>(null);
+  const [workflowTemplates, setWorkflowTemplates] = useState<{ id: string; name: string }[]>([]);
 
   // Track unsaved changes
   const markDirty = useCallback(() => setHasUnsaved(true), []);
@@ -421,6 +423,7 @@ function FormDesignerInner() {
         setFields(data.fields ?? []);
         setIsPublished(!!data.isActive);
         setExistingId(data.id ?? formId);
+        setWorkflowTemplateId(data.workflowTemplateId ?? null);
       } catch {
         if (!cancelled) {
           setSaveMsg({ type: "error", text: "Failed to load form template." });
@@ -433,6 +436,26 @@ function FormDesignerInner() {
       cancelled = true;
     };
   }, [formId]);
+
+  // ---- Fetch workflow templates for linking ----
+  useEffect(() => {
+    (async () => {
+      try {
+        const res = await fetch("/api/workflows/templates");
+        if (!res.ok) return;
+        const data = await res.json();
+        const templates = (data.templates ?? data ?? []) as {
+          id: string;
+          name: string;
+        }[];
+        setWorkflowTemplates(
+          Array.isArray(templates) ? templates.map((t) => ({ id: t.id, name: t.name })) : []
+        );
+      } catch {
+        // Silently ignore -- workflow templates are optional
+      }
+    })();
+  }, []);
 
   // ---- Add field ----
   const addField = useCallback(
@@ -537,6 +560,7 @@ function FormDesignerInner() {
         description: formDescription.trim() || undefined,
         fields,
         isActive: isPublished,
+        workflowTemplateId: workflowTemplateId || undefined,
       };
       let res: Response;
       if (existingId) {
@@ -571,7 +595,7 @@ function FormDesignerInner() {
     } finally {
       setSaving(false);
     }
-  }, [formName, formDescription, fields, isPublished, existingId]);
+  }, [formName, formDescription, fields, isPublished, existingId, workflowTemplateId]);
 
   // ---- Evaluate visibility condition for preview ----
   const isFieldVisible = useCallback(
@@ -741,6 +765,36 @@ function FormDesignerInner() {
           />
 
           <div className="flex-1" />
+
+          {/* Linked Workflow selector */}
+          {workflowTemplates.length > 0 && (
+            <div className="flex items-center gap-1.5">
+              {workflowTemplateId && (
+                <span className="hidden md:inline-flex items-center gap-1 text-[11px] font-medium text-violet-600 dark:text-violet-400 bg-violet-50 dark:bg-violet-950/40 px-2 py-1 rounded-lg">
+                  <svg className="w-3 h-3" fill="none" viewBox="0 0 24 24" strokeWidth={1.5} stroke="currentColor">
+                    <path strokeLinecap="round" strokeLinejoin="round" d="M3.75 12h16.5m-16.5 3.75h16.5M3.75 19.5h16.5M5.625 4.5h12.75a1.875 1.875 0 0 1 0 3.75H5.625a1.875 1.875 0 0 1 0-3.75Z" />
+                  </svg>
+                  Workflow linked
+                </span>
+              )}
+              <select
+                value={workflowTemplateId ?? ""}
+                onChange={(e) => {
+                  setWorkflowTemplateId(e.target.value || null);
+                  markDirty();
+                }}
+                className="h-9 px-2.5 rounded-lg border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-800 text-sm text-gray-700 dark:text-gray-300 focus:border-[#02773b] focus:ring-1 focus:ring-[#02773b]/30 outline-none transition-colors max-w-[180px]"
+                title="Link a workflow template"
+              >
+                <option value="">No workflow</option>
+                {workflowTemplates.map((wt) => (
+                  <option key={wt.id} value={wt.id}>
+                    {wt.name}
+                  </option>
+                ))}
+              </select>
+            </div>
+          )}
 
           {/* Preview toggle */}
           <button

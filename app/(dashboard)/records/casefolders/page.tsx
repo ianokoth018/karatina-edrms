@@ -17,6 +17,8 @@ interface Casefolder {
   version: number;
   documentCount: number;
   createdAt: string;
+  workflowTemplateId: string | null;
+  workflowTemplateName: string | null;
 }
 
 /* ------------------------------------------------------------------ */
@@ -419,6 +421,14 @@ export default function CasefoldersPage() {
                     <span className="inline-flex items-center gap-1 text-[11px] font-medium text-gray-500 dark:text-gray-400 bg-gray-100 dark:bg-gray-800 px-2 py-1 rounded-lg">
                       v{cf.version}
                     </span>
+                    {cf.workflowTemplateName && (
+                      <span className="inline-flex items-center gap-1 text-[11px] font-medium text-violet-600 dark:text-violet-400 bg-violet-50 dark:bg-violet-950/40 px-2 py-1 rounded-lg">
+                        <svg className="w-3 h-3" fill="none" viewBox="0 0 24 24" strokeWidth={1.5} stroke="currentColor">
+                          <path strokeLinecap="round" strokeLinejoin="round" d="M3.75 12h16.5m-16.5 3.75h16.5M3.75 19.5h16.5M5.625 4.5h12.75a1.875 1.875 0 0 1 0 3.75H5.625a1.875 1.875 0 0 1 0-3.75Z" />
+                        </svg>
+                        Workflow: {cf.workflowTemplateName}
+                      </span>
+                    )}
                   </div>
 
                   {/* Date */}

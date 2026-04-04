@@ -3,6 +3,7 @@ import { auth } from "@/lib/auth";
 import { db } from "@/lib/db";
 import { writeAudit } from "@/lib/audit";
 import { logger } from "@/lib/logger";
+import { resolveAssignee } from "@/lib/workflow-engine";
 
 /**
  * Custom JSON serialiser that converts BigInt values to strings so that
@@ -267,6 +268,11 @@ export async function GET(
           files: {
             select: { id: true, fileName: true, mimeType: true },
           },
+          workflowInstances: {
+            select: { id: true, status: true, referenceNumber: true },
+            take: 1,
+            orderBy: { startedAt: "desc" },
+          },
         },
         orderBy: { createdAt: "desc" },
         skip: (page - 1) * limit,
@@ -301,6 +307,8 @@ export async function GET(
             name: doc.createdBy.name,
             displayName: doc.createdBy.displayName,
           },
+          workflowStatus: doc.workflowInstances[0]?.status ?? null,
+          workflowInstanceId: doc.workflowInstances[0]?.id ?? null,
         })),
         pagination: { page, limit, total, totalPages },
       })
@@ -335,7 +343,7 @@ export async function POST(
     // Verify the form template exists and is active
     const template = await db.formTemplate.findUnique({
       where: { id },
-      select: { id: true, name: true, fields: true, isActive: true },
+      select: { id: true, name: true, fields: true, isActive: true, workflowTemplateId: true },
     });
 
     if (!template) {
@@ -471,7 +479,162 @@ export async function POST(
       method: "POST",
     });
 
-    return NextResponse.json(serialiseBigInt(document), { status: 201 });
+    // -----------------------------------------------------------------
+    // Auto-start linked workflow (if the casefolder has one configured)
+    // -----------------------------------------------------------------
+    let workflowInstanceId: string | null = null;
+
+    if (template.workflowTemplateId) {
+      try {
+        const workflowTemplate = await db.workflowTemplate.findUnique({
+          where: { id: template.workflowTemplateId },
+          select: { id: true, name: true, definition: true, isActive: true },
+        });
+
+        if (workflowTemplate && workflowTemplate.isActive) {
+          // Generate workflow reference number
+          const wfCount = await db.workflowInstance.count();
+          const wfReferenceNumber = "WF-" + String(wfCount + 1).padStart(6, "0");
+
+          // Create the workflow instance
+          const workflowInstance = await db.workflowInstance.create({
+            data: {
+              referenceNumber: wfReferenceNumber,
+              templateId: workflowTemplate.id,
+              documentId: document.id,
+              initiatedById: session.user.id,
+              subject: `${workflowTemplate.name}: ${title.trim()}`,
+              status: "IN_PROGRESS",
+              formData: (fieldValues ?? {}) as object,
+            },
+          });
+
+          workflowInstanceId = workflowInstance.id;
+
+          // Extract the first task node via BFS from the start node
+          const definition = workflowTemplate.definition as {
+            nodes?: { id: string; type: string; data: Record<string, unknown> }[];
+            edges?: { id: string; source: string; target: string; sourceHandle?: string | null }[];
+          };
+
+          if (definition.nodes && definition.edges) {
+            const startNode = definition.nodes.find((n) => n.type === "start");
+            if (startNode) {
+              // BFS to find first task node
+              const visited = new Set<string>();
+              const queue: string[] = [startNode.id];
+              let firstTaskNode: (typeof definition.nodes)[0] | null = null;
+
+              while (queue.length > 0 && !firstTaskNode) {
+                const currentId = queue.shift()!;
+                if (visited.has(currentId)) continue;
+                visited.add(currentId);
+
+                const outgoing = definition.edges.filter(
+                  (e) => e.source === currentId
+                );
+                for (const edge of outgoing) {
+                  const targetNode = definition.nodes!.find(
+                    (n) => n.id === edge.target
+                  );
+                  if (targetNode) {
+                    if (targetNode.type === "task") {
+                      firstTaskNode = targetNode;
+                      break;
+                    }
+                    queue.push(targetNode.id);
+                  }
+                }
+              }
+
+              if (firstTaskNode) {
+                const nodeData = firstTaskNode.data ?? {};
+                const assigneeRule =
+                  (nodeData.assigneeRule as string) || "initiator";
+                const assigneeValue =
+                  (nodeData.assigneeValue as string) || undefined;
+
+                const assigneeId = await resolveAssignee({
+                  assigneeRule,
+                  assigneeValue,
+                  initiatorId: session.user.id,
+                  instanceId: workflowInstance.id,
+                });
+
+                const effectiveAssigneeId = assigneeId || session.user.id;
+
+                const dueAt = new Date();
+                dueAt.setDate(dueAt.getDate() + 7);
+
+                // Create the first workflow task
+                await db.workflowTask.create({
+                  data: {
+                    instanceId: workflowInstance.id,
+                    stepName:
+                      (nodeData.label as string) || "Review",
+                    stepIndex: 0,
+                    assigneeId: effectiveAssigneeId,
+                    status: "PENDING",
+                    dueAt,
+                  },
+                });
+
+                // Create workflow started event
+                await db.workflowEvent.create({
+                  data: {
+                    instanceId: workflowInstance.id,
+                    eventType: "WORKFLOW_STARTED",
+                    actorId: session.user.id,
+                    data: {
+                      documentId: document.id,
+                      documentTitle: title.trim(),
+                      casefolderId: id,
+                      casefolderName: template.name,
+                      templateName: workflowTemplate.name,
+                    } as object,
+                  },
+                });
+
+                // Create notification for the first assignee
+                await db.notification.create({
+                  data: {
+                    userId: effectiveAssigneeId,
+                    type: "WORKFLOW_TASK",
+                    title: `New task: ${(nodeData.label as string) || "Review"}`,
+                    body: `Workflow "${workflowTemplate.name}" was auto-started for document "${title.trim()}" filed in casefolder "${template.name}". Please review.`,
+                    linkUrl: `/workflows`,
+                  },
+                });
+              }
+            }
+          }
+
+          logger.info("Workflow auto-started for filed document", {
+            userId: session.user.id,
+            action: "workflow.auto_started",
+            workflowInstanceId: workflowInstance.id,
+            documentId: document.id,
+            templateName: workflowTemplate.name,
+          });
+        }
+      } catch (wfError) {
+        // Log the error but don't fail the document filing
+        logger.error("Failed to auto-start workflow for filed document", wfError, {
+          route: `/api/records/casefolders/${id}`,
+          method: "POST",
+          documentId: document.id,
+          workflowTemplateId: template.workflowTemplateId,
+        });
+      }
+    }
+
+    return NextResponse.json(
+      serialiseBigInt({
+        ...document,
+        workflowInstanceId,
+      }),
+      { status: 201 }
+    );
   } catch (error) {
     logger.error("Failed to file document into casefolder", error, {
       route: "/api/records/casefolders/[id]",

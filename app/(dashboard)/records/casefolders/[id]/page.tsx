@@ -37,6 +37,8 @@ interface CasefolderDocument {
     name: string;
     displayName: string | null;
   };
+  workflowStatus: string | null;
+  workflowInstanceId: string | null;
 }
 
 interface Casefolder {
@@ -686,6 +688,9 @@ export default function CasefolderDetailPage({
                   <th className="text-left px-4 py-3 text-xs font-semibold text-gray-500 dark:text-gray-400 uppercase tracking-wider whitespace-nowrap">
                     Status
                   </th>
+                  <th className="text-left px-4 py-3 text-xs font-semibold text-gray-500 dark:text-gray-400 uppercase tracking-wider whitespace-nowrap hidden lg:table-cell">
+                    Workflow
+                  </th>
                   <th className="text-left px-4 py-3 text-xs font-semibold text-gray-500 dark:text-gray-400 uppercase tracking-wider whitespace-nowrap hidden sm:table-cell">
                     Created
                   </th>
@@ -748,6 +753,29 @@ export default function CasefolderDetailPage({
                     {/* Status */}
                     <td className="px-4 py-3.5 whitespace-nowrap">
                       <StatusBadge status={doc.status} />
+                    </td>
+
+                    {/* Workflow Status */}
+                    <td className="px-4 py-3.5 whitespace-nowrap hidden lg:table-cell">
+                      {doc.workflowStatus ? (
+                        <span
+                          className={`inline-flex items-center px-2.5 py-0.5 rounded-full text-[11px] font-semibold uppercase tracking-wide ${
+                            doc.workflowStatus === "COMPLETED"
+                              ? "bg-emerald-50 text-emerald-700 dark:bg-emerald-950/40 dark:text-emerald-400"
+                              : doc.workflowStatus === "REJECTED"
+                                ? "bg-red-50 text-red-700 dark:bg-red-950/40 dark:text-red-400"
+                                : doc.workflowStatus === "IN_PROGRESS"
+                                  ? "bg-sky-50 text-sky-700 dark:bg-sky-950/40 dark:text-sky-400"
+                                  : "bg-amber-50 text-amber-700 dark:bg-amber-950/40 dark:text-amber-400"
+                          }`}
+                        >
+                          {doc.workflowStatus.replace(/_/g, " ")}
+                        </span>
+                      ) : (
+                        <span className="text-xs text-gray-300 dark:text-gray-600">
+                          --
+                        </span>
+                      )}
                     </td>
 
                     {/* Created */}

@@ -25,8 +25,25 @@ export async function GET(_req: NextRequest) {
         isActive: true,
         version: true,
         createdAt: true,
+        workflowTemplateId: true,
       },
     });
+
+    // Collect unique workflow template IDs and fetch their names
+    const workflowTemplateIds = templates
+      .map((t) => t.workflowTemplateId)
+      .filter((id): id is string => !!id);
+
+    const workflowTemplates = workflowTemplateIds.length > 0
+      ? await db.workflowTemplate.findMany({
+          where: { id: { in: workflowTemplateIds } },
+          select: { id: true, name: true },
+        })
+      : [];
+
+    const workflowNameMap = new Map(
+      workflowTemplates.map((wt) => [wt.id, wt.name])
+    );
 
     // For each template, count documents whose metadata.formTemplateId matches
     const casefolders = await Promise.all(
@@ -49,6 +66,10 @@ export async function GET(_req: NextRequest) {
           version: template.version,
           documentCount,
           createdAt: template.createdAt,
+          workflowTemplateId: template.workflowTemplateId,
+          workflowTemplateName: template.workflowTemplateId
+            ? workflowNameMap.get(template.workflowTemplateId) ?? null
+            : null,
         };
       })
     );
