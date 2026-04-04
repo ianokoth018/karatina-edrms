@@ -11,6 +11,77 @@ function serialise<T>(data: T): T {
 }
 
 /**
+ * GET /api/workflows/tasks/[id]
+ * Get a single workflow task with its instance, template, document (incl. files), and assignee.
+ */
+export async function GET(
+  _req: NextRequest,
+  { params }: { params: Promise<{ id: string }> }
+) {
+  try {
+    const session = await auth();
+    if (!session?.user) {
+      return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+    }
+
+    const { id } = await params;
+
+    const task = await db.workflowTask.findUnique({
+      where: { id },
+      include: {
+        instance: {
+          include: {
+            template: {
+              select: {
+                id: true,
+                name: true,
+                description: true,
+                definition: true,
+              },
+            },
+            document: {
+              include: {
+                files: {
+                  select: {
+                    id: true,
+                    storagePath: true,
+                    fileName: true,
+                    mimeType: true,
+                    sizeBytes: true,
+                    uploadedAt: true,
+                  },
+                },
+              },
+            },
+          },
+        },
+        assignee: {
+          select: {
+            id: true,
+            name: true,
+            displayName: true,
+            email: true,
+            department: true,
+          },
+        },
+      },
+    });
+
+    if (!task) {
+      return NextResponse.json({ error: "Task not found" }, { status: 404 });
+    }
+
+    return NextResponse.json(serialise({ task }));
+  } catch (error) {
+    logger.error("Failed to fetch workflow task", error);
+    return NextResponse.json(
+      { error: "Internal server error" },
+      { status: 500 }
+    );
+  }
+}
+
+/**
  * PATCH /api/workflows/tasks/[id]
  * Perform an action on a workflow task.
  * Body: { action: "APPROVED" | "REJECTED" | "RETURNED" | "DELEGATED", comment: string, delegateToUserId?: string, reason?: string }

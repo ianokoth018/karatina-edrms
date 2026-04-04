@@ -1150,9 +1150,13 @@ export default function WorkflowDesignerPage() {
 
             {/* Auto-layout */}
             <button
-              onClick={handleAutoLayout}
+              onClick={() => {
+                if (nodes.length > 0 && confirm("This will rearrange all nodes. Your current layout will be lost. Continue?")) {
+                  handleAutoLayout();
+                }
+              }}
               className="h-8 px-2.5 rounded-lg text-xs font-medium text-gray-600 dark:text-gray-300 hover:bg-gray-100 dark:hover:bg-gray-800 transition-colors flex items-center gap-1.5"
-              title="Auto-arrange nodes"
+              title="Auto-arrange nodes (will override current positions)"
             >
               <svg
                 className="w-3.5 h-3.5"

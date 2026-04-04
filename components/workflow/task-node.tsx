@@ -3,14 +3,43 @@
 import { memo } from "react";
 import { Handle, Position, type NodeProps } from "reactflow";
 
+export interface FieldConfig {
+  fieldName: string;
+  visibility: "visible" | "hidden" | "readonly" | "editable";
+}
+
+export interface ActionButton {
+  id: string;
+  label: string;          // e.g., "Recommend", "Approve", "Circulate"
+  action: string;         // APPROVED, REJECTED, RETURNED, DELEGATED, or custom
+  color: "green" | "red" | "amber" | "blue" | "purple" | "gray";
+  requiresComment: boolean;
+  requiresUserSelect: boolean; // e.g., for delegation or circulation
+  icon?: string;
+}
+
 export interface TaskNodeData {
   label: string;
-  taskType: "approval" | "review" | "notification";
+  taskType: "approval" | "review" | "notification" | "action";
   description?: string;
-  assigneeRule: "specific_user" | "role_based" | "initiator_manager" | "dynamic";
+  assigneeRule: "specific_user" | "role_based" | "initiator_manager" | "department" | "initiator" | "round_robin" | "least_loaded" | "dynamic";
   assigneeValue?: string;
   escalationDays?: number;
-  requiredAction?: "approve" | "reject" | "return";
+  escalateTo?: string;
+  slaHours?: number;
+  reminderDays?: number;
+  requiredAction?: "approve" | "reject" | "return" | "any";
+  parallelApproval?: boolean;
+  approvalRule?: "all" | "any" | "majority";
+  formTemplateId?: string;
+  notifyOnAssign?: boolean;
+  notifyOnComplete?: boolean;
+  // Per-step form layout
+  fieldConfig?: FieldConfig[];        // which fields are visible/editable at this step
+  actionButtons?: ActionButton[];     // custom action buttons for this step
+  stepLayout?: "full" | "split" | "compact"; // layout mode: full form, split (form+doc viewer), compact
+  showDocumentViewer?: boolean;       // show PDF/document viewer alongside the form
+  sectionTitle?: string;              // custom section title for this step's form view
 }
 
 const taskTypeColors: Record<string, { bg: string; text: string; dot: string }> = {

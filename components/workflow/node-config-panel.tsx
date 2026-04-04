@@ -1,10 +1,11 @@
 "use client";
 
-import { useState, useCallback } from "react";
+import { useState, useCallback, useEffect } from "react";
 import type { Node } from "reactflow";
 import type { DecisionNodeData } from "./decision-node";
 import type { TimerNodeData } from "./timer-node";
 import type { EmailNodeData } from "./email-node";
+import type { FieldConfig, ActionButton } from "./task-node";
 
 /* ------------------------------------------------------------------ */
 /*  Extended task data — superset of the base TaskNodeData export from */
@@ -34,6 +35,12 @@ interface TaskNodeDataExtended {
   notifyOnAssign?: boolean;
   notifyOnComplete?: boolean;
   reminderDays?: number;
+  /* Per-step form layout fields */
+  fieldConfig?: FieldConfig[];
+  actionButtons?: ActionButton[];
+  stepLayout?: "full" | "split" | "compact";
+  showDocumentViewer?: boolean;
+  sectionTitle?: string;
 }
 
 /* ------------------------------------------------------------------ */
@@ -364,6 +371,534 @@ const nodeLabels: Record<string, { name: string; subtitle: string }> = {
 };
 
 /* ================================================================== */
+/*  Action-button presets                                              */
+/* ================================================================== */
+
+const ACTION_PRESETS: Record<string, ActionButton[]> = {
+  approval: [
+    { id: "approve", label: "Approve", action: "APPROVED", color: "green", requiresComment: false, requiresUserSelect: false },
+    { id: "reject", label: "Reject", action: "REJECTED", color: "red", requiresComment: true, requiresUserSelect: false },
+  ],
+  recommendation: [
+    { id: "recommend", label: "Recommend", action: "APPROVED", color: "green", requiresComment: false, requiresUserSelect: false },
+    { id: "return", label: "Return", action: "RETURNED", color: "amber", requiresComment: true, requiresUserSelect: false },
+    { id: "reject", label: "Reject", action: "REJECTED", color: "red", requiresComment: true, requiresUserSelect: false },
+  ],
+  review: [
+    { id: "acknowledge", label: "Acknowledge", action: "APPROVED", color: "blue", requiresComment: false, requiresUserSelect: false },
+  ],
+  circulation: [
+    { id: "circulate", label: "Circulate", action: "DELEGATED", color: "purple", requiresComment: false, requiresUserSelect: true },
+  ],
+};
+
+const BUTTON_COLORS: ActionButton["color"][] = ["green", "red", "amber", "blue", "purple", "gray"];
+
+const colorChipCls: Record<ActionButton["color"], string> = {
+  green: "bg-green-500",
+  red: "bg-red-500",
+  amber: "bg-amber-500",
+  blue: "bg-blue-500",
+  purple: "bg-purple-500",
+  gray: "bg-gray-500",
+};
+
+/* ------------------------------------------------------------------ */
+/*  Form field fetched from the form template API                      */
+/* ------------------------------------------------------------------ */
+
+interface FormTemplateField {
+  id: string;
+  name: string;
+  label: string;
+  type: string;
+}
+
+/* ================================================================== */
+/*  Form Layout Tab Component                                          */
+/* ================================================================== */
+
+function FormLayoutTab({
+  data,
+  updateField,
+  onUpdate,
+  nodeId,
+}: {
+  data: TaskNodeDataExtended & Record<string, unknown>;
+  updateField: (field: string, value: unknown) => void;
+  onUpdate: (nodeId: string, data: Record<string, unknown>) => void;
+  nodeId: string;
+}) {
+  const [formFields, setFormFields] = useState<FormTemplateField[]>([]);
+  const [fieldsLoading, setFieldsLoading] = useState(false);
+  const [fieldsError, setFieldsError] = useState<string | null>(null);
+
+  const fieldConfig: FieldConfig[] = (data.fieldConfig as FieldConfig[]) ?? [];
+  const actionButtons: ActionButton[] = (data.actionButtons as ActionButton[]) ?? [];
+
+  /* Fetch form template fields when formTemplateId changes */
+  useEffect(() => {
+    const templateId = data.formTemplateId;
+    if (!templateId) {
+      setFormFields([]);
+      setFieldsError(null);
+      return;
+    }
+
+    let cancelled = false;
+    setFieldsLoading(true);
+    setFieldsError(null);
+
+    fetch(`/api/forms/${templateId}`)
+      .then((res) => {
+        if (!res.ok) throw new Error("Failed to load form template");
+        return res.json();
+      })
+      .then((json) => {
+        if (cancelled) return;
+        const fields: FormTemplateField[] = (json.fields ?? [])
+          .filter((f: Record<string, unknown>) => f.type !== "section" && f.type !== "divider")
+          .map((f: Record<string, unknown>) => ({
+            id: f.id as string,
+            name: f.name as string,
+            label: f.label as string,
+            type: f.type as string,
+          }));
+        setFormFields(fields);
+      })
+      .catch((err) => {
+        if (cancelled) return;
+        setFieldsError(err.message ?? "Failed to load");
+      })
+      .finally(() => {
+        if (!cancelled) setFieldsLoading(false);
+      });
+
+    return () => { cancelled = true; };
+  }, [data.formTemplateId]);
+
+  /* ---- Helper: update a single field's visibility ---- */
+  function setFieldVisibility(fieldName: string, visibility: FieldConfig["visibility"]) {
+    const existing = fieldConfig.find((f) => f.fieldName === fieldName);
+    let next: FieldConfig[];
+    if (existing) {
+      next = fieldConfig.map((f) => f.fieldName === fieldName ? { ...f, visibility } : f);
+    } else {
+      next = [...fieldConfig, { fieldName, visibility }];
+    }
+    onUpdate(nodeId, { ...data, fieldConfig: next });
+  }
+
+  /* ---- Helper: bulk set all fields ---- */
+  function setAllFieldsVisibility(visibility: FieldConfig["visibility"]) {
+    const next: FieldConfig[] = formFields.map((f) => ({
+      fieldName: f.name,
+      visibility,
+    }));
+    onUpdate(nodeId, { ...data, fieldConfig: next });
+  }
+
+  /* ---- Helper: get current visibility for a field ---- */
+  function getFieldVisibility(fieldName: string): FieldConfig["visibility"] {
+    return fieldConfig.find((f) => f.fieldName === fieldName)?.visibility ?? "visible";
+  }
+
+  /* ---- Action button helpers ---- */
+  function addActionButton() {
+    const id = `btn_${Date.now()}`;
+    const next: ActionButton[] = [
+      ...actionButtons,
+      { id, label: "New Action", action: "APPROVED", color: "green", requiresComment: false, requiresUserSelect: false },
+    ];
+    onUpdate(nodeId, { ...data, actionButtons: next });
+  }
+
+  function removeActionButton(id: string) {
+    const next = actionButtons.filter((b) => b.id !== id);
+    onUpdate(nodeId, { ...data, actionButtons: next });
+  }
+
+  function updateActionButton(id: string, patch: Partial<ActionButton>) {
+    const next = actionButtons.map((b) => (b.id === id ? { ...b, ...patch } : b));
+    onUpdate(nodeId, { ...data, actionButtons: next });
+  }
+
+  function moveActionButton(idx: number, direction: "up" | "down") {
+    if (direction === "up" && idx === 0) return;
+    if (direction === "down" && idx === actionButtons.length - 1) return;
+    const next = [...actionButtons];
+    const swapIdx = direction === "up" ? idx - 1 : idx + 1;
+    [next[idx], next[swapIdx]] = [next[swapIdx], next[idx]];
+    onUpdate(nodeId, { ...data, actionButtons: next });
+  }
+
+  function applyPreset(presetKey: string) {
+    const preset = ACTION_PRESETS[presetKey];
+    if (preset) {
+      const stamped = preset.map((b) => ({ ...b, id: `${b.id}_${Date.now()}` }));
+      onUpdate(nodeId, { ...data, actionButtons: stamped });
+    }
+  }
+
+  return (
+    <div className="space-y-3">
+      {/* ---- Step Layout ---- */}
+      <CollapsibleSection title="Step Layout" defaultOpen={true}>
+        <Field>
+          <Label>Layout Mode</Label>
+          <div className="grid grid-cols-3 gap-2">
+            {(
+              [
+                ["full", "Full Form", "M4 5h16v14H4z"],
+                ["split", "Split View", "M4 5h7v14H4zM13 5h7v14h-7z"],
+                ["compact", "Compact", "M4 9h16v6H4z"],
+              ] as const
+            ).map(([value, label, pathD]) => (
+              <button
+                key={value}
+                type="button"
+                onClick={() => updateField("stepLayout", value)}
+                className={`flex flex-col items-center gap-1 p-2 rounded-lg border-2 transition-all ${
+                  (data.stepLayout ?? "full") === value
+                    ? "border-karu-green bg-karu-green/5 dark:bg-karu-green/10"
+                    : "border-gray-200 dark:border-gray-700 hover:border-gray-300 dark:hover:border-gray-600"
+                }`}
+              >
+                <svg
+                  className={`w-5 h-5 ${
+                    (data.stepLayout ?? "full") === value
+                      ? "text-karu-green"
+                      : "text-gray-400"
+                  }`}
+                  fill="none"
+                  viewBox="0 0 24 24"
+                  strokeWidth={1.5}
+                  stroke="currentColor"
+                >
+                  <rect x="3" y="4" width="18" height="16" rx="2" strokeWidth={1.5} />
+                  <path strokeLinecap="round" strokeLinejoin="round" d={pathD} strokeWidth={0.5} fill="currentColor" opacity={0.15} />
+                </svg>
+                <span
+                  className={`text-[10px] font-semibold ${
+                    (data.stepLayout ?? "full") === value
+                      ? "text-karu-green"
+                      : "text-gray-500 dark:text-gray-400"
+                  }`}
+                >
+                  {label}
+                </span>
+              </button>
+            ))}
+          </div>
+          <HelpText>
+            {(data.stepLayout ?? "full") === "full"
+              ? "Form fields take the full width of the view."
+              : (data.stepLayout ?? "full") === "split"
+                ? "Form on the left, document viewer on the right."
+                : "Minimal view showing only action buttons."}
+          </HelpText>
+        </Field>
+
+        <div className="flex items-center gap-2">
+          <input
+            type="checkbox"
+            id="showDocumentViewer"
+            checked={!!data.showDocumentViewer}
+            onChange={(e) => updateField("showDocumentViewer", e.target.checked)}
+            className={checkboxCls}
+          />
+          <label
+            htmlFor="showDocumentViewer"
+            className="text-xs text-gray-700 dark:text-gray-300"
+          >
+            Show document viewer alongside form
+          </label>
+        </div>
+
+        <Field>
+          <Label>Section Title</Label>
+          <input
+            type="text"
+            value={(data.sectionTitle as string) ?? ""}
+            onChange={(e) => updateField("sectionTitle", e.target.value)}
+            placeholder='e.g. "Recommendation", "Final Approval"'
+            className={inputCls}
+          />
+          <HelpText>Custom heading displayed above this step&apos;s form.</HelpText>
+        </Field>
+      </CollapsibleSection>
+
+      <Divider />
+
+      {/* ---- Field Configuration ---- */}
+      <CollapsibleSection title="Field Configuration" defaultOpen={true}>
+        {!data.formTemplateId ? (
+          <div className="p-3 bg-amber-50 dark:bg-amber-950/20 rounded-lg border border-amber-200 dark:border-amber-800">
+            <p className="text-xs text-amber-700 dark:text-amber-400 leading-relaxed">
+              Link a form template in the Assignment tab to configure field layout.
+            </p>
+          </div>
+        ) : fieldsLoading ? (
+          <div className="flex items-center gap-2 py-3">
+            <svg className="animate-spin h-4 w-4 text-karu-green" viewBox="0 0 24 24" fill="none">
+              <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" />
+              <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z" />
+            </svg>
+            <span className="text-xs text-gray-500 dark:text-gray-400">Loading form fields...</span>
+          </div>
+        ) : fieldsError ? (
+          <div className="p-3 bg-red-50 dark:bg-red-950/20 rounded-lg border border-red-200 dark:border-red-800">
+            <p className="text-xs text-red-700 dark:text-red-400">
+              {fieldsError}
+            </p>
+          </div>
+        ) : formFields.length === 0 ? (
+          <p className="text-xs text-gray-400 dark:text-gray-500 italic">
+            No configurable fields found in this form template.
+          </p>
+        ) : (
+          <>
+            {/* Quick actions */}
+            <div className="flex gap-1.5 flex-wrap">
+              {(
+                [
+                  ["visible", "All Visible"],
+                  ["readonly", "All Read-only"],
+                  ["hidden", "All Hidden"],
+                ] as const
+              ).map(([vis, label]) => (
+                <button
+                  key={vis}
+                  type="button"
+                  onClick={() => setAllFieldsVisibility(vis)}
+                  className="px-2 py-1 rounded-md text-[10px] font-medium border border-gray-200 dark:border-gray-700 text-gray-600 dark:text-gray-400 hover:border-karu-green hover:text-karu-green dark:hover:border-karu-green dark:hover:text-karu-green transition-colors"
+                >
+                  {label}
+                </button>
+              ))}
+            </div>
+
+            {/* Field table */}
+            <div className="rounded-lg border border-gray-200 dark:border-gray-700 overflow-hidden">
+              <table className="w-full text-xs">
+                <thead>
+                  <tr className="bg-gray-50 dark:bg-gray-800/50 border-b border-gray-200 dark:border-gray-700">
+                    <th className="px-2.5 py-1.5 text-left text-[10px] font-semibold text-gray-500 dark:text-gray-400 uppercase tracking-wider">
+                      Field
+                    </th>
+                    <th className="px-2.5 py-1.5 text-left text-[10px] font-semibold text-gray-500 dark:text-gray-400 uppercase tracking-wider">
+                      Visibility
+                    </th>
+                  </tr>
+                </thead>
+                <tbody className="divide-y divide-gray-100 dark:divide-gray-800">
+                  {formFields.map((field) => (
+                    <tr key={field.id} className="hover:bg-gray-50 dark:hover:bg-gray-800/30 transition-colors">
+                      <td className="px-2.5 py-1.5">
+                        <span className="text-gray-700 dark:text-gray-300">{field.label}</span>
+                        <span className="ml-1 text-[10px] text-gray-400 dark:text-gray-600">
+                          ({field.type})
+                        </span>
+                      </td>
+                      <td className="px-2.5 py-1.5">
+                        <select
+                          value={getFieldVisibility(field.name)}
+                          onChange={(e) =>
+                            setFieldVisibility(field.name, e.target.value as FieldConfig["visibility"])
+                          }
+                          className="h-7 rounded-md border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-800 px-1.5 text-[11px] text-gray-900 dark:text-gray-100 focus:border-karu-green focus:ring-1 focus:ring-karu-green/20 outline-none"
+                        >
+                          <option value="visible">Visible</option>
+                          <option value="editable">Editable</option>
+                          <option value="readonly">Read-only</option>
+                          <option value="hidden">Hidden</option>
+                        </select>
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          </>
+        )}
+      </CollapsibleSection>
+
+      <Divider />
+
+      {/* ---- Action Buttons ---- */}
+      <CollapsibleSection title="Action Buttons" defaultOpen={true}>
+        {/* Presets */}
+        <div className="space-y-1.5">
+          <span className="text-[10px] font-medium text-gray-500 dark:text-gray-400 uppercase tracking-wider">
+            Quick Presets
+          </span>
+          <div className="flex gap-1.5 flex-wrap">
+            {(
+              [
+                ["approval", "Approval"],
+                ["recommendation", "Recommendation"],
+                ["review", "Review"],
+                ["circulation", "Circulation"],
+              ] as const
+            ).map(([key, label]) => (
+              <button
+                key={key}
+                type="button"
+                onClick={() => applyPreset(key)}
+                className="px-2 py-1 rounded-md text-[10px] font-medium border border-gray-200 dark:border-gray-700 text-gray-600 dark:text-gray-400 hover:border-karu-green hover:text-karu-green dark:hover:border-karu-green dark:hover:text-karu-green transition-colors"
+              >
+                {label}
+              </button>
+            ))}
+          </div>
+        </div>
+
+        {/* Button list */}
+        {actionButtons.length === 0 && (
+          <p className="text-xs text-gray-400 dark:text-gray-500 italic">
+            No action buttons configured. Select a preset or add buttons manually.
+          </p>
+        )}
+
+        {actionButtons.map((btn, idx) => (
+          <div
+            key={btn.id}
+            className="p-3 bg-gray-50 dark:bg-gray-800/50 rounded-lg border border-gray-200 dark:border-gray-700 space-y-2"
+          >
+            <div className="flex items-center justify-between">
+              <div className="flex items-center gap-1.5">
+                <span className={`w-2.5 h-2.5 rounded-full ${colorChipCls[btn.color]}`} />
+                <span className="text-[11px] font-semibold text-gray-600 dark:text-gray-300">
+                  {btn.label || "Button"}
+                </span>
+              </div>
+              <div className="flex items-center gap-0.5">
+                {/* Up */}
+                <button
+                  type="button"
+                  onClick={() => moveActionButton(idx, "up")}
+                  disabled={idx === 0}
+                  className="p-1 rounded text-gray-400 hover:text-gray-600 dark:hover:text-gray-300 disabled:opacity-30 transition-colors"
+                  title="Move up"
+                >
+                  <svg className="w-3 h-3" fill="none" viewBox="0 0 24 24" strokeWidth={2} stroke="currentColor">
+                    <path strokeLinecap="round" strokeLinejoin="round" d="M4.5 15.75l7.5-7.5 7.5 7.5" />
+                  </svg>
+                </button>
+                {/* Down */}
+                <button
+                  type="button"
+                  onClick={() => moveActionButton(idx, "down")}
+                  disabled={idx === actionButtons.length - 1}
+                  className="p-1 rounded text-gray-400 hover:text-gray-600 dark:hover:text-gray-300 disabled:opacity-30 transition-colors"
+                  title="Move down"
+                >
+                  <svg className="w-3 h-3" fill="none" viewBox="0 0 24 24" strokeWidth={2} stroke="currentColor">
+                    <path strokeLinecap="round" strokeLinejoin="round" d="M19.5 8.25l-7.5 7.5-7.5-7.5" />
+                  </svg>
+                </button>
+                {/* Remove */}
+                <button
+                  type="button"
+                  onClick={() => removeActionButton(btn.id)}
+                  className="p-1 rounded text-gray-400 hover:text-red-500 dark:hover:text-red-400 transition-colors"
+                  title="Remove button"
+                >
+                  <svg className="w-3 h-3" fill="none" viewBox="0 0 24 24" strokeWidth={2} stroke="currentColor">
+                    <path strokeLinecap="round" strokeLinejoin="round" d="M6 18L18 6M6 6l12 12" />
+                  </svg>
+                </button>
+              </div>
+            </div>
+
+            <div className="grid grid-cols-2 gap-2">
+              <Field>
+                <Label>Label</Label>
+                <input
+                  type="text"
+                  value={btn.label}
+                  onChange={(e) => updateActionButton(btn.id, { label: e.target.value })}
+                  placeholder="Button text"
+                  className={inputCls}
+                />
+              </Field>
+              <Field>
+                <Label>Action</Label>
+                <select
+                  value={btn.action}
+                  onChange={(e) => updateActionButton(btn.id, { action: e.target.value })}
+                  className={selectCls}
+                >
+                  <option value="APPROVED">APPROVED</option>
+                  <option value="REJECTED">REJECTED</option>
+                  <option value="RETURNED">RETURNED</option>
+                  <option value="DELEGATED">DELEGATED</option>
+                  <option value="CUSTOM">Custom...</option>
+                </select>
+              </Field>
+            </div>
+
+            <Field>
+              <Label>Color</Label>
+              <div className="flex gap-1.5">
+                {BUTTON_COLORS.map((c) => (
+                  <button
+                    key={c}
+                    type="button"
+                    onClick={() => updateActionButton(btn.id, { color: c })}
+                    className={`w-6 h-6 rounded-full border-2 transition-all ${colorChipCls[c]} ${
+                      btn.color === c
+                        ? "border-gray-900 dark:border-white scale-110 ring-2 ring-offset-1 ring-gray-400 dark:ring-gray-500 dark:ring-offset-gray-900"
+                        : "border-transparent opacity-60 hover:opacity-100"
+                    }`}
+                    title={c}
+                  />
+                ))}
+              </div>
+            </Field>
+
+            <div className="flex gap-4">
+              <div className="flex items-center gap-1.5">
+                <input
+                  type="checkbox"
+                  id={`reqComment_${btn.id}`}
+                  checked={btn.requiresComment}
+                  onChange={(e) => updateActionButton(btn.id, { requiresComment: e.target.checked })}
+                  className={checkboxCls}
+                />
+                <label htmlFor={`reqComment_${btn.id}`} className="text-[11px] text-gray-600 dark:text-gray-400">
+                  Require comment
+                </label>
+              </div>
+              <div className="flex items-center gap-1.5">
+                <input
+                  type="checkbox"
+                  id={`reqUser_${btn.id}`}
+                  checked={btn.requiresUserSelect}
+                  onChange={(e) => updateActionButton(btn.id, { requiresUserSelect: e.target.checked })}
+                  className={checkboxCls}
+                />
+                <label htmlFor={`reqUser_${btn.id}`} className="text-[11px] text-gray-600 dark:text-gray-400">
+                  Require user select
+                </label>
+              </div>
+            </div>
+          </div>
+        ))}
+
+        <button
+          type="button"
+          onClick={addActionButton}
+          className="w-full px-3 py-2 rounded-lg border border-dashed border-gray-300 dark:border-gray-600 text-xs font-medium text-gray-500 dark:text-gray-400 hover:border-karu-green hover:text-karu-green dark:hover:border-karu-green dark:hover:text-karu-green transition-colors"
+        >
+          + Add Action Button
+        </button>
+      </CollapsibleSection>
+    </div>
+  );
+}
+
+/* ================================================================== */
 /*  Main Component                                                     */
 /* ================================================================== */
 
@@ -373,7 +908,7 @@ export default function NodeConfigPanel({
   onDelete,
 }: NodeConfigPanelProps) {
   const [taskTab, setTaskTab] = useState<
-    "general" | "assignment" | "sla" | "notifications"
+    "general" | "assignment" | "sla" | "notifications" | "form_layout"
   >("general");
 
   const updateField = useCallback(
@@ -493,13 +1028,14 @@ export default function NodeConfigPanel({
         <PanelHeader />
 
         {/* Tabs */}
-        <div className="flex gap-1 p-1 bg-gray-100 dark:bg-gray-800 rounded-xl">
+        <div className="flex gap-1 p-1 bg-gray-100 dark:bg-gray-800 rounded-xl flex-wrap">
           {(
             [
               ["general", "General"],
               ["assignment", "Assignment"],
               ["sla", "SLA"],
               ["notifications", "Notify"],
+              ["form_layout", "Layout"],
             ] as const
           ).map(([key, label]) => (
             <button
@@ -816,6 +1352,11 @@ export default function NodeConfigPanel({
               task.
             </p>
           </div>
+        )}
+
+        {/* ---- Form Layout Tab ---- */}
+        {taskTab === "form_layout" && (
+          <FormLayoutTab data={data} updateField={updateField} onUpdate={onUpdate} nodeId={node.id} />
         )}
 
         <DeleteFooter />
