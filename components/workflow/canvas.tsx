@@ -27,12 +27,22 @@ import { StartNode } from "./start-node";
 import { TaskNode } from "./task-node";
 import { DecisionNode } from "./decision-node";
 import { EndNode } from "./end-node";
+import { TimerNode } from "./timer-node";
+import { EmailNode } from "./email-node";
+import { SubprocessNode } from "./subprocess-node";
+import { SystemNode } from "./system-node";
+import { ParallelNode } from "./parallel-node";
 
 const nodeTypes: NodeTypes = {
   start: StartNode,
   task: TaskNode,
   decision: DecisionNode,
   end: EndNode,
+  timer: TimerNode,
+  email: EmailNode,
+  subprocess: SubprocessNode,
+  system: SystemNode,
+  parallel: ParallelNode,
 };
 
 interface WorkflowCanvasProps {
@@ -127,6 +137,43 @@ export default function WorkflowCanvas({
           conditionYes: "Approved",
           conditionNo: "Rejected",
         };
+      } else if (nodeType === "timer") {
+        newNodeData = {
+          label: "Timer",
+          timerType: "duration",
+          durationHours: 0,
+          durationDays: 1,
+          businessHoursOnly: false,
+        };
+      } else if (nodeType === "email") {
+        newNodeData = {
+          label: "Send Email",
+          recipientType: "initiator",
+          recipientValue: "",
+          subject: "",
+          bodyTemplate: "",
+          includeDocumentLink: true,
+        };
+      } else if (nodeType === "subprocess") {
+        newNodeData = {
+          label: "Subprocess",
+          templateId: "",
+          templateName: "",
+          waitForCompletion: true,
+          passVariables: [],
+        };
+      } else if (nodeType === "system") {
+        newNodeData = {
+          label: "System Action",
+          actionType: "update_document_status",
+          actionConfig: {},
+        };
+      } else if (nodeType === "parallel") {
+        newNodeData = {
+          label: "Parallel",
+          gatewayType: "fork",
+          joinRule: "all",
+        };
       }
 
       const newNode: Node = {
@@ -193,6 +240,16 @@ export default function WorkflowCanvas({
                 return "#eab308";
               case "task":
                 return "#02773b";
+              case "timer":
+                return "#64748b";
+              case "email":
+                return "#a855f7";
+              case "subprocess":
+                return "#14b8a6";
+              case "system":
+                return "#6b7280";
+              case "parallel":
+                return "#3b82f6";
               default:
                 return "#6b7280";
             }

@@ -13,7 +13,7 @@ function serialise<T>(data: T): T {
 /**
  * PATCH /api/workflows/tasks/[id]
  * Perform an action on a workflow task.
- * Body: { action: "APPROVED" | "REJECTED" | "RETURNED", comment: string }
+ * Body: { action: "APPROVED" | "REJECTED" | "RETURNED" | "DELEGATED", comment: string, delegateToUserId?: string, reason?: string }
  */
 export async function PATCH(
   req: NextRequest,
@@ -27,9 +27,11 @@ export async function PATCH(
 
     const { id } = await params;
     const body = await req.json();
-    const { action, comment } = body as {
-      action: "APPROVED" | "REJECTED" | "RETURNED";
+    const { action, comment, delegateToUserId, reason } = body as {
+      action: "APPROVED" | "REJECTED" | "RETURNED" | "DELEGATED";
       comment: string;
+      delegateToUserId?: string;
+      reason?: string;
     };
 
     if (!action || !comment) {
@@ -39,10 +41,20 @@ export async function PATCH(
       );
     }
 
-    const validActions = ["APPROVED", "REJECTED", "RETURNED"];
+    const validActions = ["APPROVED", "REJECTED", "RETURNED", "DELEGATED"];
     if (!validActions.includes(action)) {
       return NextResponse.json(
-        { error: "Invalid action. Must be APPROVED, REJECTED, or RETURNED" },
+        {
+          error:
+            "Invalid action. Must be APPROVED, REJECTED, RETURNED, or DELEGATED",
+        },
+        { status: 400 }
+      );
+    }
+
+    if (action === "DELEGATED" && !delegateToUserId) {
+      return NextResponse.json(
+        { error: "delegateToUserId is required for delegation" },
         { status: 400 }
       );
     }
@@ -206,6 +218,54 @@ export async function PATCH(
         notificationTitle = "Workflow returned for revision";
         notificationBody = `The first step "${task.stepName}" of "${task.instance.subject}" was returned. Comment: ${comment}`;
       }
+    } else if (action === "DELEGATED") {
+      // Delegate the task to another user
+      const delegateUser = await db.user.findUnique({
+        where: { id: delegateToUserId! },
+        select: { id: true, name: true, isActive: true },
+      });
+
+      if (!delegateUser || !delegateUser.isActive) {
+        return NextResponse.json(
+          { error: "Delegate user not found or inactive" },
+          { status: 404 }
+        );
+      }
+
+      // Create a Delegation record (active for 30 days)
+      const startsAt = new Date();
+      const endsAt = new Date();
+      endsAt.setDate(endsAt.getDate() + 30);
+
+      await db.delegation.create({
+        data: {
+          delegatorId: session.user.id,
+          delegateId: delegateToUserId!,
+          reason: reason || comment,
+          startsAt,
+          endsAt,
+          isActive: true,
+        },
+      });
+
+      // Create a new task for the delegate user (same step, same instance)
+      const dueAt = task.dueAt ?? new Date(Date.now() + 7 * 24 * 60 * 60 * 1000);
+
+      await db.workflowTask.create({
+        data: {
+          instanceId: task.instanceId,
+          stepName: `${task.stepName} (Delegated)`,
+          stepIndex: task.stepIndex,
+          assigneeId: delegateToUserId!,
+          status: "PENDING",
+          dueAt,
+        },
+      });
+
+      // Notify the delegate
+      notificationUserId = delegateToUserId!;
+      notificationTitle = "Workflow task delegated to you";
+      notificationBody = `${session.user.name} delegated step "${task.stepName}" of "${task.instance.subject}" to you. Reason: ${reason || comment}`;
     }
 
     // Send notification
