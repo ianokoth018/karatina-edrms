@@ -13,17 +13,21 @@ function serialise<T>(data: T): T {
 
 /**
  * GET /api/workflows/templates
- * List all active workflow templates.
+ * List workflow templates.  Pass ?all=true to include inactive ones.
  */
-export async function GET() {
+export async function GET(req: NextRequest) {
   try {
     const session = await auth();
     if (!session?.user) {
       return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
     }
 
+    const showAll =
+      req.nextUrl.searchParams.get("all") === "true" &&
+      session.user.permissions.includes("workflows:manage");
+
     const templates = await db.workflowTemplate.findMany({
-      where: { isActive: true },
+      where: showAll ? {} : { isActive: true },
       orderBy: { createdAt: "desc" },
       select: {
         id: true,
@@ -33,10 +37,38 @@ export async function GET() {
         version: true,
         isActive: true,
         createdAt: true,
+        updatedAt: true,
+        _count: { select: { instances: true } },
       },
     });
 
-    return NextResponse.json(serialise({ templates }));
+    // Also fetch aggregate instance stats per template
+    const instanceStats = await db.workflowInstance.groupBy({
+      by: ["templateId", "status"],
+      _count: { id: true },
+    });
+
+    const statsMap: Record<
+      string,
+      { total: number; completed: number }
+    > = {};
+    for (const row of instanceStats) {
+      if (!statsMap[row.templateId]) {
+        statsMap[row.templateId] = { total: 0, completed: 0 };
+      }
+      statsMap[row.templateId].total += row._count.id;
+      if (row.status === "COMPLETED") {
+        statsMap[row.templateId].completed += row._count.id;
+      }
+    }
+
+    const enriched = templates.map((t) => ({
+      ...t,
+      instanceCount: t._count.instances,
+      completedInstances: statsMap[t.id]?.completed ?? 0,
+    }));
+
+    return NextResponse.json(serialise({ templates: enriched }));
   } catch (error) {
     logger.error("Failed to list workflow templates", error);
     return NextResponse.json(
