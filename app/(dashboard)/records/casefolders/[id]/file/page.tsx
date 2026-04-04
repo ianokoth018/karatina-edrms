@@ -3,6 +3,10 @@
 import { useState, useEffect, useCallback, useRef, use } from "react";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
+import { useSession } from "next-auth/react";
+import dynamic from "next/dynamic";
+
+const RichTextEditor = dynamic(() => import("@/components/memo/rich-text-editor"), { ssr: false });
 
 /* ================================================================
    Types
@@ -539,6 +543,7 @@ export default function FileDocumentPage({
 }) {
   const { id } = use(params);
   const router = useRouter();
+  const { data: session } = useSession();
 
   /* ----- state ----- */
   const [casefolder, setCasefolder] = useState<CasefolderData | null>(null);
@@ -589,7 +594,7 @@ export default function FileDocumentPage({
         };
         setCasefolder(cf);
 
-        /* initialise field values with defaults */
+        /* initialise field values with defaults + auto-fill from session */
         const defaults: Record<string, any> = {};
         cf.fields.forEach((f) => {
           if (f.type === "section" || f.type === "divider") return;
@@ -599,6 +604,24 @@ export default function FileDocumentPage({
             defaults[f.name] = f.defaultValue ?? [];
           } else {
             defaults[f.name] = f.defaultValue ?? "";
+          }
+
+          // Auto-fill casefolder-level fields from session profile
+          if ((f as any).fieldLevel === "casefolder" && session?.user) {
+            const nameL = f.name.toLowerCase();
+            const labelL = (f.label ?? "").toLowerCase();
+            if (nameL.includes("from") || labelL.includes("from")) {
+              defaults[f.name] = session.user.name ?? "";
+            } else if (nameL.includes("designation") || labelL.includes("designation")) {
+              defaults[f.name] = (session.user as any).jobTitle ?? "";
+            } else if (nameL.includes("department_office") || labelL.includes("department office") || labelL.includes("office")) {
+              const dept = (session.user as any).department ?? "";
+              defaults[f.name] = dept ? `OFFICE OF THE ${dept.toUpperCase()}` : "";
+            } else if (nameL.includes("phone") || labelL.includes("phone")) {
+              defaults[f.name] = "+254 0716135171/0723683150";
+            } else if (nameL.includes("po_box") || nameL.includes("pobox") || labelL.includes("p.o")) {
+              defaults[f.name] = "P.O Box 1957-10101,KARATINA";
+            }
           }
         });
         setFieldValues(defaults);
@@ -873,19 +896,14 @@ export default function FileDocumentPage({
           />
         )}
 
-        {/* --- richtext --- */}
+        {/* --- richtext (TipTap editor) --- */}
         {field.type === "richtext" && (
-          <div className="space-y-1">
-            <textarea
-              rows={5}
-              value={val ?? ""}
-              onChange={(e) => setField(field.name, e.target.value)}
-              placeholder={field.placeholder}
-              readOnly={field.readOnly}
-              maxLength={field.validation?.maxLength}
-              className={inputCls(!!err)}
+          <div className="[&_.ProseMirror]:min-h-[300px]">
+            <RichTextEditor
+              content={(val as string) ?? ""}
+              onChange={(html) => setField(field.name, html)}
+              placeholder={field.placeholder || "Type your content here..."}
             />
-            <p className="text-[10px] text-gray-400 dark:text-gray-500 italic">Rich text formatting supported</p>
           </div>
         )}
 

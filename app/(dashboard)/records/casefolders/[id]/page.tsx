@@ -423,7 +423,14 @@ export default function CasefolderDetailPage({
           </p>
         </div>
         <Link
-          href={`/records/casefolders/${id}/file`}
+          href={(() => {
+            // Check if casefolder has a custom filing URL (e.g., /memos/new for Internal Memo)
+            try {
+              const descMeta = JSON.parse(casefolder?.description ?? "{}");
+              if (descMeta.customFilingUrl) return descMeta.customFilingUrl;
+            } catch { /* not JSON — use default */ }
+            return `/records/casefolders/${id}/file`;
+          })()}
           className="inline-flex items-center gap-2 px-5 py-2.5 rounded-xl text-sm font-semibold text-white bg-[#02773b] hover:bg-[#025f2f] shadow-sm transition-colors shrink-0"
         >
           <IconPlus className="w-4 h-4" />
