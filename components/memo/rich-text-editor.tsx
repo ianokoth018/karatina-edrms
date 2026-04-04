@@ -301,8 +301,8 @@ export default function RichTextEditor({
     editorProps: {
       attributes: {
         class:
-          "prose prose-sm dark:prose-invert max-w-none px-6 py-5 min-h-[280px] focus:outline-none text-gray-900 dark:text-gray-100",
-        style: `font-family: '${DEFAULT_FONT}', Arial, sans-serif; font-size: ${DEFAULT_FONT_SIZE}; background: white;`,
+          "prose prose-sm dark:prose-invert max-w-none px-6 py-5 min-h-[280px] focus:outline-none",
+        style: `font-family: '${DEFAULT_FONT}', Arial, sans-serif; font-size: ${DEFAULT_FONT_SIZE};`,
       },
     },
   });
