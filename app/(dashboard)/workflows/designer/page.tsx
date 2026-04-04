@@ -625,17 +625,38 @@ export default function WorkflowDesignerPage() {
   /* ================================================================== */
 
   async function handleDownloadImage() {
-    const canvas = document.querySelector(".react-flow") as HTMLElement;
-    if (!canvas) return;
+    // Target the viewport pane which contains just the nodes and edges
+    const viewport = document.querySelector(".react-flow__viewport") as HTMLElement;
+    if (!viewport) return;
+
+    // Temporarily hide minimap and controls for clean export
+    const minimap = document.querySelector(".react-flow__minimap") as HTMLElement;
+    const controls = document.querySelector(".react-flow__controls") as HTMLElement;
+    const panel = document.querySelector(".react-flow__panel") as HTMLElement;
+    if (minimap) minimap.style.display = "none";
+    if (controls) controls.style.display = "none";
+    if (panel) panel.style.display = "none";
 
     try {
       const { toPng } = await import("html-to-image");
+      // Use the parent container for full canvas capture
+      const canvas = document.querySelector(".react-flow") as HTMLElement;
       const dataUrl = await toPng(canvas, {
         backgroundColor: document.documentElement.classList.contains("dark")
           ? "#030712"
           : "#ffffff",
         quality: 1,
-        pixelRatio: 2,
+        pixelRatio: 3, // Higher resolution for readability
+        filter: (node) => {
+          // Exclude minimap, controls, attribution
+          if (node.classList) {
+            if (node.classList.contains("react-flow__minimap")) return false;
+            if (node.classList.contains("react-flow__controls")) return false;
+            if (node.classList.contains("react-flow__panel")) return false;
+            if (node.classList.contains("react-flow__attribution")) return false;
+          }
+          return true;
+        },
       });
       const link = document.createElement("a");
       link.download = `${templateName || "workflow"}.png`;
@@ -644,6 +665,11 @@ export default function WorkflowDesignerPage() {
     } catch {
       setSaveMessage({ type: "error", text: "Failed to export image" });
       setTimeout(() => setSaveMessage(null), 3000);
+    } finally {
+      // Restore hidden elements
+      if (minimap) minimap.style.display = "";
+      if (controls) controls.style.display = "";
+      if (panel) panel.style.display = "";
     }
   }
 
