@@ -20,6 +20,7 @@ import ReactFlow, {
   type NodeTypes,
   type OnNodesChange,
   type OnEdgesChange,
+  Panel,
 } from "reactflow";
 import "reactflow/dist/style.css";
 import type { Dispatch, SetStateAction } from "react";
@@ -240,6 +241,32 @@ export default function WorkflowCanvas({
           className="!bg-white dark:!bg-gray-800 !border-gray-200 dark:!border-gray-700 !rounded-xl !shadow-lg [&>button]:!border-gray-200 dark:[&>button]:!border-gray-700 [&>button]:!bg-white dark:[&>button]:!bg-gray-800 [&>button]:!rounded-lg [&>button>svg]:!fill-gray-600 dark:[&>button>svg]:!fill-gray-300"
           position="bottom-left"
         />
+        {/* Vertical scroll navigation */}
+        <Panel position="top-right" className="!mr-2 !mt-2">
+          <div className="flex flex-col gap-1 bg-white dark:bg-gray-800 border border-gray-200 dark:border-gray-700 rounded-xl shadow-lg p-1">
+            <button
+              onClick={() => reactFlowInstance.current?.setViewport({ x: reactFlowInstance.current.getViewport().x, y: reactFlowInstance.current.getViewport().y + 200, zoom: reactFlowInstance.current.getViewport().zoom }, { duration: 200 })}
+              className="p-1.5 rounded-lg hover:bg-gray-100 dark:hover:bg-gray-700 text-gray-500 dark:text-gray-400 transition-colors"
+              title="Scroll up"
+            >
+              <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" strokeWidth={2} stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" d="m4.5 15.75 7.5-7.5 7.5 7.5" /></svg>
+            </button>
+            <button
+              onClick={() => reactFlowInstance.current?.fitView({ padding: 0.2, duration: 300 })}
+              className="p-1.5 rounded-lg hover:bg-gray-100 dark:hover:bg-gray-700 text-gray-500 dark:text-gray-400 transition-colors"
+              title="Fit all nodes in view"
+            >
+              <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" strokeWidth={2} stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" d="M3.75 3.75v4.5m0-4.5h4.5m-4.5 0L9 9M3.75 20.25v-4.5m0 4.5h4.5m-4.5 0L9 15M20.25 3.75h-4.5m4.5 0v4.5m0-4.5L15 9m5.25 11.25h-4.5m4.5 0v-4.5m0 4.5L15 15" /></svg>
+            </button>
+            <button
+              onClick={() => reactFlowInstance.current?.setViewport({ x: reactFlowInstance.current.getViewport().x, y: reactFlowInstance.current.getViewport().y - 200, zoom: reactFlowInstance.current.getViewport().zoom }, { duration: 200 })}
+              className="p-1.5 rounded-lg hover:bg-gray-100 dark:hover:bg-gray-700 text-gray-500 dark:text-gray-400 transition-colors"
+              title="Scroll down"
+            >
+              <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" strokeWidth={2} stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" d="m19.5 8.25-7.5 7.5-7.5-7.5" /></svg>
+            </button>
+          </div>
+        </Panel>
         <MiniMap
           className="!bg-white dark:!bg-gray-800 !border-gray-200 dark:!border-gray-700 !rounded-xl !shadow-lg"
           nodeColor={(node: Node) => {
