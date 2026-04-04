@@ -323,17 +323,24 @@ export async function POST(req: NextRequest) {
 
     // Create everything in a transaction
     const result = await db.$transaction(async (tx) => {
+      // 0. Find the Internal Memo casefolder template (if it exists)
+      const memoCasefolder = await tx.formTemplate.findFirst({
+        where: { name: "Internal Memo", isActive: true },
+        select: { id: true },
+      });
+
       // 1. Create the Document record (type: MEMO)
       const document = await tx.document.create({
         data: {
           referenceNumber: memoReference,
           title: subject.trim(),
           description: memoBody.trim().slice(0, 500),
-          documentType: "MEMO",
+          documentType: memoCasefolder ? "Internal Memo" : "MEMO",
           department,
           createdById: session.user.id,
           status: "DRAFT",
           metadata: {
+            formTemplateId: memoCasefolder?.id ?? null,
             memoType: "INTERNAL",
             to: toDisplayName,
             toId: recipient?.id ?? null,
@@ -343,6 +350,17 @@ export async function POST(req: NextRequest) {
             department,
             departmentOffice: departmentOffice ?? "",
             designation: designation ?? "",
+            // Casefolder field values (for casefolder view)
+            department_office: departmentOffice ?? "",
+            from_name: initiator.displayName,
+            designation_value: designation ?? "",
+            phone: "+254 0716135171/0723683150",
+            po_box: "P.O Box 1957-10101,KARATINA",
+            to_name: toDisplayName,
+            reference_number: memoReference,
+            subject: subject.trim(),
+            memo_body: memoBody.trim(),
+            copy_to: (cc ?? []).join(", "),
             recommenders: recommenderUsers.map((r) => ({
               id: r.id,
               name: r.displayName,
