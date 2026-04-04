@@ -621,6 +621,33 @@ export default function WorkflowDesignerPage() {
   }
 
   /* ================================================================== */
+  /*  Download workflow as image                                         */
+  /* ================================================================== */
+
+  async function handleDownloadImage() {
+    const canvas = document.querySelector(".react-flow") as HTMLElement;
+    if (!canvas) return;
+
+    try {
+      const { toPng } = await import("html-to-image");
+      const dataUrl = await toPng(canvas, {
+        backgroundColor: document.documentElement.classList.contains("dark")
+          ? "#030712"
+          : "#ffffff",
+        quality: 1,
+        pixelRatio: 2,
+      });
+      const link = document.createElement("a");
+      link.download = `${templateName || "workflow"}.png`;
+      link.href = dataUrl;
+      link.click();
+    } catch {
+      setSaveMessage({ type: "error", text: "Failed to export image" });
+      setTimeout(() => setSaveMessage(null), 3000);
+    }
+  }
+
+  /* ================================================================== */
   /*  Template load / save / publish                                     */
   /* ================================================================== */
 
@@ -1148,6 +1175,28 @@ export default function WorkflowDesignerPage() {
                   {validationIssues.length}
                 </span>
               )}
+            </button>
+
+            {/* Download as Image */}
+            <button
+              onClick={handleDownloadImage}
+              className="h-8 px-2.5 rounded-lg text-xs font-medium text-gray-600 dark:text-gray-300 hover:bg-gray-100 dark:hover:bg-gray-800 transition-colors flex items-center gap-1.5"
+              title="Download workflow as PNG image"
+            >
+              <svg
+                className="w-3.5 h-3.5"
+                fill="none"
+                viewBox="0 0 24 24"
+                strokeWidth={2}
+                stroke="currentColor"
+              >
+                <path
+                  strokeLinecap="round"
+                  strokeLinejoin="round"
+                  d="M3 16.5v2.25A2.25 2.25 0 0 0 5.25 21h13.5A2.25 2.25 0 0 0 21 18.75V16.5M16.5 12 12 16.5m0 0L7.5 12m4.5 4.5V3"
+                />
+              </svg>
+              <span className="hidden lg:inline">Export</span>
             </button>
 
             {/* Preview/Simulate */}
