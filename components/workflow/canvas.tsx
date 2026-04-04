@@ -2,6 +2,7 @@
 
 import {
   useCallback,
+  useEffect,
   useMemo,
   useRef,
   type DragEvent,
@@ -73,6 +74,15 @@ export default function WorkflowCanvas({
   const reactFlowWrapper = useRef<HTMLDivElement>(null);
   const memoizedNodeTypes = useMemo(() => nodeTypes, []);
   const reactFlowInstance = useRef<ReactFlowInstance | null>(null);
+  const prevNodeCount = useRef(nodes.length);
+
+  // Auto-fit view when nodes are loaded/changed significantly (e.g., template load)
+  useEffect(() => {
+    if (nodes.length > 0 && nodes.length !== prevNodeCount.current && reactFlowInstance.current) {
+      setTimeout(() => reactFlowInstance.current?.fitView({ padding: 0.2, duration: 300 }), 150);
+    }
+    prevNodeCount.current = nodes.length;
+  }, [nodes.length]);
 
   const onConnect = useCallback(
     (params: Connection) => {
@@ -99,6 +109,8 @@ export default function WorkflowCanvas({
 
   const onInit = useCallback((instance: ReactFlowInstance) => {
     reactFlowInstance.current = instance;
+    // Auto-fit view when nodes are loaded
+    setTimeout(() => instance.fitView({ padding: 0.2, duration: 300 }), 100);
   }, []);
 
   const onDragOver = useCallback((event: DragEvent) => {
