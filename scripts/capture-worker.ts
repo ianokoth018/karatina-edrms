@@ -11,11 +11,21 @@
  *   "capture": "npx tsx scripts/capture-worker.ts"
  */
 
-import { PrismaClient } from "@prisma/client";
+import { PrismaClient, Prisma } from "@prisma/client";
 import chokidar, { type FSWatcher } from "chokidar";
 import { createHash } from "crypto";
 import { promises as fs } from "fs";
 import path from "path";
+import { parseXmlBuddyFile as sharedParseXmlBuddyFile } from "../lib/xml-buddy";
+import { validateMetadata } from "../lib/capture-validator";
+import { detectBarcodes } from "../lib/barcode";
+import { hasPdfSignatures } from "../lib/pdf-signature";
+import { removeBlankPages } from "../lib/pdf-quality";
+import { convertToPdfA } from "../lib/pdfa";
+import { generateThumbnail } from "../lib/thumbnail";
+import { enqueueOcr } from "../lib/queue";
+import { fireTriggers } from "../lib/capture-notifications";
+import pLimit from "p-limit";
 
 // ---------------------------------------------------------------------------
 // Configuration
@@ -115,8 +125,14 @@ interface CaptureProfileRecord {
   department: string | null;
   classificationNodeId: string | null;
   metadataMapping: unknown;
+  validationRules: unknown;
   duplicateAction: string;
   createdById: string;
+  priority: number;
+  sourceType: string;
+  enableBlankPageRemoval: boolean;
+  enablePdfA: boolean;
+  pdfALevel: string | null;
 }
 
 interface ActiveWatcher {
@@ -138,6 +154,11 @@ const prisma = new PrismaClient();
 const watchers = new Map<string, ActiveWatcher>();
 let refreshTimer: ReturnType<typeof setInterval> | null = null;
 let isShuttingDown = false;
+
+// Global concurrency limit — caps simultaneous file processing across all profiles
+const fileProcessingLimit = pLimit(8);
+// Separate lower-limit limiter for OCR (CPU-intensive)
+const ocrLimit = pLimit(3);
 
 // ---------------------------------------------------------------------------
 // Department code lookup (mirrors lib/departments.ts)
@@ -261,54 +282,316 @@ function extractMetadata(
  * </root>
  * ```
  */
-async function parseXmlBuddyFile(
-  documentFilePath: string
-): Promise<{ found: boolean; metadata: Record<string, string>; xmlPath: string | null }> {
+/**
+ * Poll for a sibling XML buddy file to appear alongside a document. Scanners
+ * often drop the PDF first and the XML a beat or two later; without waiting
+ * we'd commit the PDF with empty casefolder metadata.
+ *
+ * Only call this when the profile actually expects an XML (e.g. linked to a
+ * casefolder). Returns true if found, false if the timeout elapsed.
+ */
+async function waitForXmlBuddy(
+  documentFilePath: string,
+  maxWaitMs = 5000,
+  pollIntervalMs = 500
+): Promise<boolean> {
   const dir = path.dirname(documentFilePath);
   const baseName = path.basename(documentFilePath, path.extname(documentFilePath));
   const xmlPath = path.join(dir, `${baseName}.xml`);
+  const start = Date.now();
+  while (Date.now() - start < maxWaitMs) {
+    try {
+      const stat = await fs.stat(xmlPath);
+      if (stat.size > 0) return true;
+    } catch { /* not present yet */ }
+    await new Promise((r) => setTimeout(r, pollIntervalMs));
+  }
+  return false;
+}
 
-  try {
-    await fs.access(xmlPath);
-  } catch {
-    return { found: false, metadata: {}, xmlPath: null };
+/**
+ * Symmetric to waitForXmlBuddy: poll for any sibling document file whose
+ * basename matches the XML's basename AND whose extension is one of the
+ * profile's allowed types (excluding xml). Returns the absolute path of the
+ * first match, or null if the timeout elapsed.
+ */
+async function waitForPdfBuddy(
+  xmlFilePath: string,
+  profile: CaptureProfileRecord,
+  maxWaitMs = 5000,
+  pollIntervalMs = 500
+): Promise<string | null> {
+  const dir = path.dirname(xmlFilePath);
+  const baseName = path.basename(xmlFilePath, path.extname(xmlFilePath));
+  const candidateExts = profile.fileTypes
+    .map((ft) => ft.toLowerCase().replace(/^\./, ""))
+    .filter((ext) => ext && ext !== "xml");
+  const start = Date.now();
+  while (Date.now() - start < maxWaitMs) {
+    for (const ext of candidateExts) {
+      const candidate = path.join(dir, `${baseName}.${ext}`);
+      try {
+        const stat = await fs.stat(candidate);
+        if (stat.size > 0) return candidate;
+      } catch { /* not present yet */ }
+    }
+    await new Promise((r) => setTimeout(r, pollIntervalMs));
+  }
+  return null;
+}
+
+/**
+ * Find a sibling document file next to the given XML whose extension is in
+ * the profile's allowed types (excluding xml). Synchronous single-shot check
+ * (no polling). Returns the absolute path or null.
+ */
+async function findSiblingDocument(
+  xmlFilePath: string,
+  profile: CaptureProfileRecord
+): Promise<string | null> {
+  const dir = path.dirname(xmlFilePath);
+  const baseName = path.basename(xmlFilePath, path.extname(xmlFilePath));
+  const candidateExts = profile.fileTypes
+    .map((ft) => ft.toLowerCase().replace(/^\./, ""))
+    .filter((ext) => ext && ext !== "xml");
+  for (const ext of candidateExts) {
+    const candidate = path.join(dir, `${baseName}.${ext}`);
+    try {
+      const stat = await fs.stat(candidate);
+      if (stat.size > 0) return candidate;
+    } catch { /* not present */ }
+  }
+  return null;
+}
+
+async function parseXmlBuddyFile(
+  documentFilePath: string
+): Promise<{ found: boolean; metadata: Record<string, string>; xmlPath: string | null }> {
+  const result = await sharedParseXmlBuddyFile(documentFilePath);
+  if (result.error) {
+    log.warn(
+      `Failed to parse XML buddy file: ${result.xmlPath} — ${result.error}`
+    );
+  } else if (result.found && result.xmlPath) {
+    log.info(
+      `XML buddy file found: ${BLUE}${path.basename(result.xmlPath)}${RESET} — ${result.fields.length} fields extracted`
+    );
+  }
+  return { found: result.found, metadata: result.metadata, xmlPath: result.xmlPath };
+}
+
+// ---------------------------------------------------------------------------
+// Orphan XML repair — patch documents whose sidecar arrived after the PDF
+// ---------------------------------------------------------------------------
+
+/**
+ * Handle a standalone XML sidecar whose paired PDF was already captured.
+ * Looks for a recent CaptureLog (last 60s) sharing the basename and, if found,
+ * merges the XML metadata into the linked Document. If no recent orphan
+ * capture exists we silently return so processFile's own XML wait can consume
+ * the sidecar when the PDF eventually arrives.
+ */
+async function handleOrphanXml(
+  xmlPath: string,
+  profile: CaptureProfileRecord
+): Promise<void> {
+  const xmlName = path.basename(xmlPath);
+  const baseName = path.basename(xmlPath, path.extname(xmlPath));
+
+  // 1. If a sibling document file exists right now, let the PDF's own add
+  //    event drive the pairing. Do not delete/move the XML.
+  if (profile.formTemplateId) {
+    const sibling = await findSiblingDocument(xmlPath, profile);
+    if (sibling) {
+      log.debug(
+        `Standalone XML "${xmlName}" — sibling ${path.basename(sibling)} already present; PDF handler will pair`
+      );
+      return;
+    }
   }
 
-  try {
-    const xmlContent = await fs.readFile(xmlPath, "utf-8");
-    const metadata: Record<string, string> = {};
+  // 2. Look for a recently captured sibling (PDF, TIFF, etc.) in this profile
+  //    — orphan-repair for late-arriving XMLs (unchanged 60s window).
+  const cutoff = new Date(Date.now() - 60_000);
+  const orphan = await prisma.captureLog.findFirst({
+    where: {
+      profileId: profile.id,
+      status: "CAPTURED",
+      documentId: { not: null },
+      createdAt: { gte: cutoff },
+      fileName: { startsWith: `${baseName}.` },
+    },
+    orderBy: { createdAt: "desc" },
+  });
 
-    // Parse <field ... name="X" value="Y" /> elements using regex
-    // Handles attributes in any order: name/value/level
-    const fieldRegex = /<field\s[^>]*?\bname\s*=\s*"([^"]*)"[^>]*?\bvalue\s*=\s*"([^"]*)"[^>]*?\/?>/gi;
-    let match: RegExpExecArray | null;
-
-    while ((match = fieldRegex.exec(xmlContent)) !== null) {
-      const fieldName = match[1].trim();
-      const fieldValue = match[2].trim();
-      if (fieldName && fieldValue) {
-        // Convert "Student Name" → "studentName" for metadata key
-        const key = fieldName
-          .toLowerCase()
-          .replace(/[^a-z0-9]+/g, "_")
-          .replace(/^_|_$/g, "")
-          .replace(/_([a-z])/g, (_, c) => c.toUpperCase());
-        metadata[key] = fieldValue;
-
-        // Also store with original field name for display
-        metadata[`_raw_${fieldName}`] = fieldValue;
+  if (!orphan || !orphan.documentId) {
+    // 3. No orphan to repair. For casefolder-linked profiles, enforce the
+    //    mandatory PDF-buddy rule: wait up to 5s for the PDF; if it arrives,
+    //    the PDF's own handler takes over. If not, the XML is incomplete —
+    //    move to errorPath (or delete) and log FAILED.
+    if (profile.formTemplateId) {
+      const pdfArrived = await waitForPdfBuddy(xmlPath, profile, 5000);
+      if (pdfArrived) {
+        log.debug(
+          `Standalone XML "${xmlName}" — PDF ${path.basename(pdfArrived)} arrived during wait; PDF handler will pair`
+        );
+        return;
       }
+
+      // Verify the XML is still present (the PDF handler may have consumed it)
+      try {
+        await fs.access(xmlPath);
+      } catch {
+        log.debug(`XML "${xmlName}" already consumed while waiting for PDF`);
+        return;
+      }
+
+      log.warn(
+        `${YELLOW}Incomplete buddy pair${RESET} — XML "${BLUE}${xmlName}${RESET}" arrived without its PDF sidecar`,
+        { basename: baseName, reason: "MISSING_PDF_BUDDY" }
+      );
+
+      let movedTo: string | null = null;
+      if (profile.errorPath) {
+        try {
+          movedTo = await moveFile(xmlPath, profile.errorPath, xmlName);
+        } catch (moveErr) {
+          log.error(`Failed to move incomplete XML to errorPath`, moveErr);
+        }
+      } else {
+        try { await fs.unlink(xmlPath); } catch { /* already gone */ }
+      }
+
+      await prisma.captureLog.create({
+        data: {
+          profileId: profile.id,
+          fileName: xmlName,
+          filePath: movedTo ?? xmlPath,
+          // See note in processFile: CaptureStatus enum has no FAILED value.
+          status: "ERROR",
+          errorMessage:
+            "Incomplete buddy pair — XML arrived without its PDF sidecar",
+          metadata: { reason: "MISSING_PDF_BUDDY", basename: baseName },
+          processedAt: new Date(),
+        },
+      });
+      return;
     }
 
-    log.info(
-      `XML buddy file found: ${BLUE}${path.basename(xmlPath)}${RESET} — ${Object.keys(metadata).filter((k) => !k.startsWith("_raw_")).length} fields extracted`
+    // Non-casefolder profile — XML is an accident here. Move/delete silently.
+    log.debug(
+      `Standalone XML "${xmlName}" on non-casefolder profile — moving aside`
     );
-
-    return { found: true, metadata, xmlPath };
-  } catch (err) {
-    log.warn(`Failed to parse XML buddy file: ${xmlPath} — ${err instanceof Error ? err.message : err}`);
-    return { found: false, metadata: {}, xmlPath };
+    if (profile.errorPath) {
+      try { await moveFile(xmlPath, profile.errorPath, xmlName); } catch { /* already gone */ }
+    } else {
+      try { await fs.unlink(xmlPath); } catch { /* already gone */ }
+    }
+    return;
   }
+
+  // Parse the XML metadata.
+  const parsed = await parseXmlBuddyFile(path.join(path.dirname(xmlPath), `${baseName}.xml`));
+  if (!parsed.found) {
+    log.warn(`Orphan XML "${xmlName}" could not be parsed; leaving in place`);
+    return;
+  }
+
+  // Load the existing document and merge metadata.
+  const doc = await prisma.document.findUnique({
+    where: { id: orphan.documentId },
+    select: { id: true, metadata: true },
+  });
+  if (!doc) {
+    log.warn(`Orphan XML "${xmlName}" — linked document ${orphan.documentId} missing`);
+    return;
+  }
+
+  // Optionally re-map XML raw names via the casefolder template for this doc.
+  // The template id is stored in document.metadata.formTemplateId (set at
+  // capture time); fall back to the profile's template.
+  const remapped: Record<string, string> = {};
+  const docMetaInitial = (doc.metadata ?? {}) as Record<string, unknown>;
+  const templateId =
+    (typeof docMetaInitial.formTemplateId === "string"
+      ? (docMetaInitial.formTemplateId as string)
+      : null) ?? profile.formTemplateId;
+  if (templateId) {
+    const template = await prisma.formTemplate.findUnique({
+      where: { id: templateId },
+      select: { fields: true },
+    });
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const fields = (template?.fields as any[]) ?? [];
+    for (const cf of fields) {
+      if (!cf?.name) continue;
+      const xmlName = cf.xmlFieldName || cf.label;
+      if (xmlName) {
+        const raw = parsed.metadata[`_raw_${xmlName}`];
+        if (raw) remapped[cf.name] = raw;
+      }
+    }
+  }
+
+  const existing = (doc.metadata ?? {}) as Record<string, unknown>;
+  const existingLabels = (existing._fieldLabels as Record<string, string>) ?? {};
+  const cleanXml = Object.fromEntries(
+    Object.entries(parsed.metadata).filter(([k]) => !k.startsWith("_raw_"))
+  );
+  const xmlLabels = Object.fromEntries(
+    Object.entries(parsed.metadata)
+      .filter(([k]) => k.startsWith("_raw_"))
+      .map(([k, v]) => [k.replace("_raw_", ""), v])
+  );
+
+  const mergedMetadata: Record<string, unknown> = {
+    ...existing,
+    ...cleanXml,
+    ...remapped,
+    xmlSource: true,
+    _fieldLabels: { ...existingLabels, ...xmlLabels },
+  };
+
+  await prisma.document.update({
+    where: { id: doc.id },
+    // Cast: Prisma's JSON input type doesn't accept arbitrary
+    // Record<string, unknown> directly; mergedMetadata is JSON-safe by
+    // construction.
+    data: { metadata: mergedMetadata as unknown as Prisma.InputJsonValue },
+  });
+
+  // Move or delete the XML so we don't re-process it.
+  if (profile.processedPath) {
+    try {
+      await moveFile(xmlPath, profile.processedPath, xmlName);
+    } catch { /* already gone */ }
+  } else {
+    try { await fs.unlink(xmlPath); } catch { /* already gone */ }
+  }
+
+  // Traceability log. Note: the CaptureStatus enum does not include a
+  // METADATA_PATCHED value and the task forbids schema changes, so we store
+  // the sentinel inside metadata.action and use CAPTURED for the row status.
+  await prisma.captureLog.create({
+    data: {
+      profileId: profile.id,
+      fileName: xmlName,
+      filePath: xmlPath,
+      status: "CAPTURED",
+      documentId: doc.id,
+      metadata: {
+        action: "METADATA_PATCHED",
+        patchedFromLogId: orphan.id,
+        fields: cleanXml,
+      },
+      processedAt: new Date(),
+    },
+  });
+
+  log.success(
+    `${MAGENTA}Orphan XML patched${RESET} "${BLUE}${xmlName}${RESET}" -> doc ${BOLD}${doc.id}${RESET}`,
+    { originLogId: orphan.id }
+  );
 }
 
 // ---------------------------------------------------------------------------
@@ -365,9 +648,12 @@ async function processFile(
     profile: profile.name,
   });
 
-  // 1a. Skip XML buddy files — they are consumed alongside their document pair
+  // 1a. Standalone XML files are handled by the orphan-repair backstop —
+  // when a PDF was committed before its sidecar arrived, patch the document
+  // metadata now. If no recent orphan capture exists, assume the PDF will
+  // arrive shortly and let processFile consume this XML as a buddy.
   if (ext === "xml") {
-    log.debug(`Skipping XML buddy file (will be consumed with its document pair): ${fileName}`);
+    await handleOrphanXml(filePath, profile);
     return;
   }
 
@@ -398,14 +684,118 @@ async function processFile(
     return;
   }
 
-  // 4. Get file stats
+  // 4. Wait for the XML buddy when the profile expects one. We only wait for
+  // casefolder-linked profiles; plain filename-mapping profiles skip the wait.
+  // This must happen BEFORE the hash / dedup check so a late-arriving XML
+  // doesn't cause us to process the same basename twice.
+  //
+  // NEW (mandatory buddy-pair rule): for casefolder-linked profiles the PDF
+  // and XML are a REQUIRED pair. If the XML never arrives, we must NOT file
+  // the PDF with filename-only metadata — move to errorPath (or delete) and
+  // log a FAILED CaptureLog entry with reason MISSING_XML_BUDDY.
+  const expectsXml = !!profile.formTemplateId;
+  if (expectsXml) {
+    const found = await waitForXmlBuddy(filePath, 5000);
+    log.debug(`XML buddy wait for ${fileName}: ${found ? "found" : "timed out"}`);
+    if (!found) {
+      const baseName = path.basename(fileName, path.extname(fileName));
+      log.warn(
+        `${YELLOW}Incomplete buddy pair${RESET} — PDF "${BLUE}${fileName}${RESET}" arrived without its XML sidecar`,
+        { basename: baseName, reason: "MISSING_XML_BUDDY" }
+      );
+
+      let movedTo: string | null = null;
+      if (profile.errorPath) {
+        try {
+          movedTo = await moveFile(filePath, profile.errorPath, fileName);
+        } catch (moveErr) {
+          log.error(`Failed to move incomplete PDF to errorPath`, moveErr);
+        }
+      } else {
+        try { await fs.unlink(filePath); } catch { /* already gone */ }
+      }
+
+      await prisma.captureLog.create({
+        data: {
+          profileId: profile.id,
+          fileName,
+          filePath: movedTo ?? filePath,
+          // CaptureStatus enum has no FAILED value and schema changes are
+          // forbidden; ERROR is the existing semantic for a failure that
+          // yields no Document. Discriminator lives in metadata.reason.
+          status: "ERROR",
+          errorMessage:
+            "Incomplete buddy pair — PDF arrived without its XML sidecar",
+          metadata: { reason: "MISSING_XML_BUDDY", basename: baseName },
+          processedAt: new Date(),
+        },
+      });
+      return;
+    }
+  }
+
+  // 5. Extract metadata — XML buddy file takes priority, then filename pattern.
+  // Done before hashing/dedup so the commit step has full metadata knowledge.
+  const metadataMapping = (profile.metadataMapping ?? {}) as Record<string, unknown>;
+  const filenameMeta = extractMetadata(fileName, metadataMapping);
+
+  // Check for XML buddy file (scanner sidecar)
+  const xmlResult = await parseXmlBuddyFile(filePath);
+  const extractedMeta: Record<string, string> = {
+    ...filenameMeta,      // filename pattern fields as baseline
+    ...xmlResult.metadata, // XML fields override filename fields
+  };
+
+  // 5b. Per-field validation. If any rule fails, create a CaptureException
+  // (status=PENDING) and log VALIDATION_FAILED. The file is left in place
+  // (not moved to errorPath) so the exception-review UI can inspect and
+  // re-trigger capture once metadata is corrected.
+  if (profile.validationRules) {
+    const validation = await validateMetadata(
+      profile.validationRules,
+      extractedMeta,
+      prisma
+    );
+    if (!validation.valid) {
+      await prisma.captureException.create({
+        data: {
+          profileId: profile.id,
+          filePath,
+          extractedMetadata: extractedMeta,
+          errors: validation.errors as unknown as Prisma.InputJsonValue,
+          status: "PENDING",
+        },
+      });
+      await prisma.captureLog.create({
+        data: {
+          profileId: profile.id,
+          fileName,
+          filePath,
+          status: "VALIDATION_FAILED",
+          errorMessage: `Metadata validation failed (${validation.errors.length} error${validation.errors.length === 1 ? "" : "s"})`,
+          metadata: {
+            extractedMetadata: extractedMeta,
+            validationErrors: validation.errors,
+          } as unknown as Prisma.InputJsonValue,
+          processedAt: new Date(),
+        },
+      });
+      log.warn(
+        `${YELLOW}Validation failed${RESET} — "${BLUE}${fileName}${RESET}" left in place for review`,
+        { errors: validation.errors.map((e) => `${e.field}:${e.reason}`) }
+      );
+      return;
+    }
+  }
+
+  // 6. Get file stats
   const stats = await fs.stat(filePath);
 
-  // 5. Compute SHA-256 hash
+  // 7. Compute SHA-256 hash
   const fileHash = await computeFileHash(filePath);
   log.debug(`Hash for "${fileName}": ${fileHash}`);
 
-  // 6. Check for duplicates in capture_logs
+  // 8. Check for duplicates in capture_logs
   const existingLog = await prisma.captureLog.findFirst({
     where: {
       fileHash,
@@ -466,18 +856,8 @@ async function processFile(
     log.info(`Duplicate action is VERSION — processing as new document`);
   }
 
-  // 7. Extract metadata — XML buddy file takes priority, then filename pattern
-  const metadataMapping = (profile.metadataMapping ?? {}) as Record<string, unknown>;
-  const filenameMeta = extractMetadata(fileName, metadataMapping);
-
-  // Check for XML buddy file (scanner sidecar)
-  const xmlResult = await parseXmlBuddyFile(filePath);
-  const extractedMeta: Record<string, string> = {
-    ...filenameMeta,      // filename pattern fields as baseline
-    ...xmlResult.metadata, // XML fields override filename fields
-  };
-
-  // Clean up the buddy XML file if found
+  // 9. Clean up the buddy XML file if found (deferred until after dedup so a
+  // skipped duplicate does not consume its sidecar).
   if (xmlResult.found && xmlResult.xmlPath) {
     if (profile.processedPath) {
       await moveFile(xmlResult.xmlPath, profile.processedPath, path.basename(xmlResult.xmlPath));
@@ -547,6 +927,41 @@ async function processFile(
   const destPath = path.join(uploadDir, fileName);
   await fs.copyFile(filePath, destPath);
   const storagePath = `uploads/edrms/${referenceNumber}/${fileName}`;
+
+  // 10b. Pre-encryption PDF processing (blank page removal + PDF/A conversion)
+  // These modify the stored copy at destPath before it is encrypted.
+  if (ext === "pdf") {
+    if (profile.enableBlankPageRemoval) {
+      try {
+        const tmpPath = destPath + ".noblanks.pdf";
+        const result = await removeBlankPages(destPath, tmpPath);
+        if (result.removedPages.length > 0) {
+          await fs.rename(tmpPath, destPath);
+          log.info(
+            `Removed ${result.removedPages.length} blank page(s) from "${fileName}"`,
+            { removed: result.removedPages, total: result.totalPages }
+          );
+        } else {
+          await fs.unlink(tmpPath).catch(() => null);
+        }
+      } catch (blankErr) {
+        log.warn(`Blank page removal failed (non-fatal)`, blankErr as Record<string, unknown>);
+      }
+    }
+
+    if (profile.enablePdfA) {
+      try {
+        const pdfaPath = destPath + ".pdfa.pdf";
+        const result = await convertToPdfA(destPath, pdfaPath, (profile.pdfALevel || "2b") as "1b" | "2b" | "3b");
+        if (result) {
+          await fs.rename(pdfaPath, destPath);
+          log.info(`Converted "${fileName}" to PDF/A-${profile.pdfALevel || "2b"}`);
+        }
+      } catch (pdfaErr) {
+        log.warn(`PDF/A conversion failed (non-fatal)`, pdfaErr as Record<string, unknown>);
+      }
+    }
+  }
 
   // Encrypt the file at rest using AES-256-GCM
   let encryptionIv: string | null = null;
@@ -645,6 +1060,65 @@ async function processFile(
     return { document: doc, captureLog: logEntry };
   });
 
+  // 11b. Phase 2 enrichment: barcode, signature, thumbnail, OCR, triggers
+  const enrichmentMeta: Record<string, unknown> = {};
+
+  if (ext === "pdf" || ext === "tiff") {
+    try {
+      const barcodes = await detectBarcodes(filePath);
+      if (barcodes.length > 0) {
+        enrichmentMeta.barcodes = barcodes.map((b) => ({ type: b.type, data: b.data, confidence: b.confidence }));
+        log.info("Barcode(s) found: " + barcodes.map((b) => b.data).join(", "));
+      }
+    } catch { /* non-fatal */ }
+  }
+
+  if (ext === "pdf") {
+    try {
+      enrichmentMeta.hasPdfSignatures = await hasPdfSignatures(filePath);
+    } catch { /* non-fatal */ }
+  }
+
+  if (ext === "pdf") {
+    try {
+      const thumbPath = await generateThumbnail(filePath, uploadDir, { page: 1, dpi: 150 });
+      enrichmentMeta.thumbnailPath = thumbPath;
+      log.debug("Thumbnail: " + thumbPath);
+    } catch { /* non-fatal */ }
+  }
+
+  if (Object.keys(enrichmentMeta).length > 0) {
+    try {
+      await prisma.document.update({
+        where: { id: document.id },
+        data: { metadata: { ...(document.metadata as object), ...enrichmentMeta } as import("@prisma/client").Prisma.InputJsonValue },
+      });
+    } catch { /* non-fatal */ }
+  }
+
+  // Enqueue OCR with profile priority
+  const fileRecord = await prisma.documentFile.findFirst({
+    where: { documentId: document.id },
+    select: { id: true },
+  });
+  if (fileRecord) {
+    await enqueueOcr(fileRecord.id, { priority: profile.priority ?? 0 });
+    log.debug("OCR enqueued for fileId: " + fileRecord.id + " (priority: " + (profile.priority ?? 0) + ")");
+  }
+
+  // Fire capture notification triggers
+  try {
+    await fireTriggers(prisma, {
+      profileId: profile.id,
+      documentType: document.documentType ?? null,
+      registrationNumber: (extractedMeta as Record<string, string>).registrationNumber ?? null,
+      documentId: document.id,
+      fileId: fileRecord?.id ?? null,
+      fileName,
+      metadata: enrichmentMeta,
+    });
+  } catch { /* non-fatal */ }
+
   // 12. Move original file to processedPath or delete it
   if (profile.processedPath) {
     await moveFile(filePath, profile.processedPath, fileName);
@@ -741,9 +1215,10 @@ async function startWatcher(profile: CaptureProfileRecord): Promise<void> {
     if (isShuttingDown) return;
     log.info(`${YELLOW}File detected:${RESET} ${path.basename(filePath)}`, {
       folder: profile.folderPath,
+      queued: fileProcessingLimit.pendingCount,
+      active: fileProcessingLimit.activeCount,
     });
-    // Queue for processing (fire-and-forget, errors caught internally)
-    safeProcessFile(filePath, profile);
+    fileProcessingLimit(() => safeProcessFile(filePath, profile));
   });
 
   watcher.on("error", (err: unknown) => {
@@ -793,8 +1268,14 @@ async function refreshProfiles(): Promise<void> {
         department: true,
         classificationNodeId: true,
         metadataMapping: true,
+        validationRules: true,
         duplicateAction: true,
         createdById: true,
+        priority: true,
+        sourceType: true,
+        enableBlankPageRemoval: true,
+        enablePdfA: true,
+        pdfALevel: true,
       },
     });
 
@@ -843,6 +1324,12 @@ async function shutdown(signal: string): Promise<void> {
     closePromises.push(stopWatcher(id));
   }
   await Promise.all(closePromises);
+
+  // Stop pg-boss gracefully
+  try {
+    const { stopBoss } = await import("../lib/queue");
+    await stopBoss();
+  } catch { /* ignore */ }
 
   // Disconnect Prisma
   await prisma.$disconnect();
@@ -899,6 +1386,10 @@ async function main(): Promise<void> {
   // Ensure uploads directory exists
   await fs.mkdir(UPLOADS_DIR, { recursive: true });
 
+  // Start the pg-boss OCR worker in this process
+  const { startOcrWorker, stopBoss } = await import("../lib/queue");
+  await startOcrWorker();
+
   // Initial profile load
   const profiles = await prisma.captureProfile.findMany({
     where: { isActive: true },
@@ -916,6 +1407,11 @@ async function main(): Promise<void> {
       metadataMapping: true,
       duplicateAction: true,
       createdById: true,
+      priority: true,
+      sourceType: true,
+      enableBlankPageRemoval: true,
+      enablePdfA: true,
+      pdfALevel: true,
     },
   });
 

@@ -9,6 +9,18 @@ import { Can } from "@/components/auth/can";
    Types
    ================================================================ */
 
+interface FieldRule {
+  name: string;
+  required?: boolean;
+  regex?: string;
+  enum?: string[];
+  lookupTable?: string;
+}
+
+interface ValidationRules {
+  fields: FieldRule[];
+}
+
 interface CaptureProfile {
   id: string;
   name: string;
@@ -22,6 +34,7 @@ interface CaptureProfile {
   formTemplateId: string | null;
   department: string | null;
   metadataMapping: Record<string, string> | null;
+  validationRules: ValidationRules | Record<string, unknown> | null;
   duplicateAction: "SKIP" | "VERSION" | "FLAG";
   lastScanAt: string | null;
   _count: { logs: number };
@@ -501,6 +514,7 @@ export default function CaptureProfilesPage() {
   const [fFormTemplateId, setFFormTemplateId] = useState("");
   const [fDepartment, setFDepartment] = useState("");
   // Filename pattern removed — metadata comes from XML buddy files
+  const [fValidationFields, setFValidationFields] = useState<FieldRule[]>([]);
   const [fDuplicateAction, setFDuplicateAction] = useState<"SKIP" | "VERSION" | "FLAG">("SKIP");
 
   /* -------- scan state -------- */
@@ -628,6 +642,7 @@ export default function CaptureProfilesPage() {
     setFPollingInterval(60);
     setFFormTemplateId("");
     setFDepartment("");
+    setFValidationFields([]);
     setFDuplicateAction("SKIP");
     setShowModal(true);
   }
@@ -645,6 +660,10 @@ export default function CaptureProfilesPage() {
     setFFormTemplateId(profile.formTemplateId ?? "");
     setFDepartment(profile.department ?? "");
     // metadataMapping no longer used — XML buddy files provide metadata
+    const vr = profile.validationRules as ValidationRules | null;
+    setFValidationFields(
+      vr && Array.isArray(vr.fields) ? (vr.fields as FieldRule[]) : []
+    );
     setFDuplicateAction(profile.duplicateAction);
     setShowModal(true);
   }
@@ -665,6 +684,7 @@ export default function CaptureProfilesPage() {
         formTemplateId: fFormTemplateId || undefined,
         department: fDepartment || undefined,
         metadataMapping: {},
+        validationRules: { fields: fValidationFields },
         duplicateAction: fDuplicateAction,
       };
 
@@ -1187,6 +1207,120 @@ export default function CaptureProfilesPage() {
               </div>
             </div>
           </div>
+
+          {/* Validation Rules */}
+          <Field
+            label="Validation Rules"
+            hint="Per-field rules applied to extracted metadata before capture. On failure, an exception is created and the file is left in place for review."
+          >
+            <div className="space-y-2 mt-1">
+              {fValidationFields.length === 0 && (
+                <div className="p-3 rounded-xl border border-dashed border-gray-200 dark:border-gray-700 text-xs text-gray-500 dark:text-gray-400 text-center">
+                  No validation rules configured. Files will be captured without per-field checks.
+                </div>
+              )}
+              {fValidationFields.map((rule, idx) => (
+                <div
+                  key={idx}
+                  className="p-3 rounded-xl border border-gray-200 dark:border-gray-700 bg-gray-50/50 dark:bg-gray-800/30 space-y-2"
+                >
+                  <div className="flex items-center gap-2">
+                    <input
+                      type="text"
+                      value={rule.name}
+                      onChange={(e) => {
+                        const next = [...fValidationFields];
+                        next[idx] = { ...next[idx], name: e.target.value };
+                        setFValidationFields(next);
+                      }}
+                      placeholder="Field name (e.g. registrationNumber)"
+                      className={`${monoInputClass} flex-1`}
+                    />
+                    <label className="inline-flex items-center gap-1.5 text-xs text-gray-600 dark:text-gray-400 whitespace-nowrap">
+                      <input
+                        type="checkbox"
+                        checked={!!rule.required}
+                        onChange={(e) => {
+                          const next = [...fValidationFields];
+                          next[idx] = { ...next[idx], required: e.target.checked };
+                          setFValidationFields(next);
+                        }}
+                        className="rounded border-gray-300 text-karu-green focus:ring-karu-green"
+                      />
+                      Required
+                    </label>
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setFValidationFields(
+                          fValidationFields.filter((_, i) => i !== idx)
+                        );
+                      }}
+                      className="p-1.5 rounded-lg text-red-500 hover:bg-red-50 dark:hover:bg-red-950/30 transition-colors"
+                      aria-label="Remove rule"
+                    >
+                      <IconTrash className="w-4 h-4" />
+                    </button>
+                  </div>
+                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
+                    <input
+                      type="text"
+                      value={rule.regex ?? ""}
+                      onChange={(e) => {
+                        const next = [...fValidationFields];
+                        next[idx] = {
+                          ...next[idx],
+                          regex: e.target.value || undefined,
+                        };
+                        setFValidationFields(next);
+                      }}
+                      placeholder="Regex (optional)"
+                      className={monoInputClass}
+                    />
+                    <input
+                      type="text"
+                      value={rule.lookupTable ?? ""}
+                      onChange={(e) => {
+                        const next = [...fValidationFields];
+                        next[idx] = {
+                          ...next[idx],
+                          lookupTable: e.target.value || undefined,
+                        };
+                        setFValidationFields(next);
+                      }}
+                      placeholder="Lookup table (e.g. Student.registrationNumber)"
+                      className={monoInputClass}
+                    />
+                  </div>
+                  <input
+                    type="text"
+                    value={rule.enum ? rule.enum.join(", ") : ""}
+                    onChange={(e) => {
+                      const next = [...fValidationFields];
+                      const raw = e.target.value.trim();
+                      const parts = raw
+                        ? raw.split(",").map((s) => s.trim()).filter(Boolean)
+                        : undefined;
+                      next[idx] = { ...next[idx], enum: parts };
+                      setFValidationFields(next);
+                    }}
+                    placeholder="Enum values (comma-separated, optional)"
+                    className={inputClass}
+                  />
+                </div>
+              ))}
+              <button
+                type="button"
+                onClick={() =>
+                  setFValidationFields([...fValidationFields, { name: "" }])
+                }
+                className="inline-flex items-center gap-1.5 h-8 px-3 rounded-lg text-xs font-medium text-[#02773b] bg-[#02773b]/10 hover:bg-[#02773b]/20 dark:bg-emerald-950/20 dark:hover:bg-emerald-950/40 dark:text-emerald-400 transition-colors"
+              >
+                <IconPlus className="w-3.5 h-3.5" />
+                Add Field Rule
+              </button>
+            </div>
+          </Field>
 
           {/* Duplicate Action */}
           <Field label="Duplicate Action">

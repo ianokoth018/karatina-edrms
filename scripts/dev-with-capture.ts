@@ -52,12 +52,14 @@ function startProcess(name: string, command: string, args: string[]): ChildProce
   return child;
 }
 
-// Start both processes
+// Start all processes
 startProcess("next", "npx", ["next", "dev"]);
 
-// Delay capture worker slightly to let Prisma warm up
+// Delay workers slightly to let Prisma warm up
 setTimeout(() => {
   startProcess("capture", "npx", ["tsx", "scripts/capture-worker.ts"]);
+  startProcess("email",   "npx", ["tsx", "scripts/email-capture-worker.ts"]);
+  startProcess("remote",  "npx", ["tsx", "scripts/remote-capture-worker.ts"]);
 }, 3000);
 
 // Graceful shutdown

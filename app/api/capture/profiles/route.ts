@@ -85,6 +85,7 @@ export async function POST(req: NextRequest) {
       department,
       classificationNodeId,
       metadataMapping,
+      validationRules,
       duplicateAction,
       autoWorkflow,
       workflowTemplateId,
@@ -100,6 +101,7 @@ export async function POST(req: NextRequest) {
       department?: string;
       classificationNodeId?: string;
       metadataMapping?: Record<string, unknown>;
+      validationRules?: Record<string, unknown>;
       duplicateAction?: string;
       autoWorkflow?: boolean;
       workflowTemplateId?: string;
@@ -161,6 +163,7 @@ export async function POST(req: NextRequest) {
         department: department?.trim() || null,
         classificationNodeId: classificationNodeId || null,
         metadataMapping: (metadataMapping ?? {}) as Record<string, never>,
+        validationRules: (validationRules ?? {}) as Record<string, never>,
         duplicateAction: duplicateAction ?? "SKIP",
         autoWorkflow: autoWorkflow ?? false,
         workflowTemplateId: workflowTemplateId || null,

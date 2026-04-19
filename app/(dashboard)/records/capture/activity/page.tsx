@@ -17,7 +17,7 @@ interface CaptureLog {
   profile: { name: string };
   fileName: string;
   filePath: string;
-  fileSize: number;
+  fileSize: number | string | null;
   fileHash: string | null;
   status: LogStatus;
   documentId: string | null;
@@ -216,8 +216,9 @@ function formatDateShort(iso: string): string {
   });
 }
 
-function formatFileSize(bytes: number): string {
-  if (bytes === 0) return "0 B";
+function formatFileSize(raw: number | string | null | undefined): string {
+  const bytes = Number(raw ?? 0);
+  if (!bytes || bytes === 0) return "0 B";
   const units = ["B", "KB", "MB", "GB"];
   const i = Math.floor(Math.log(bytes) / Math.log(1024));
   const val = bytes / Math.pow(1024, i);
@@ -686,7 +687,7 @@ export default function CaptureActivityPage() {
                           <div>
                             <p className="text-xs text-gray-400 dark:text-gray-500">File Size</p>
                             <p className="text-sm text-gray-700 dark:text-gray-300">
-                              {formatFileSize(log.fileSize)} ({log.fileSize.toLocaleString()} bytes)
+                              {formatFileSize(log.fileSize)} ({Number(log.fileSize ?? 0).toLocaleString()} bytes)
                             </p>
                           </div>
                         </div>

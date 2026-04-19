@@ -90,6 +90,7 @@ export async function PATCH(
       "department",
       "classificationNodeId",
       "metadataMapping",
+      "validationRules",
       "duplicateAction",
       "autoWorkflow",
       "workflowTemplateId",

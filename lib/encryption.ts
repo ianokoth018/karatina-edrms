@@ -13,6 +13,8 @@
 
 import { createCipheriv, createDecipheriv, randomBytes } from "crypto";
 import { promises as fs } from "fs";
+import { createReadStream, createWriteStream } from "fs";
+import { pipeline } from "stream/promises";
 
 const ALGORITHM = "aes-256-gcm";
 const IV_LENGTH = 16; // 128 bits
@@ -108,4 +110,70 @@ export async function decryptFileToBuffer(
 export function isEncryptionEnabled(): boolean {
   const hex = process.env.ENCRYPTION_KEY;
   return !!hex && hex.length >= 64;
+}
+
+/**
+ * Encrypt a file on disk in-place using streaming — no full-file RAM buffer.
+ * Reads source → encrypts via AES-256-GCM transform → writes to temp file → renames over source.
+ * Returns { iv, tag } for storage in the database.
+ */
+export async function encryptFileStreaming(
+  filePath: string
+): Promise<{ iv: string; tag: string }> {
+  const key = getKey();
+  const iv = randomBytes(IV_LENGTH);
+  const cipher = createCipheriv(ALGORITHM, key, iv);
+
+  const tmpPath = `${filePath}.enc.tmp`;
+  const readStream = createReadStream(filePath);
+  const writeStream = createWriteStream(tmpPath);
+
+  await pipeline(readStream, cipher, writeStream);
+  const tag = cipher.getAuthTag();
+
+  // Atomically replace original with encrypted version
+  const { rename } = await import("fs/promises");
+  await rename(tmpPath, filePath);
+
+  return { iv: iv.toString("hex"), tag: tag.toString("hex") };
+}
+
+/**
+ * Encrypt a string secret (IMAP/SFTP/SMB password) with AES-256-GCM.
+ * Output format: enc:v1:<iv_hex>:<tag_hex>:<ciphertext_hex>
+ */
+export function encryptSecret(plaintext: string): string {
+  const { encrypted, iv, tag } = encrypt(Buffer.from(plaintext, "utf8"));
+  return `enc:v1:${iv}:${tag}:${encrypted.toString("hex")}`;
+}
+
+export function decryptSecret(wrapped: string): string {
+  if (!wrapped.startsWith("enc:v1:")) {
+    throw new Error("Invalid encrypted secret format");
+  }
+  const [, , iv, tag, ciphertext] = wrapped.split(":");
+  return decrypt(Buffer.from(ciphertext, "hex"), iv, tag).toString("utf8");
+}
+
+export function isEncryptedSecret(value: string | null | undefined): boolean {
+  return !!value && value.startsWith("enc:v1:");
+}
+
+/**
+ * Create a streaming AES-256-GCM decryption Transform.
+ * Call setAuthTag on the returned decipher BEFORE piping data through it.
+ * Usage:
+ *   const decipher = createDecryptStream(ivHex, tagHex);
+ *   readStream.pipe(decipher).pipe(destination);
+ */
+export function createDecryptStream(
+  ivHex: string,
+  tagHex: string
+): ReturnType<typeof createDecipheriv> {
+  const key = getKey();
+  const iv = Buffer.from(ivHex, "hex");
+  const tag = Buffer.from(tagHex, "hex");
+  const decipher = createDecipheriv(ALGORITHM, key, iv);
+  decipher.setAuthTag(tag);
+  return decipher;
 }

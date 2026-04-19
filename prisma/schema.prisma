@@ -41,6 +41,7 @@ model User {
   dispositionApprovals    DispositionCertificate[] @relation("DispositionApprover")
   dispositionWitnesses    DispositionCertificate[] @relation("DispositionWitness")
   shareLinksCreated       DocumentShareLink[]      @relation("ShareLinkCreator")
+  captureExceptionsResolved CaptureException[]     @relation("CaptureExceptionResolver")
 
   @@map("users")
 }
@@ -540,6 +541,37 @@ model CaptureProfile {
   updatedAt         DateTime @updatedAt
   logs              CaptureLog[]
 
+  // PDF processing options
+  enableBlankPageRemoval Boolean @default(false)
+  enablePdfA             Boolean @default(false)
+  pdfALevel              String? @default("2b") // 1b | 2b | 3b
+
+  // Phase 2: source routing
+  sourceType        CaptureSourceType @default(HOT_FOLDER)
+  priority          Int      @default(0)
+  validationRules   Json     @default("{}")
+
+  // IMAP email source
+  imapHost          String?
+  imapPort          Int?
+  imapUser          String?
+  imapPassword      String?
+  imapFolder        String?  @default("INBOX")
+  imapSenderFilter  String?
+  imapSubjectFilter String?
+
+  // SFTP / SMB remote source
+  remoteHost        String?
+  remotePort        Int?
+  remoteUser        String?
+  remotePassword    String?
+  remotePath        String?
+  remotePollInterval Int?    @default(60)
+  remoteDeleteAfterCopy Boolean @default(false)
+
+  exceptions        CaptureException[]
+  triggers          CaptureTrigger[]
+
   @@map("capture_profiles")
 }
 
@@ -570,7 +602,79 @@ enum CaptureStatus {
   DUPLICATE
   ERROR
   SKIPPED
+  VALIDATION_FAILED
 }
+
+enum CaptureSourceType {
+  HOT_FOLDER
+  EMAIL
+  API
+  SFTP
+  SMB
+}
+
+model CaptureException {
+  id                 String   @id @default(cuid())
+  profileId          String
+  profile            CaptureProfile @relation(fields: [profileId], references: [id], onDelete: Cascade)
+  filePath           String
+  extractedMetadata  Json     @default("{}")
+  errors             Json     @default("[]")
+  status             CaptureExceptionStatus @default(PENDING)
+  resolvedById       String?
+  resolvedBy         User?    @relation("CaptureExceptionResolver", fields: [resolvedById], references: [id])
+  resolvedAt         DateTime?
+  createdAt          DateTime @default(now())
+  updatedAt          DateTime @updatedAt
+
+  @@index([profileId, status])
+  @@index([status])
+  @@map("capture_exceptions")
+}
+
+enum CaptureExceptionStatus {
+  PENDING
+  RESOLVED
+  REJECTED
+}
+
+model CaptureTrigger {
+  id                 String   @id @default(cuid())
+  profileId          String?
+  profile            CaptureProfile? @relation(fields: [profileId], references: [id], onDelete: Cascade)
+  documentTypeFilter String?
+  studentFilter      String?
+  channelType        CaptureTriggerChannel
+  channelConfig      Json     @default("{}")
+  enabled            Boolean  @default(true)
+  createdById        String?
+  createdAt          DateTime @default(now())
+  updatedAt          DateTime @updatedAt
+
+  @@index([profileId, enabled])
+  @@map("capture_triggers")
+}
+
+enum CaptureTriggerChannel {
+  EMAIL
+  WEBHOOK
+  IN_APP
+}
+
+model ApiKey {
+  id          String    @id @default(cuid())
+  name        String    @unique
+  hashedKey   String    @unique
+  scope       String    @default("capture")
+  createdById String
+  createdAt   DateTime  @default(now())
+  lastUsedAt  DateTime?
+  revokedAt   DateTime?
+
+  @@index([scope, revokedAt])
+  @@map("api_keys")
+}
+
 
 // ── Correspondence Register ──────────────────────────────────────────────
 
