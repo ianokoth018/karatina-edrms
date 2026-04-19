@@ -446,7 +446,10 @@ export default function CasefolderDetailPage({
 
       {/* ---- Tab bar ---- */}
       <div className="flex items-center gap-1 border-b border-gray-200 dark:border-gray-800">
-        {(["documents", ...(canManageCasefolder ? ["acl"] : [])] as const).map((tab) => (
+        {(canManageCasefolder
+          ? (["documents", "acl"] as const)
+          : (["documents"] as const)
+        ).map((tab) => (
           <button
             key={tab}
             onClick={() => setActiveTab(tab)}
