@@ -1,6 +1,9 @@
 "use client";
 
 import { useState, useEffect, useCallback, useMemo } from "react";
+import { useSession } from "next-auth/react";
+import { useRouter } from "next/navigation";
+import { Can } from "@/components/auth/can";
 
 /* ------------------------------------------------------------------ */
 /*  Types                                                              */
@@ -267,32 +270,11 @@ function TreeRow({
         {/* Action buttons — visible on hover */}
         <div className="flex-shrink-0 flex items-center gap-0.5 opacity-0 group-hover:opacity-100 transition-opacity">
           {/* Edit */}
-          <button
-            onClick={onEdit}
-            className="p-1.5 rounded-lg text-gray-400 hover:text-[#02773b] hover:bg-[#02773b]/10 dark:hover:bg-[#02773b]/20 transition-colors"
-            title="Edit"
-          >
-            <svg
-              className="w-3.5 h-3.5"
-              fill="none"
-              viewBox="0 0 24 24"
-              strokeWidth={1.5}
-              stroke="currentColor"
-            >
-              <path
-                strokeLinecap="round"
-                strokeLinejoin="round"
-                d="m16.862 4.487 1.687-1.688a1.875 1.875 0 1 1 2.652 2.652L10.582 16.07a4.5 4.5 0 0 1-1.897 1.13L6 18l.8-2.685a4.5 4.5 0 0 1 1.13-1.897l8.932-8.931Zm0 0L19.5 7.125M18 14v4.75A2.25 2.25 0 0 1 15.75 21H5.25A2.25 2.25 0 0 1 3 18.75V8.25A2.25 2.25 0 0 1 5.25 6H10"
-              />
-            </svg>
-          </button>
-
-          {/* Add child (only level 1 and 2) */}
-          {node.level < 3 && (
+          <Can anyOf={["records:update", "records:manage"]}>
             <button
-              onClick={onAddChild}
-              className="p-1.5 rounded-lg text-gray-400 hover:text-[#dd9f42] hover:bg-[#dd9f42]/10 dark:hover:bg-[#dd9f42]/20 transition-colors"
-              title={`Add ${LEVEL_LABELS[node.level + 1]}`}
+              onClick={onEdit}
+              className="p-1.5 rounded-lg text-gray-400 hover:text-[#02773b] hover:bg-[#02773b]/10 dark:hover:bg-[#02773b]/20 transition-colors"
+              title="Edit"
             >
               <svg
                 className="w-3.5 h-3.5"
@@ -304,52 +286,79 @@ function TreeRow({
                 <path
                   strokeLinecap="round"
                   strokeLinejoin="round"
-                  d="M12 4.5v15m7.5-7.5h-15"
+                  d="m16.862 4.487 1.687-1.688a1.875 1.875 0 1 1 2.652 2.652L10.582 16.07a4.5 4.5 0 0 1-1.897 1.13L6 18l.8-2.685a4.5 4.5 0 0 1 1.13-1.897l8.932-8.931Zm0 0L19.5 7.125M18 14v4.75A2.25 2.25 0 0 1 15.75 21H5.25A2.25 2.25 0 0 1 3 18.75V8.25A2.25 2.25 0 0 1 5.25 6H10"
                 />
               </svg>
             </button>
+          </Can>
+
+          {/* Add child (only level 1 and 2) */}
+          {node.level < 3 && (
+            <Can anyOf={["records:create", "records:manage"]}>
+              <button
+                onClick={onAddChild}
+                className="p-1.5 rounded-lg text-gray-400 hover:text-[#dd9f42] hover:bg-[#dd9f42]/10 dark:hover:bg-[#dd9f42]/20 transition-colors"
+                title={`Add ${LEVEL_LABELS[node.level + 1]}`}
+              >
+                <svg
+                  className="w-3.5 h-3.5"
+                  fill="none"
+                  viewBox="0 0 24 24"
+                  strokeWidth={1.5}
+                  stroke="currentColor"
+                >
+                  <path
+                    strokeLinecap="round"
+                    strokeLinejoin="round"
+                    d="M12 4.5v15m7.5-7.5h-15"
+                  />
+                </svg>
+              </button>
+            </Can>
           )}
 
           {/* Deactivate / Reactivate */}
-          <button
-            onClick={onDeactivate}
-            className={`p-1.5 rounded-lg transition-colors ${
-              node.isActive
-                ? "text-gray-400 hover:text-red-600 hover:bg-red-50 dark:hover:bg-red-950/30"
-                : "text-gray-400 hover:text-green-600 hover:bg-green-50 dark:hover:bg-green-950/30"
-            }`}
-            title={node.isActive ? "Deactivate" : "Reactivate"}
-          >
-            {node.isActive ? (
-              <svg
-                className="w-3.5 h-3.5"
-                fill="none"
-                viewBox="0 0 24 24"
-                strokeWidth={1.5}
-                stroke="currentColor"
-              >
-                <path
-                  strokeLinecap="round"
-                  strokeLinejoin="round"
-                  d="M18.364 18.364A9 9 0 0 0 5.636 5.636m12.728 12.728A9 9 0 0 1 5.636 5.636m12.728 12.728L5.636 5.636"
-                />
-              </svg>
-            ) : (
-              <svg
-                className="w-3.5 h-3.5"
-                fill="none"
-                viewBox="0 0 24 24"
-                strokeWidth={1.5}
-                stroke="currentColor"
-              >
-                <path
-                  strokeLinecap="round"
-                  strokeLinejoin="round"
-                  d="M9 12.75 11.25 15 15 9.75M21 12a9 9 0 1 1-18 0 9 9 0 0 1 18 0Z"
-                />
-              </svg>
-            )}
-          </button>
+          <Can anyOf={["records:delete", "records:manage"]}>
+            <button
+              onClick={onDeactivate}
+              className={`p-1.5 rounded-lg transition-colors ${
+                node.isActive
+                  ? "text-gray-400 hover:text-red-600 hover:bg-red-50 dark:hover:bg-red-950/30"
+                  : "text-gray-400 hover:text-green-600 hover:bg-green-50 dark:hover:bg-green-950/30"
+              }`}
+              title={node.isActive ? "Deactivate" : "Reactivate"}
+            >
+              {node.isActive ? (
+                <svg
+                  className="w-3.5 h-3.5"
+                  fill="none"
+                  viewBox="0 0 24 24"
+                  strokeWidth={1.5}
+                  stroke="currentColor"
+                >
+                  <path
+                    strokeLinecap="round"
+                    strokeLinejoin="round"
+                    d="M18.364 18.364A9 9 0 0 0 5.636 5.636m12.728 12.728A9 9 0 0 1 5.636 5.636m12.728 12.728L5.636 5.636"
+                  />
+                </svg>
+              ) : (
+                <svg
+                  className="w-3.5 h-3.5"
+                  fill="none"
+                  viewBox="0 0 24 24"
+                  strokeWidth={1.5}
+                  stroke="currentColor"
+                >
+                  <path
+                    strokeLinecap="round"
+                    strokeLinejoin="round"
+                    d="M9 12.75 11.25 15 15 9.75M21 12a9 9 0 1 1-18 0 9 9 0 0 1 18 0Z"
+                  />
+                </svg>
+              )}
+            </button>
+          </Can>
         </div>
       </div>
 
@@ -382,6 +391,13 @@ function TreeRow({
 /* ------------------------------------------------------------------ */
 
 export default function ClassificationPage() {
+  const { data: session, status } = useSession();
+  const router = useRouter();
+  useEffect(() => {
+    if (status === "loading") return;
+    const p = session?.user?.permissions ?? [];
+    if (!p.includes("admin:manage") && !p.includes("records_classification:read")) router.replace("/records/casefolders");
+  }, [session, status, router]);
   /* ---- data state ---- */
   const [tree, setTree] = useState<ClassificationNode[]>([]);
   const [isLoading, setIsLoading] = useState(true);
@@ -597,25 +613,27 @@ export default function ClassificationPage() {
           </p>
         </div>
 
-        <button
-          onClick={() => openCreateModal(null, 1)}
-          className="inline-flex items-center gap-2 h-10 px-5 rounded-xl bg-[#02773b] text-white font-medium text-sm transition-all hover:bg-[#025f2f] focus:ring-2 focus:ring-[#02773b]/30 focus:ring-offset-2 whitespace-nowrap"
-        >
-          <svg
-            className="w-4 h-4"
-            fill="none"
-            viewBox="0 0 24 24"
-            strokeWidth={2}
-            stroke="currentColor"
+        <Can anyOf={["records:create", "records:manage"]}>
+          <button
+            onClick={() => openCreateModal(null, 1)}
+            className="inline-flex items-center gap-2 h-10 px-5 rounded-xl bg-[#02773b] text-white font-medium text-sm transition-all hover:bg-[#025f2f] focus:ring-2 focus:ring-[#02773b]/30 focus:ring-offset-2 whitespace-nowrap"
           >
-            <path
-              strokeLinecap="round"
-              strokeLinejoin="round"
-              d="M12 4.5v15m7.5-7.5h-15"
-            />
-          </svg>
-          New Function
-        </button>
+            <svg
+              className="w-4 h-4"
+              fill="none"
+              viewBox="0 0 24 24"
+              strokeWidth={2}
+              stroke="currentColor"
+            >
+              <path
+                strokeLinecap="round"
+                strokeLinejoin="round"
+                d="M12 4.5v15m7.5-7.5h-15"
+              />
+            </svg>
+            New Function
+          </button>
+        </Can>
       </div>
 
       {/* ---------- Stats ---------- */}

@@ -22,7 +22,7 @@ const DOCUMENT_TYPES = [
 
 const ALLOWED_EXTENSIONS = ["pdf", "docx", "xlsx", "pptx", "jpg", "jpeg", "png", "tiff", "tif"];
 
-const MAX_FILE_SIZE = 50 * 1024 * 1024; // 50 MB
+const MAX_FILE_SIZE = 2 * 1024 * 1024 * 1024; // 2 GB
 
 const MIME_MAP: Record<string, string> = {
   pdf: "application/pdf",
@@ -72,7 +72,7 @@ export default function DocumentUploadPage() {
       return `File type ".${ext}" is not allowed. Accepted: ${ALLOWED_EXTENSIONS.join(", ")}`;
     }
     if (f.size > MAX_FILE_SIZE) {
-      return "File size exceeds the 50 MB limit";
+      return "File size exceeds the 2 GB limit";
     }
     return null;
   }
@@ -244,7 +244,7 @@ export default function DocumentUploadPage() {
   }
 
   return (
-    <div className="p-6 max-w-3xl mx-auto space-y-6 animate-fade-in">
+    <div className="p-6 space-y-6 animate-fade-in">
       {/* Header */}
       <div className="flex items-center gap-3">
         <Link
@@ -342,7 +342,7 @@ export default function DocumentUploadPage() {
                 <span className="text-karu-green font-medium">Click to browse</span> or drag and drop
               </p>
               <p className="text-xs text-gray-400 dark:text-gray-500 mt-1">
-                PDF, DOCX, XLSX, PPTX, JPG, PNG, TIFF &mdash; Max 50 MB
+                PDF, DOCX, XLSX, PPTX, JPG, PNG, TIFF &mdash; Max 2 GB
               </p>
             </div>
           )}

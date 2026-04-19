@@ -5,6 +5,8 @@ import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { useSession } from "next-auth/react";
 import dynamic from "next/dynamic";
+import { DepartmentUserSelect, type UserOption } from "@/components/shared/department-user-select";
+import { MultiUserInput } from "@/components/shared/multi-user-input";
 
 const RichTextEditor = dynamic(() => import("@/components/memo/rich-text-editor"), { ssr: false });
 
@@ -38,6 +40,14 @@ interface TableColumn {
   type: string;
 }
 
+interface DataSource {
+  type: "departments" | "users" | "roles" | "casefolders" | "api";
+  endpoint?: string;
+  labelField?: string;
+  valueField?: string;
+  dependsOn?: string;
+}
+
 interface FormField {
   id: string;
   type: string;
@@ -54,6 +64,9 @@ interface FormField {
   options?: FormFieldOption[];
   condition?: FormFieldCondition;
   tableColumns?: TableColumn[];
+  excludeFields?: string[];
+  maxUsers?: number;
+  dataSource?: DataSource;
 }
 
 interface CasefolderData {
@@ -61,6 +74,45 @@ interface CasefolderData {
   name: string;
   description: string | null;
   fields: FormField[];
+}
+
+interface WizardStep {
+  label: string;
+  description?: string;
+  fields: FormField[];
+}
+
+/* ================================================================
+   Step parsing
+   ================================================================ */
+
+function parseSteps(fields: FormField[]): WizardStep[] | null {
+  const steps: WizardStep[] = [];
+  let currentStep: WizardStep | null = null;
+
+  for (const field of fields) {
+    if (field.type === "step") {
+      currentStep = { label: field.label, description: field.helpText, fields: [] };
+      steps.push(currentStep);
+    } else if (currentStep) {
+      currentStep.fields.push(field);
+    }
+  }
+
+  // If no steps found, return null (flat mode)
+  if (steps.length === 0) return null;
+
+  // Handle fields before first step marker
+  const firstStepIdx = fields.findIndex((f) => f.type === "step");
+  const preStepFields = fields.slice(0, firstStepIdx);
+  if (preStepFields.length > 0) {
+    steps.unshift({ label: "Details", fields: preStepFields });
+  }
+
+  // Add review step
+  steps.push({ label: "Review & Submit", fields: [] });
+
+  return steps;
 }
 
 /* ================================================================
@@ -98,7 +150,7 @@ function evaluateCondition(
    ================================================================ */
 
 function validateField(field: FormField, value: any): string | null {
-  if (field.type === "section" || field.type === "divider") return null;
+  if (field.type === "section" || field.type === "divider" || field.type === "step") return null;
 
   const strVal = value == null ? "" : String(value);
 
@@ -218,6 +270,22 @@ function IconPaperclip() {
   return (
     <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" strokeWidth={2} stroke="currentColor">
       <path strokeLinecap="round" strokeLinejoin="round" d="m18.375 12.739-7.693 7.693a4.5 4.5 0 0 1-6.364-6.364l10.94-10.94A3 3 0 1 1 19.5 7.372L8.552 18.32m.009-.01-.01.01m5.699-9.941-7.81 7.81a1.5 1.5 0 0 0 2.112 2.13" />
+    </svg>
+  );
+}
+
+function IconCheck() {
+  return (
+    <svg className="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" strokeWidth={3} stroke="currentColor">
+      <path strokeLinecap="round" strokeLinejoin="round" d="m4.5 12.75 6 6 9-13.5" />
+    </svg>
+  );
+}
+
+function IconEdit() {
+  return (
+    <svg className="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" strokeWidth={2} stroke="currentColor">
+      <path strokeLinecap="round" strokeLinejoin="round" d="m16.862 4.487 1.687-1.688a1.875 1.875 0 1 1 2.652 2.652L10.582 16.07a4.5 4.5 0 0 1-1.897 1.13L6 18l.8-2.685a4.5 4.5 0 0 1 1.13-1.897l8.932-8.931Zm0 0L19.5 7.125M18 14v4.75A2.25 2.25 0 0 1 15.75 21H5.25A2.25 2.25 0 0 1 3 18.75V8.25A2.25 2.25 0 0 1 5.25 6H10" />
     </svg>
   );
 }
@@ -533,6 +601,118 @@ function FileDropZone({
 }
 
 /* ================================================================
+   Dynamic data source fetching
+   ================================================================ */
+
+function useDynamicOptions(
+  fields: FormField[],
+  fieldValues: Record<string, any>
+) {
+  const [dynamicOptions, setDynamicOptions] = useState<Record<string, FormFieldOption[]>>({});
+  const [loadingFields, setLoadingFields] = useState<Record<string, boolean>>({});
+
+  // Collect all fields with data sources
+  const dsFields = fields.filter((f) => f.dataSource);
+
+  useEffect(() => {
+    dsFields.forEach((field) => {
+      const ds = field.dataSource!;
+
+      // For "users" type, wait until the dependent field has a value
+      if (ds.type === "users" && ds.dependsOn) {
+        const depValue = fieldValues[ds.dependsOn];
+        if (!depValue) {
+          // Clear options when dependency is cleared
+          setDynamicOptions((prev) => {
+            if (prev[field.name]?.length) return { ...prev, [field.name]: [] };
+            return prev;
+          });
+          return;
+        }
+      }
+
+      // Build the fetch URL
+      let url = "";
+      switch (ds.type) {
+        case "departments":
+          url = "/api/users/search?departments=true";
+          break;
+        case "users": {
+          const dept = ds.dependsOn ? fieldValues[ds.dependsOn] : "";
+          if (!dept) return;
+          url = `/api/users/search?department=${encodeURIComponent(dept)}&limit=50`;
+          break;
+        }
+        case "roles":
+          url = "/api/users/search?roles=true";
+          break;
+        case "casefolders":
+          url = "/api/records/casefolders";
+          break;
+        case "api":
+          if (!ds.endpoint) return;
+          url = ds.endpoint;
+          break;
+        default:
+          return;
+      }
+
+      setLoadingFields((prev) => ({ ...prev, [field.name]: true }));
+
+      fetch(url)
+        .then((r) => r.json())
+        .then((data) => {
+          let items: any[] = [];
+          const labelKey = ds.labelField || "name";
+          const valueKey = ds.valueField || "name";
+
+          switch (ds.type) {
+            case "departments":
+              items = data.departments ?? [];
+              break;
+            case "users":
+              items = data.users ?? [];
+              break;
+            case "roles":
+              items = data.roles ?? [];
+              break;
+            case "casefolders":
+              items = data.casefolders ?? [];
+              break;
+            case "api":
+              items = Array.isArray(data) ? data : data.items ?? data.data ?? data.options ?? [];
+              break;
+          }
+
+          const options: FormFieldOption[] = items.map((item: any) => ({
+            label: String(item[labelKey] ?? item.displayName ?? item.name ?? ""),
+            value: String(item[valueKey] ?? item.id ?? item.name ?? ""),
+          }));
+
+          setDynamicOptions((prev) => ({ ...prev, [field.name]: options }));
+        })
+        .catch(() => {
+          setDynamicOptions((prev) => ({ ...prev, [field.name]: [] }));
+        })
+        .finally(() => {
+          setLoadingFields((prev) => ({ ...prev, [field.name]: false }));
+        });
+    });
+    // Re-fetch when dependency values change
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [
+    // Trigger re-fetch when any dependency field value changes
+    ...dsFields
+      .filter((f) => f.dataSource?.dependsOn)
+      .map((f) => fieldValues[f.dataSource!.dependsOn!]),
+    // Also trigger on initial load
+    fields.length,
+  ]);
+
+  return { dynamicOptions, loadingFields };
+}
+
+/* ================================================================
    Main page component
    ================================================================ */
 
@@ -570,6 +750,16 @@ export default function FileDocumentPage({
   /* document-level field errors */
   const [docErrors, setDocErrors] = useState<Record<string, string>>({});
 
+  /* wizard state */
+  const [wizardSteps, setWizardSteps] = useState<WizardStep[] | null>(null);
+  const [currentStep, setCurrentStep] = useState(0);
+
+  /* dynamic data source options */
+  const { dynamicOptions, loadingFields } = useDynamicOptions(
+    casefolder?.fields ?? [],
+    fieldValues
+  );
+
   /* ----- fetch casefolder definition ----- */
   useEffect(() => {
     let cancelled = false;
@@ -594,14 +784,22 @@ export default function FileDocumentPage({
         };
         setCasefolder(cf);
 
+        /* detect wizard mode */
+        const steps = parseSteps(cf.fields);
+        setWizardSteps(steps);
+
         /* initialise field values with defaults + auto-fill from session */
         const defaults: Record<string, any> = {};
         cf.fields.forEach((f) => {
-          if (f.type === "section" || f.type === "divider") return;
+          if (f.type === "section" || f.type === "divider" || f.type === "step") return;
           if (f.type === "table") {
             defaults[f.name] = f.defaultValue ?? [];
           } else if (f.type === "checkbox" || f.type === "multiselect") {
             defaults[f.name] = f.defaultValue ?? [];
+          } else if (f.type === "user_picker") {
+            defaults[f.name] = f.defaultValue ?? "";
+          } else if (f.type === "multi_user_picker") {
+            defaults[f.name] = f.defaultValue ?? "[]";
           } else {
             defaults[f.name] = f.defaultValue ?? "";
           }
@@ -656,12 +854,38 @@ export default function FileDocumentPage({
     return evaluateCondition(field.condition, fieldValues, casefolder?.fields ?? []);
   }
 
+  /* ----- excludeIds helper for user pickers ----- */
+  function getExcludeIds(field: FormField): string[] {
+    const ids: string[] = [session?.user?.id].filter(Boolean) as string[];
+    if (field.excludeFields) {
+      for (const otherFieldId of field.excludeFields) {
+        const otherField = casefolder?.fields.find((f: FormField) => f.id === otherFieldId);
+        if (otherField) {
+          const val = fieldValues[otherField.name];
+          if (val) {
+            try {
+              const parsed = JSON.parse(val);
+              if (Array.isArray(parsed)) {
+                ids.push(...parsed.map((u: UserOption) => u.id));
+              } else if (parsed.id) {
+                ids.push(parsed.id);
+              }
+            } catch {
+              /* not JSON, skip */
+            }
+          }
+        }
+      }
+    }
+    return ids;
+  }
+
   /* ----- auto-suggest title from field values ----- */
   const suggestedTitle = (() => {
     if (!casefolder) return "";
     const parts: string[] = [];
     casefolder.fields.forEach((f) => {
-      if (f.type === "section" || f.type === "divider" || f.type === "table" || f.type === "file") return;
+      if (f.type === "section" || f.type === "divider" || f.type === "table" || f.type === "file" || f.type === "step" || f.type === "user_picker" || f.type === "multi_user_picker") return;
       if (!isFieldVisible(f)) return;
       const val = fieldValues[f.name];
       if (val && typeof val === "string" && val.trim()) {
@@ -678,28 +902,90 @@ export default function FileDocumentPage({
     }
   }, [suggestedTitle, titleTouched]);
 
+  /* ----- validate a set of fields ----- */
+  function validateFields(fields: FormField[]): Record<string, string> {
+    const fErrors: Record<string, string> = {};
+    fields.forEach((field) => {
+      if (!isFieldVisible(field)) return;
+      const err = validateField(field, fieldValues[field.name]);
+      if (err) fErrors[field.name] = err;
+    });
+    return fErrors;
+  }
+
+  /* ----- wizard step validation ----- */
+  function validateCurrentStep(): boolean {
+    if (!wizardSteps) return true;
+    const step = wizardSteps[currentStep];
+    if (!step || step.fields.length === 0) return true; // review step
+
+    const fErrors = validateFields(step.fields);
+    if (Object.keys(fErrors).length > 0) {
+      setFieldErrors((prev) => ({ ...prev, ...fErrors }));
+      const firstFieldKey = Object.keys(fErrors)[0];
+      if (firstFieldKey) {
+        const el = document.querySelector(`[data-field="${firstFieldKey}"]`);
+        el?.scrollIntoView({ behavior: "smooth", block: "center" });
+      }
+      return false;
+    }
+    return true;
+  }
+
+  function handleNextStep() {
+    if (validateCurrentStep()) {
+      setCurrentStep((prev) => Math.min(prev + 1, (wizardSteps?.length ?? 1) - 1));
+      window.scrollTo({ top: 0, behavior: "smooth" });
+    }
+  }
+
+  function handlePrevStep() {
+    setCurrentStep((prev) => Math.max(prev - 1, 0));
+    window.scrollTo({ top: 0, behavior: "smooth" });
+  }
+
+  function goToStep(stepIdx: number) {
+    setCurrentStep(stepIdx);
+    window.scrollTo({ top: 0, behavior: "smooth" });
+  }
+
   /* ----- submit ----- */
   function handleSubmit(e: React.FormEvent) {
     e.preventDefault();
     if (!casefolder) return;
 
     /* validate casefolder metadata fields */
-    const fErrors: Record<string, string> = {};
-    casefolder.fields.forEach((field) => {
-      if (!isFieldVisible(field)) return;
-      const err = validateField(field, fieldValues[field.name]);
-      if (err) fErrors[field.name] = err;
-    });
+    const allFields = casefolder.fields.filter((f) => f.type !== "step");
+    const fErrors = validateFields(allFields);
 
     if (Object.keys(fErrors).length > 0) {
       setFieldErrors(fErrors);
       setDocErrors({});
 
-      /* scroll to first error */
-      const firstFieldKey = Object.keys(fErrors)[0];
-      if (firstFieldKey) {
-        const el = document.querySelector(`[data-field="${firstFieldKey}"]`);
-        el?.scrollIntoView({ behavior: "smooth", block: "center" });
+      /* If in wizard mode, jump to the first step with errors */
+      if (wizardSteps) {
+        for (let i = 0; i < wizardSteps.length; i++) {
+          const stepFields = wizardSteps[i].fields;
+          const hasError = stepFields.some((f) => fErrors[f.name]);
+          if (hasError) {
+            setCurrentStep(i);
+            setTimeout(() => {
+              const firstFieldKey = stepFields.find((f) => fErrors[f.name])?.name;
+              if (firstFieldKey) {
+                const el = document.querySelector(`[data-field="${firstFieldKey}"]`);
+                el?.scrollIntoView({ behavior: "smooth", block: "center" });
+              }
+            }, 100);
+            return;
+          }
+        }
+      } else {
+        /* scroll to first error */
+        const firstFieldKey = Object.keys(fErrors)[0];
+        if (firstFieldKey) {
+          const el = document.querySelector(`[data-field="${firstFieldKey}"]`);
+          el?.scrollIntoView({ behavior: "smooth", block: "center" });
+        }
       }
       return;
     }
@@ -712,7 +998,7 @@ export default function FileDocumentPage({
     /* collect only visible field values */
     const payload: Record<string, any> = {};
     casefolder.fields.forEach((field) => {
-      if (field.type === "section" || field.type === "divider") return;
+      if (field.type === "section" || field.type === "divider" || field.type === "step") return;
       if (!isFieldVisible(field)) return;
       payload[field.name] = fieldValues[field.name];
     });
@@ -829,13 +1115,22 @@ export default function FileDocumentPage({
   }
 
   /* ================================================================
-     Field renderer (same as form fill page)
+     Field renderer (same as form fill page, plus user pickers)
      ================================================================ */
   function renderField(field: FormField) {
     if (!isFieldVisible(field)) return null;
 
     const err = fieldErrors[field.name];
     const val = fieldValues[field.name];
+
+    // Resolve options: dynamic data source takes priority over static
+    const resolvedOptions = field.dataSource
+      ? (dynamicOptions[field.name] ?? [])
+      : (field.options ?? []);
+    const isLoadingOptions = !!loadingFields[field.name];
+
+    /* --- step marker (skip rendering) --- */
+    if (field.type === "step") return null;
 
     /* --- section header --- */
     if (field.type === "section") {
@@ -865,10 +1160,12 @@ export default function FileDocumentPage({
 
     return (
       <div key={field.id} data-field={field.name} className={`${widthCls} space-y-1.5`}>
-        <label className="block text-sm font-medium text-gray-700 dark:text-gray-300">
-          {field.label}
-          {field.required && <span className="text-red-500 ml-0.5">*</span>}
-        </label>
+        {field.type !== "user_picker" && field.type !== "multi_user_picker" && (
+          <label className="block text-sm font-medium text-gray-700 dark:text-gray-300">
+            {field.label}
+            {field.required && <span className="text-red-500 ml-0.5">*</span>}
+          </label>
+        )}
 
         {/* --- text --- */}
         {field.type === "text" && (
@@ -969,25 +1266,35 @@ export default function FileDocumentPage({
 
         {/* --- select --- */}
         {field.type === "select" && (
-          <select
-            value={val ?? ""}
-            onChange={(e) => setField(field.name, e.target.value)}
-            disabled={field.readOnly}
-            className={inputCls(!!err)}
-          >
-            <option value="">{field.placeholder || "Select an option..."}</option>
-            {(field.options ?? []).map((opt) => (
-              <option key={opt.value} value={opt.value}>
-                {opt.label}
-              </option>
-            ))}
-          </select>
+          isLoadingOptions ? (
+            <div className={`${inputCls(false)} flex items-center gap-2 text-gray-400`}>
+              <svg className="w-4 h-4 animate-spin" fill="none" viewBox="0 0 24 24">
+                <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" />
+                <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z" />
+              </svg>
+              <span className="text-xs">Loading options...</span>
+            </div>
+          ) : (
+            <select
+              value={val ?? ""}
+              onChange={(e) => setField(field.name, e.target.value)}
+              disabled={field.readOnly}
+              className={inputCls(!!err)}
+            >
+              <option value="">{field.placeholder || "Select an option..."}</option>
+              {resolvedOptions.map((opt) => (
+                <option key={opt.value} value={opt.value}>
+                  {opt.label}
+                </option>
+              ))}
+            </select>
+          )
         )}
 
         {/* --- multiselect --- */}
         {field.type === "multiselect" && (
           <MultiSelectField
-            field={field}
+            field={{ ...field, options: resolvedOptions }}
             value={Array.isArray(val) ? val : []}
             onChange={(v) => setField(field.name, v)}
             hasError={!!err}
@@ -997,47 +1304,67 @@ export default function FileDocumentPage({
         {/* --- radio --- */}
         {field.type === "radio" && (
           <div className="space-y-2 pt-1">
-            {(field.options ?? []).map((opt) => (
-              <label key={opt.value} className="flex items-center gap-2 cursor-pointer">
-                <input
-                  type="radio"
-                  name={`cf-${field.name}`}
-                  value={opt.value}
-                  checked={val === opt.value}
-                  onChange={() => setField(field.name, opt.value)}
-                  disabled={field.readOnly}
-                  className="text-[#02773b] focus:ring-[#02773b]/40 border-gray-300 dark:border-gray-600"
-                />
-                <span className="text-sm text-gray-700 dark:text-gray-300">{opt.label}</span>
-              </label>
-            ))}
+            {isLoadingOptions ? (
+              <div className="flex items-center gap-2 text-gray-400 py-2">
+                <svg className="w-4 h-4 animate-spin" fill="none" viewBox="0 0 24 24">
+                  <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" />
+                  <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z" />
+                </svg>
+                <span className="text-xs">Loading options...</span>
+              </div>
+            ) : (
+              resolvedOptions.map((opt) => (
+                <label key={opt.value} className="flex items-center gap-2 cursor-pointer">
+                  <input
+                    type="radio"
+                    name={`cf-${field.name}`}
+                    value={opt.value}
+                    checked={val === opt.value}
+                    onChange={() => setField(field.name, opt.value)}
+                    disabled={field.readOnly}
+                    className="text-[#02773b] focus:ring-[#02773b]/40 border-gray-300 dark:border-gray-600"
+                  />
+                  <span className="text-sm text-gray-700 dark:text-gray-300">{opt.label}</span>
+                </label>
+              ))
+            )}
           </div>
         )}
 
         {/* --- checkbox group --- */}
         {field.type === "checkbox" && (
           <div className="space-y-2 pt-1">
-            {(field.options ?? []).map((opt) => {
-              const arr = Array.isArray(val) ? val : [];
-              return (
-                <label key={opt.value} className="flex items-center gap-2 cursor-pointer">
-                  <input
-                    type="checkbox"
-                    checked={arr.includes(opt.value)}
-                    onChange={() => {
-                      if (arr.includes(opt.value)) {
-                        setField(field.name, arr.filter((v: string) => v !== opt.value));
-                      } else {
-                        setField(field.name, [...arr, opt.value]);
-                      }
-                    }}
-                    disabled={field.readOnly}
-                    className="rounded border-gray-300 dark:border-gray-600 text-[#02773b] focus:ring-[#02773b]/40"
-                  />
-                  <span className="text-sm text-gray-700 dark:text-gray-300">{opt.label}</span>
-                </label>
-              );
-            })}
+            {isLoadingOptions ? (
+              <div className="flex items-center gap-2 text-gray-400 py-2">
+                <svg className="w-4 h-4 animate-spin" fill="none" viewBox="0 0 24 24">
+                  <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" />
+                  <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z" />
+                </svg>
+                <span className="text-xs">Loading options...</span>
+              </div>
+            ) : (
+              resolvedOptions.map((opt) => {
+                const arr = Array.isArray(val) ? val : [];
+                return (
+                  <label key={opt.value} className="flex items-center gap-2 cursor-pointer">
+                    <input
+                      type="checkbox"
+                      checked={arr.includes(opt.value)}
+                      onChange={() => {
+                        if (arr.includes(opt.value)) {
+                          setField(field.name, arr.filter((v: string) => v !== opt.value));
+                        } else {
+                          setField(field.name, [...arr, opt.value]);
+                        }
+                      }}
+                      disabled={field.readOnly}
+                      className="rounded border-gray-300 dark:border-gray-600 text-[#02773b] focus:ring-[#02773b]/40"
+                    />
+                    <span className="text-sm text-gray-700 dark:text-gray-300">{opt.label}</span>
+                  </label>
+                );
+              })
+            )}
           </div>
         )}
 
@@ -1050,8 +1377,47 @@ export default function FileDocumentPage({
           />
         )}
 
-        {/* help text */}
-        {field.helpText && (
+        {/* --- user_picker --- */}
+        {field.type === "user_picker" && (
+          <DepartmentUserSelect
+            label={field.label}
+            selectedUser={val ? (() => { try { return JSON.parse(val); } catch { return null; } })() : null}
+            onSelect={(user) => setField(field.name, user ? JSON.stringify(user) : "")}
+            onClear={() => setField(field.name, "")}
+            excludeIds={getExcludeIds(field)}
+            sublabel={field.helpText}
+          />
+        )}
+
+        {/* --- multi_user_picker --- */}
+        {field.type === "multi_user_picker" && (() => {
+          let users: UserOption[] = [];
+          try { users = val ? JSON.parse(val) : []; } catch { users = []; }
+          return (
+            <MultiUserInput
+              label={field.label}
+              sublabel={field.helpText}
+              users={users}
+              onAdd={(user) => {
+                let current: UserOption[] = [];
+                try { current = val ? JSON.parse(val) : []; } catch { current = []; }
+                if (current.length < (field.maxUsers || 5)) {
+                  setField(field.name, JSON.stringify([...current, user]));
+                }
+              }}
+              onRemove={(userId) => {
+                let current: UserOption[] = [];
+                try { current = val ? JSON.parse(val) : []; } catch { current = []; }
+                setField(field.name, JSON.stringify(current.filter((u: UserOption) => u.id !== userId)));
+              }}
+              excludeIds={getExcludeIds(field)}
+              max={field.maxUsers || 5}
+            />
+          );
+        })()}
+
+        {/* help text (skip for user pickers which show sublabel internally) */}
+        {field.helpText && field.type !== "user_picker" && field.type !== "multi_user_picker" && (
           <p className="text-xs text-gray-400 dark:text-gray-500">{field.helpText}</p>
         )}
 
@@ -1084,15 +1450,201 @@ export default function FileDocumentPage({
   }
 
   /* ================================================================
+     Review step renderer
+     ================================================================ */
+  function renderReviewStep() {
+    if (!wizardSteps || !casefolder) return null;
+
+    // All steps except the review step
+    const contentSteps = wizardSteps.slice(0, -1);
+
+    return (
+      <div className="space-y-6 animate-slide-up">
+        {contentSteps.map((step, stepIdx) => {
+          const visibleFields = step.fields.filter(
+            (f) => f.type !== "section" && f.type !== "divider" && f.type !== "step" && isFieldVisible(f)
+          );
+          if (visibleFields.length === 0) return null;
+
+          return (
+            <div
+              key={stepIdx}
+              className="bg-white dark:bg-gray-900 rounded-2xl border border-gray-200 dark:border-gray-800 overflow-hidden"
+            >
+              <div className="px-5 py-3 border-b border-gray-200 dark:border-gray-800 bg-gray-50 dark:bg-gray-800/50 flex items-center justify-between">
+                <h3 className="text-sm font-semibold text-gray-900 dark:text-gray-100">
+                  {step.label}
+                </h3>
+                <button
+                  type="button"
+                  onClick={() => goToStep(stepIdx)}
+                  className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-lg text-xs font-medium text-[#02773b] hover:bg-[#02773b]/10 transition-colors"
+                >
+                  <IconEdit />
+                  Edit
+                </button>
+              </div>
+              <div className="p-5 space-y-3">
+                {visibleFields.map((field) => {
+                  const val = fieldValues[field.name];
+                  return (
+                    <div key={field.id} className="flex flex-col sm:flex-row sm:items-baseline gap-0.5 sm:gap-4">
+                      <span className="text-xs font-semibold uppercase tracking-wider text-gray-400 dark:text-gray-500 sm:w-40 flex-shrink-0">
+                        {field.label}
+                      </span>
+                      <div className="text-sm text-gray-900 dark:text-gray-100 flex-1 min-w-0">
+                        {renderReviewValue(field, val)}
+                      </div>
+                    </div>
+                  );
+                })}
+              </div>
+            </div>
+          );
+        })}
+      </div>
+    );
+  }
+
+  function renderReviewValue(field: FormField, val: any) {
+    if (val == null || val === "" || val === "[]") {
+      return <span className="text-gray-400 dark:text-gray-500 italic">Not provided</span>;
+    }
+
+    switch (field.type) {
+      case "user_picker": {
+        try {
+          const user: UserOption = JSON.parse(val);
+          return (
+            <div className="flex items-center gap-2">
+              <div className="w-6 h-6 rounded-full bg-[#02773b]/10 flex items-center justify-center text-[#02773b] text-[10px] font-semibold flex-shrink-0">
+                {user.displayName.split(" ").map((n) => n[0]).join("").toUpperCase().slice(0, 2)}
+              </div>
+              <div>
+                <span className="font-medium">{user.displayName}</span>
+                {(user.jobTitle || user.department) && (
+                  <span className="text-xs text-gray-500 ml-1">
+                    ({[user.jobTitle, user.department].filter(Boolean).join(", ")})
+                  </span>
+                )}
+              </div>
+            </div>
+          );
+        } catch {
+          return <span>{String(val)}</span>;
+        }
+      }
+
+      case "multi_user_picker": {
+        try {
+          const users: UserOption[] = JSON.parse(val);
+          if (users.length === 0) return <span className="text-gray-400 italic">None selected</span>;
+          return (
+            <div className="space-y-1">
+              {users.map((user, idx) => (
+                <div key={user.id} className="flex items-center gap-2">
+                  <span className="w-5 h-5 rounded-full bg-[#02773b]/10 text-[#02773b] flex items-center justify-center text-[10px] font-bold flex-shrink-0">
+                    {idx + 1}
+                  </span>
+                  <span className="font-medium">{user.displayName}</span>
+                  {(user.jobTitle || user.department) && (
+                    <span className="text-xs text-gray-500">
+                      ({[user.jobTitle, user.department].filter(Boolean).join(", ")})
+                    </span>
+                  )}
+                </div>
+              ))}
+            </div>
+          );
+        } catch {
+          return <span>{String(val)}</span>;
+        }
+      }
+
+      case "richtext":
+        return (
+          <div
+            className="prose prose-sm dark:prose-invert max-w-none [&_p]:my-1 [&_ul]:my-1 [&_ol]:my-1"
+            dangerouslySetInnerHTML={{ __html: val }}
+          />
+        );
+
+      case "table": {
+        const rows = Array.isArray(val) ? val : [];
+        if (rows.length === 0) return <span className="text-gray-400 italic">No rows</span>;
+        const columns = field.tableColumns ?? [];
+        return (
+          <div className="overflow-x-auto rounded-lg border border-gray-200 dark:border-gray-700">
+            <table className="w-full text-xs">
+              <thead>
+                <tr className="bg-gray-50 dark:bg-gray-800/60">
+                  {columns.map((col) => (
+                    <th key={col.name} className="px-2 py-1.5 text-left font-medium text-gray-600 dark:text-gray-400">
+                      {col.label}
+                    </th>
+                  ))}
+                </tr>
+              </thead>
+              <tbody className="divide-y divide-gray-100 dark:divide-gray-800">
+                {rows.map((row: Record<string, any>, rIdx: number) => (
+                  <tr key={rIdx}>
+                    {columns.map((col) => (
+                      <td key={col.name} className="px-2 py-1.5 text-gray-900 dark:text-gray-100">
+                        {row[col.name] ?? ""}
+                      </td>
+                    ))}
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        );
+      }
+
+      case "checkbox":
+      case "multiselect": {
+        const arr = Array.isArray(val) ? val : [];
+        if (arr.length === 0) return <span className="text-gray-400 italic">None selected</span>;
+        const allOpts = field.dataSource ? (dynamicOptions[field.name] ?? []) : (field.options ?? []);
+        const optionLabels = allOpts
+          .filter((o) => arr.includes(o.value))
+          .map((o) => o.label);
+        return <span>{optionLabels.length ? optionLabels.join(", ") : arr.join(", ")}</span>;
+      }
+
+      case "select": {
+        const allOpts = field.dataSource ? (dynamicOptions[field.name] ?? []) : (field.options ?? []);
+        const opt = allOpts.find((o) => o.value === val);
+        return <span>{opt?.label ?? val}</span>;
+      }
+
+      case "radio": {
+        const allOpts = field.dataSource ? (dynamicOptions[field.name] ?? []) : (field.options ?? []);
+        const opt = allOpts.find((o) => o.value === val);
+        return <span>{opt?.label ?? val}</span>;
+      }
+
+      case "file":
+        return <span>{String(val)}</span>;
+
+      default:
+        return <span>{String(val)}</span>;
+    }
+  }
+
+  /* ================================================================
      Render: form
      ================================================================ */
   const hasMetadataFields = casefolder.fields.some(
-    (f) => f.type !== "section" && f.type !== "divider" && isFieldVisible(f)
+    (f) => f.type !== "section" && f.type !== "divider" && f.type !== "step" && isFieldVisible(f)
   );
 
   const totalRequired = casefolder.fields.filter(
-    (f) => f.required && isFieldVisible(f) && f.type !== "section" && f.type !== "divider"
+    (f) => f.required && isFieldVisible(f) && f.type !== "section" && f.type !== "divider" && f.type !== "step"
   ).length;
+
+  const isWizardMode = wizardSteps !== null;
+  const isReviewStep = isWizardMode && currentStep === wizardSteps!.length - 1;
 
   return (
     <div className="p-4 sm:p-6 animate-fade-in">
@@ -1150,111 +1702,287 @@ export default function FileDocumentPage({
           )}
         </div>
 
-        {/* ---- form ---- */}
-        <form onSubmit={handleSubmit} noValidate>
-
-          {/* ---- Section 1: Casefolder-level fields (shared across all docs) ---- */}
-          {casefolder.fields.some((f) => (f as any).fieldLevel !== "document") && (
-            <div className="bg-white dark:bg-gray-900 rounded-2xl border border-gray-200 dark:border-gray-800 p-5 sm:p-6">
-              <div className="flex items-center gap-2 mb-5">
-                <div className="h-1.5 w-1.5 rounded-full bg-[#02773b]" />
-                <h2 className="text-sm font-semibold text-gray-900 dark:text-gray-100 uppercase tracking-wide">
-                  Casefolder Fields
-                </h2>
-                <span className="text-[10px] text-gray-400 font-normal normal-case">— shared across all documents</span>
-              </div>
-              <div className="grid grid-cols-1 sm:grid-cols-2 gap-x-4 gap-y-5">
-                {casefolder.fields.filter((f) => (f as any).fieldLevel !== "document").map((field) => renderField(field))}
-              </div>
+        {/* ================================================================
+           WIZARD MODE: Step indicator + step content
+           ================================================================ */}
+        {isWizardMode && (
+          <>
+            {/* Step indicator */}
+            <div className="flex items-center gap-1 sm:gap-2 overflow-x-auto pb-1">
+              {wizardSteps!.map((s, idx) => (
+                <div key={idx} className="flex items-center gap-1 sm:gap-2 flex-shrink-0">
+                  <button
+                    type="button"
+                    onClick={() => {
+                      if (idx < currentStep) goToStep(idx);
+                    }}
+                    disabled={idx > currentStep}
+                    className={`flex items-center gap-1.5 sm:gap-2 px-2.5 sm:px-3.5 py-1.5 sm:py-2 rounded-full text-xs sm:text-sm font-medium transition-all ${
+                      idx === currentStep
+                        ? "bg-[#02773b] text-white shadow-md shadow-[#02773b]/20"
+                        : idx < currentStep
+                        ? "bg-[#02773b]/10 text-[#02773b] dark:text-emerald-400 cursor-pointer hover:bg-[#02773b]/20"
+                        : "bg-gray-100 dark:bg-gray-800 text-gray-400 dark:text-gray-500 cursor-not-allowed"
+                    }`}
+                  >
+                    <span
+                      className={`w-5 h-5 sm:w-6 sm:h-6 rounded-full flex items-center justify-center text-xs font-bold ${
+                        idx === currentStep
+                          ? "bg-white/20 text-white"
+                          : idx < currentStep
+                          ? "bg-[#02773b] text-white"
+                          : "bg-gray-200 dark:bg-gray-700 text-gray-400 dark:text-gray-500"
+                      }`}
+                    >
+                      {idx < currentStep ? <IconCheck /> : idx + 1}
+                    </span>
+                    <span className="hidden sm:inline">{s.label}</span>
+                  </button>
+                  {idx < wizardSteps!.length - 1 && (
+                    <div
+                      className={`w-4 sm:w-8 h-0.5 flex-shrink-0 ${
+                        idx < currentStep
+                          ? "bg-[#02773b]"
+                          : "bg-gray-200 dark:bg-gray-700"
+                      }`}
+                    />
+                  )}
+                </div>
+              ))}
             </div>
-          )}
 
-          {/* ---- Section 2: Document details ---- */}
-          <div className={`bg-white dark:bg-gray-900 rounded-2xl border border-gray-200 dark:border-gray-800 p-5 sm:p-6 ${hasMetadataFields ? "mt-5" : ""}`}>
-            <div className="flex items-center justify-between mb-5">
-              <div className="flex items-center gap-2">
-                <div className="h-1.5 w-1.5 rounded-full bg-blue-500" />
-                <h2 className="text-sm font-semibold text-gray-900 dark:text-gray-100 uppercase tracking-wide">
-                  Document Details
-                </h2>
-                <span className="text-[10px] text-gray-400 font-normal normal-case">— specific to this document</span>
-              </div>
-            </div>
+            {/* Step content */}
+            <form onSubmit={handleSubmit} noValidate>
+              {/* Regular step: show fields */}
+              {!isReviewStep && (
+                <div className="space-y-5 animate-slide-up">
+                  <div className="bg-white dark:bg-gray-900 rounded-2xl border border-gray-200 dark:border-gray-800 p-5 sm:p-6">
+                    {/* Step header */}
+                    <div className="mb-5">
+                      <h2 className="text-lg font-semibold text-gray-900 dark:text-gray-100">
+                        {wizardSteps![currentStep].label}
+                      </h2>
+                      {wizardSteps![currentStep].description && (
+                        <p className="text-sm text-gray-500 dark:text-gray-400 mt-1">
+                          {wizardSteps![currentStep].description}
+                        </p>
+                      )}
+                    </div>
 
-            <div className="space-y-4">
-              {/* Document-level casefolder fields (e.g., Document Description, Folio Number) */}
-              {casefolder.fields.some((f) => (f as any).fieldLevel === "document") && (
-                <div className="grid grid-cols-1 sm:grid-cols-2 gap-x-4 gap-y-5 mb-4 pb-4 border-b border-gray-100 dark:border-gray-800">
-                  {casefolder.fields.filter((f) => (f as any).fieldLevel === "document").map((field) => renderField(field))}
+                    {/* Fields for current step */}
+                    <div className="grid grid-cols-1 sm:grid-cols-2 gap-x-4 gap-y-5">
+                      {wizardSteps![currentStep].fields.map((field) => renderField(field))}
+                    </div>
+                  </div>
+
+                  {/* submit error banner */}
+                  {submitError && (
+                    <div className="p-3 rounded-lg bg-red-50 dark:bg-red-950/30 border border-red-200 dark:border-red-900/50 text-sm text-red-600 dark:text-red-400 flex items-center gap-2">
+                      <svg className="w-4 h-4 shrink-0" fill="none" viewBox="0 0 24 24" strokeWidth={2} stroke="currentColor">
+                        <path strokeLinecap="round" strokeLinejoin="round" d="M12 9v3.75m9-.75a9 9 0 1 1-18 0 9 9 0 0 1 18 0Zm-9 3.75h.008v.008H12v-.008Z" />
+                      </svg>
+                      {submitError}
+                    </div>
+                  )}
+
+                  {/* validation summary */}
+                  {Object.keys(fieldErrors).length > 0 && (
+                    <div className="p-3 rounded-lg bg-red-50 dark:bg-red-950/30 border border-red-200 dark:border-red-900/50 text-sm text-red-600 dark:text-red-400">
+                      Please fix the errors above before continuing.
+                    </div>
+                  )}
+
+                  {/* Navigation */}
+                  <div className="flex items-center justify-between gap-3">
+                    {currentStep > 0 ? (
+                      <button
+                        type="button"
+                        onClick={handlePrevStep}
+                        className="inline-flex items-center gap-2 px-4 py-2.5 rounded-lg text-sm font-medium text-gray-600 dark:text-gray-400 bg-gray-100 dark:bg-gray-800 hover:bg-gray-200 dark:hover:bg-gray-700 transition-colors"
+                      >
+                        <IconBack />
+                        Back
+                      </button>
+                    ) : (
+                      <Link
+                        href={`/records/casefolders/${id}`}
+                        className="px-4 py-2.5 rounded-lg text-sm font-medium text-gray-600 dark:text-gray-400 bg-gray-100 dark:bg-gray-800 hover:bg-gray-200 dark:hover:bg-gray-700 transition-colors"
+                      >
+                        Cancel
+                      </Link>
+                    )}
+                    <button
+                      type="button"
+                      onClick={handleNextStep}
+                      className="inline-flex items-center gap-2 px-5 py-2.5 rounded-lg text-sm font-medium text-white bg-[#02773b] hover:bg-[#026332] transition-colors shadow-sm"
+                    >
+                      Next
+                      <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" strokeWidth={2} stroke="currentColor">
+                        <path strokeLinecap="round" strokeLinejoin="round" d="m8.25 4.5 7.5 7.5-7.5 7.5" />
+                      </svg>
+                    </button>
+                  </div>
                 </div>
               )}
 
-              {/* Title and department are auto-derived from casefolder fields marked as usedInTitle/fieldLevel */}
-            </div>
-          </div>
+              {/* Review step */}
+              {isReviewStep && (
+                <div className="space-y-5 animate-slide-up">
+                  {renderReviewStep()}
 
-          {/* ---- Section 3: File attachments (visual only) ---- */}
-          <div className="bg-white dark:bg-gray-900 rounded-2xl border border-gray-200 dark:border-gray-800 p-5 sm:p-6 mt-5">
-            <div className="flex items-center gap-2 mb-5">
-              <div className="h-1 w-1 rounded-full bg-gray-400" />
-              <h2 className="text-sm font-semibold text-gray-900 dark:text-gray-100 uppercase tracking-wide">
-                Attachments
-              </h2>
-              <span className="text-xs text-gray-400 dark:text-gray-500 font-normal normal-case">(optional, can also attach after filing)</span>
-            </div>
-            <FileDropZone
-              files={attachedFiles}
-              onAdd={(newFiles) => setAttachedFiles((prev) => [...prev, ...newFiles])}
-              onRemove={(idx) => setAttachedFiles((prev) => prev.filter((_, i) => i !== idx))}
-            />
-          </div>
+                  {/* submit error banner */}
+                  {submitError && (
+                    <div className="p-3 rounded-lg bg-red-50 dark:bg-red-950/30 border border-red-200 dark:border-red-900/50 text-sm text-red-600 dark:text-red-400 flex items-center gap-2">
+                      <svg className="w-4 h-4 shrink-0" fill="none" viewBox="0 0 24 24" strokeWidth={2} stroke="currentColor">
+                        <path strokeLinecap="round" strokeLinejoin="round" d="M12 9v3.75m9-.75a9 9 0 1 1-18 0 9 9 0 0 1 18 0Zm-9 3.75h.008v.008H12v-.008Z" />
+                      </svg>
+                      {submitError}
+                    </div>
+                  )}
 
-          {/* ---- submit error banner ---- */}
-          {submitError && (
-            <div className="mt-4 p-3 rounded-lg bg-red-50 dark:bg-red-950/30 border border-red-200 dark:border-red-900/50 text-sm text-red-600 dark:text-red-400 flex items-center gap-2">
-              <svg className="w-4 h-4 shrink-0" fill="none" viewBox="0 0 24 24" strokeWidth={2} stroke="currentColor">
-                <path strokeLinecap="round" strokeLinejoin="round" d="M12 9v3.75m9-.75a9 9 0 1 1-18 0 9 9 0 0 1 18 0Zm-9 3.75h.008v.008H12v-.008Z" />
-              </svg>
-              {submitError}
-            </div>
-          )}
-
-          {/* ---- validation summary ---- */}
-          {(Object.keys(fieldErrors).length > 0 || Object.keys(docErrors).length > 0) && (
-            <div className="mt-4 p-3 rounded-lg bg-red-50 dark:bg-red-950/30 border border-red-200 dark:border-red-900/50 text-sm text-red-600 dark:text-red-400">
-              Please fix {Object.keys(fieldErrors).length + Object.keys(docErrors).length} error
-              {Object.keys(fieldErrors).length + Object.keys(docErrors).length > 1 ? "s" : ""} above
-              before filing.
-            </div>
-          )}
-
-          {/* ---- actions ---- */}
-          <div className="mt-6 flex items-center justify-between gap-3">
-            <Link
-              href={`/records/casefolders/${id}`}
-              className="px-4 py-2.5 rounded-lg text-sm font-medium text-gray-600 dark:text-gray-400 bg-gray-100 dark:bg-gray-800 hover:bg-gray-200 dark:hover:bg-gray-700 transition-colors"
-            >
-              Cancel
-            </Link>
-            <button
-              type="submit"
-              disabled={submitting}
-              className="inline-flex items-center gap-2 px-5 py-2.5 rounded-lg text-sm font-medium text-white bg-[#02773b] hover:bg-[#026332] disabled:opacity-60 disabled:cursor-not-allowed transition-colors shadow-sm"
-            >
-              {submitting ? (
-                <>
-                  <IconSpinner />
-                  Filing...
-                </>
-              ) : (
-                <>
-                  <IconFilePlus />
-                  File Document
-                </>
+                  {/* Navigation */}
+                  <div className="flex items-center justify-between gap-3">
+                    <button
+                      type="button"
+                      onClick={handlePrevStep}
+                      className="inline-flex items-center gap-2 px-4 py-2.5 rounded-lg text-sm font-medium text-gray-600 dark:text-gray-400 bg-gray-100 dark:bg-gray-800 hover:bg-gray-200 dark:hover:bg-gray-700 transition-colors"
+                    >
+                      <IconBack />
+                      Back
+                    </button>
+                    <button
+                      type="submit"
+                      disabled={submitting}
+                      className="inline-flex items-center gap-2 px-5 py-2.5 rounded-lg text-sm font-medium text-white bg-[#02773b] hover:bg-[#026332] disabled:opacity-60 disabled:cursor-not-allowed transition-colors shadow-sm"
+                    >
+                      {submitting ? (
+                        <>
+                          <IconSpinner />
+                          Filing...
+                        </>
+                      ) : (
+                        <>
+                          <IconFilePlus />
+                          File Document
+                        </>
+                      )}
+                    </button>
+                  </div>
+                </div>
               )}
-            </button>
-          </div>
-        </form>
+            </form>
+          </>
+        )}
+
+        {/* ================================================================
+           FLAT MODE: Original layout (no step fields detected)
+           ================================================================ */}
+        {!isWizardMode && (
+          <form onSubmit={handleSubmit} noValidate>
+
+            {/* ---- Section 1: Casefolder-level fields (shared across all docs) ---- */}
+            {casefolder.fields.some((f) => (f as any).fieldLevel !== "document") && (
+              <div className="bg-white dark:bg-gray-900 rounded-2xl border border-gray-200 dark:border-gray-800 p-5 sm:p-6">
+                <div className="flex items-center gap-2 mb-5">
+                  <div className="h-1.5 w-1.5 rounded-full bg-[#02773b]" />
+                  <h2 className="text-sm font-semibold text-gray-900 dark:text-gray-100 uppercase tracking-wide">
+                    Casefolder Fields
+                  </h2>
+                  <span className="text-[10px] text-gray-400 font-normal normal-case">-- shared across all documents</span>
+                </div>
+                <div className="grid grid-cols-1 sm:grid-cols-2 gap-x-4 gap-y-5">
+                  {casefolder.fields.filter((f) => (f as any).fieldLevel !== "document").map((field) => renderField(field))}
+                </div>
+              </div>
+            )}
+
+            {/* ---- Section 2: Document details ---- */}
+            <div className={`bg-white dark:bg-gray-900 rounded-2xl border border-gray-200 dark:border-gray-800 p-5 sm:p-6 ${hasMetadataFields ? "mt-5" : ""}`}>
+              <div className="flex items-center justify-between mb-5">
+                <div className="flex items-center gap-2">
+                  <div className="h-1.5 w-1.5 rounded-full bg-blue-500" />
+                  <h2 className="text-sm font-semibold text-gray-900 dark:text-gray-100 uppercase tracking-wide">
+                    Document Details
+                  </h2>
+                  <span className="text-[10px] text-gray-400 font-normal normal-case">-- specific to this document</span>
+                </div>
+              </div>
+
+              <div className="space-y-4">
+                {/* Document-level casefolder fields (e.g., Document Description, Folio Number) */}
+                {casefolder.fields.some((f) => (f as any).fieldLevel === "document") && (
+                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-x-4 gap-y-5 mb-4 pb-4 border-b border-gray-100 dark:border-gray-800">
+                    {casefolder.fields.filter((f) => (f as any).fieldLevel === "document").map((field) => renderField(field))}
+                  </div>
+                )}
+
+                {/* Title and department are auto-derived from casefolder fields marked as usedInTitle/fieldLevel */}
+              </div>
+            </div>
+
+            {/* ---- Section 3: File attachments (visual only) ---- */}
+            <div className="bg-white dark:bg-gray-900 rounded-2xl border border-gray-200 dark:border-gray-800 p-5 sm:p-6 mt-5">
+              <div className="flex items-center gap-2 mb-5">
+                <div className="h-1 w-1 rounded-full bg-gray-400" />
+                <h2 className="text-sm font-semibold text-gray-900 dark:text-gray-100 uppercase tracking-wide">
+                  Attachments
+                </h2>
+                <span className="text-xs text-gray-400 dark:text-gray-500 font-normal normal-case">(optional, can also attach after filing)</span>
+              </div>
+              <FileDropZone
+                files={attachedFiles}
+                onAdd={(newFiles) => setAttachedFiles((prev) => [...prev, ...newFiles])}
+                onRemove={(idx) => setAttachedFiles((prev) => prev.filter((_, i) => i !== idx))}
+              />
+            </div>
+
+            {/* ---- submit error banner ---- */}
+            {submitError && (
+              <div className="mt-4 p-3 rounded-lg bg-red-50 dark:bg-red-950/30 border border-red-200 dark:border-red-900/50 text-sm text-red-600 dark:text-red-400 flex items-center gap-2">
+                <svg className="w-4 h-4 shrink-0" fill="none" viewBox="0 0 24 24" strokeWidth={2} stroke="currentColor">
+                  <path strokeLinecap="round" strokeLinejoin="round" d="M12 9v3.75m9-.75a9 9 0 1 1-18 0 9 9 0 0 1 18 0Zm-9 3.75h.008v.008H12v-.008Z" />
+                </svg>
+                {submitError}
+              </div>
+            )}
+
+            {/* ---- validation summary ---- */}
+            {(Object.keys(fieldErrors).length > 0 || Object.keys(docErrors).length > 0) && (
+              <div className="mt-4 p-3 rounded-lg bg-red-50 dark:bg-red-950/30 border border-red-200 dark:border-red-900/50 text-sm text-red-600 dark:text-red-400">
+                Please fix {Object.keys(fieldErrors).length + Object.keys(docErrors).length} error
+                {Object.keys(fieldErrors).length + Object.keys(docErrors).length > 1 ? "s" : ""} above
+                before filing.
+              </div>
+            )}
+
+            {/* ---- actions ---- */}
+            <div className="mt-6 flex items-center justify-between gap-3">
+              <Link
+                href={`/records/casefolders/${id}`}
+                className="px-4 py-2.5 rounded-lg text-sm font-medium text-gray-600 dark:text-gray-400 bg-gray-100 dark:bg-gray-800 hover:bg-gray-200 dark:hover:bg-gray-700 transition-colors"
+              >
+                Cancel
+              </Link>
+              <button
+                type="submit"
+                disabled={submitting}
+                className="inline-flex items-center gap-2 px-5 py-2.5 rounded-lg text-sm font-medium text-white bg-[#02773b] hover:bg-[#026332] disabled:opacity-60 disabled:cursor-not-allowed transition-colors shadow-sm"
+              >
+                {submitting ? (
+                  <>
+                    <IconSpinner />
+                    Filing...
+                  </>
+                ) : (
+                  <>
+                    <IconFilePlus />
+                    File Document
+                  </>
+                )}
+              </button>
+            </div>
+          </form>
+        )}
       </div>
     </div>
   );

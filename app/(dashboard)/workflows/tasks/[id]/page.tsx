@@ -465,7 +465,7 @@ const SLA_BADGE: Record<string, string> = {
 
 function LoadingSkeleton() {
   return (
-    <div className="animate-pulse p-6 space-y-6 max-w-6xl mx-auto">
+    <div className="animate-pulse p-6 space-y-6">
       {/* Breadcrumb */}
       <div className="h-4 w-48 bg-gray-200 dark:bg-gray-800 rounded" />
       {/* Header card */}

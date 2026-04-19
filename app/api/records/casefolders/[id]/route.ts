@@ -12,6 +12,7 @@ import { resolveAssignee } from "@/lib/workflow-engine";
 function serialiseBigInt(data: unknown): unknown {
   if (data === null || data === undefined) return data;
   if (typeof data === "bigint") return data.toString();
+  if (data instanceof Date) return data.toISOString();
   if (Array.isArray(data)) return data.map(serialiseBigInt);
   if (typeof data === "object") {
     const out: Record<string, unknown> = {};
@@ -66,6 +67,42 @@ export async function GET(
       );
     }
 
+    // --- ACL enforcement ---
+    // Admins bypass all checks. For everyone else, access requires an explicit
+    // ACL entry. A casefolder with no entries configured is locked to admins only.
+    const isAdmin = session.user.permissions.includes("admin:manage");
+    if (!isAdmin) {
+      const aclEntries = await db.casefolderACL.findMany({
+        where: { formTemplateId: id },
+        select: { userId: true, roleId: true, departmentId: true, expiresAt: true, canView: true },
+      });
+
+      const userRoleIds = (
+        await db.userRole.findMany({ where: { userId: session.user.id }, select: { roleId: true } })
+      ).map((ur) => ur.roleId);
+
+      const currentUser = await db.user.findUnique({
+        where: { id: session.user.id },
+        select: { department: true },
+      });
+
+      const hasAccess = aclEntries.some((acl) => {
+        if (acl.expiresAt && new Date(acl.expiresAt) < new Date()) return false;
+        if (!acl.canView) return false;
+        if (acl.userId === session.user.id) return true;
+        if (acl.roleId && userRoleIds.includes(acl.roleId)) return true;
+        if (acl.departmentId && currentUser?.department && acl.departmentId === currentUser.department) return true;
+        return false;
+      });
+
+      if (!hasAccess) {
+        return NextResponse.json(
+          { error: "You do not have permission to access this casefolder" },
+          { status: 403 }
+        );
+      }
+    }
+
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     const fields = (template.fields ?? []) as any[];
 
@@ -84,6 +121,21 @@ export async function GET(
       },
       status: { not: "DISPOSED" },
     };
+
+    // --- Option A: Internal Memo casefolder only surfaces fully approved memos.
+    // A memo is "fully approved" when:
+    //   * document.status === "ARCHIVED"  (set at final approval)
+    //   * linked workflowInstance.status === "COMPLETED"  (i.e. not REJECTED /
+    //     CANCELLED / still IN_PROGRESS)
+    // This check must NOT apply to other casefolders (Correspondence
+    // Management, etc.), which remain unfiltered.
+    const isInternalMemoCasefolder = template.name === "Internal Memo";
+    if (isInternalMemoCasefolder) {
+      where.status = "ARCHIVED";
+      where.workflowInstances = {
+        some: { status: "COMPLETED" },
+      };
+    }
 
     // If viewing a specific folder, filter by aggregation key values
     // folderKey format: "value1||value2" for composite keys
@@ -123,12 +175,20 @@ export async function GET(
       const aggFieldNames = aggregationFields.map((f: { name: string }) => f.name);
       const aggFieldLabels = aggregationFields.map((f: { label: string }) => f.label);
 
-      // Fetch ALL documents in this casefolder (no pagination for grouping)
+      // Fetch ALL documents in this casefolder (no pagination for grouping).
+      // For the Internal Memo casefolder, only include fully approved memos
+      // (document ARCHIVED + linked workflow COMPLETED).
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      const allDocsWhere: any = {
+        metadata: { path: ["formTemplateId"], equals: id },
+        status: { not: "DISPOSED" },
+      };
+      if (isInternalMemoCasefolder) {
+        allDocsWhere.status = "ARCHIVED";
+        allDocsWhere.workflowInstances = { some: { status: "COMPLETED" } };
+      }
       const allDocs = await db.document.findMany({
-        where: {
-          metadata: { path: ["formTemplateId"], equals: id },
-          status: { not: "DISPOSED" },
-        },
+        where: allDocsWhere,
         select: {
           id: true,
           metadata: true,

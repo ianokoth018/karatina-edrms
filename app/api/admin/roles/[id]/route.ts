@@ -35,9 +35,9 @@ export async function PATCH(
       return NextResponse.json({ error: "Role not found" }, { status: 404 });
     }
 
-    if (existing.isSystem) {
+    if (existing.name === "ADMIN") {
       return NextResponse.json(
-        { error: "System roles cannot be modified" },
+        { error: "The ADMIN role cannot be modified" },
         { status: 403 }
       );
     }
@@ -130,9 +130,9 @@ export async function DELETE(
       return NextResponse.json({ error: "Role not found" }, { status: 404 });
     }
 
-    if (existing.isSystem) {
+    if (existing.name === "ADMIN") {
       return NextResponse.json(
-        { error: "System roles cannot be deleted" },
+        { error: "The ADMIN role cannot be deleted" },
         { status: 403 }
       );
     }

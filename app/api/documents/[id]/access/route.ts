@@ -88,6 +88,9 @@ export async function POST(
     if (!session?.user?.id) {
       return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
     }
+    const ipAddress =
+      req.headers.get("x-forwarded-for") ?? req.headers.get("x-real-ip") ?? undefined;
+    const userAgent = req.headers.get("user-agent") ?? undefined;
 
     const { id } = await params;
     const body = await req.json();
@@ -147,6 +150,8 @@ export async function POST(
       action: "document.access_granted",
       resourceType: "Document",
       resourceId: id,
+      ipAddress: ipAddress ?? undefined,
+      userAgent: userAgent ?? undefined,
       metadata: {
         accessId: accessEntry.id,
         grantedUserId: userId ?? null,
@@ -188,6 +193,9 @@ export async function DELETE(
     if (!session?.user?.id) {
       return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
     }
+    const ipAddress =
+      req.headers.get("x-forwarded-for") ?? req.headers.get("x-real-ip") ?? undefined;
+    const userAgent = req.headers.get("user-agent") ?? undefined;
 
     const { id } = await params;
     const body = await req.json();
@@ -231,6 +239,8 @@ export async function DELETE(
       action: "document.access_revoked",
       resourceType: "Document",
       resourceId: id,
+      ipAddress: ipAddress ?? undefined,
+      userAgent: userAgent ?? undefined,
       metadata: {
         accessId,
         revokedUserId: accessEntry.userId,

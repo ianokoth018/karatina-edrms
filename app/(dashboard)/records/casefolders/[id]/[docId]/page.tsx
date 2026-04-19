@@ -7,9 +7,17 @@ import Link from "next/link";
 /*  Helpers                                                            */
 /* ================================================================== */
 
-/** Convert a storagePath to a file-serving API URL */
+/** Convert a storagePath to a file-serving API URL for inline preview.
+ *  The native Chrome PDF toolbar (with thumbnails + download/print) is
+ *  left intact — we favour viewer UX. API still enforces ACL on requests. */
 function fileUrl(storagePath: string): string {
   return `/api/files?path=${encodeURIComponent(storagePath)}`;
+}
+
+/** Convert a storagePath to a forced-download URL, gated by the API's
+ *  `canDownload` check. */
+function downloadUrl(storagePath: string): string {
+  return `/api/files?path=${encodeURIComponent(storagePath)}&download=1`;
 }
 
 /* ================================================================== */
@@ -52,6 +60,19 @@ interface DocumentCreatedBy {
   department: string | null;
 }
 
+interface EffectiveDocumentPermissions {
+  canView: boolean;
+  canEdit: boolean;
+  canDelete: boolean;
+  canShare: boolean;
+  canDownload: boolean;
+  canCreate: boolean;
+  canPrint: boolean;
+  canManageACL: boolean;
+  isAdmin: boolean;
+  isCreator: boolean;
+}
+
 interface DocumentData {
   id: string;
   referenceNumber: string;
@@ -66,7 +87,61 @@ interface DocumentData {
   createdBy: DocumentCreatedBy;
   files: DocumentFile[];
   versions: DocumentVersion[];
+  effectivePermissions?: EffectiveDocumentPermissions;
 }
+
+/** Fallback when the API payload predates effectivePermissions: user is
+ *  already on this page so they must have view, but all mutating actions
+ *  are gated off. */
+const VIEW_ONLY_PERMISSIONS: EffectiveDocumentPermissions = {
+  canView: true,
+  canEdit: false,
+  canDelete: false,
+  canShare: false,
+  canDownload: false,
+  canCreate: false,
+  canPrint: false,
+  canManageACL: false,
+  isAdmin: false,
+  isCreator: false,
+};
+
+/* ---------- effective permissions pill config (mirrors documents/[id]) ---------- */
+
+const EFFECTIVE_PERM_KEYS = [
+  "canView",
+  "canEdit",
+  "canDelete",
+  "canShare",
+  "canDownload",
+  "canPrint",
+  "canManageACL",
+] as const;
+
+type EffectivePermKey = (typeof EFFECTIVE_PERM_KEYS)[number];
+
+const EFFECTIVE_PERM_LABELS: Record<EffectivePermKey, string> = {
+  canView: "View",
+  canEdit: "Edit",
+  canDelete: "Delete",
+  canShare: "Share",
+  canDownload: "Download",
+  canPrint: "Print",
+  canManageACL: "Manage ACL",
+};
+
+const EFFECTIVE_PERM_COLORS: Record<
+  EffectivePermKey,
+  { bg: string; text: string; dot: string }
+> = {
+  canView:      { bg: "bg-emerald-100 dark:bg-emerald-950/50", text: "text-emerald-700 dark:text-emerald-400", dot: "bg-emerald-500" },
+  canEdit:      { bg: "bg-amber-100 dark:bg-amber-950/50",     text: "text-amber-700 dark:text-amber-400",     dot: "bg-amber-500" },
+  canDelete:    { bg: "bg-red-100 dark:bg-red-950/50",         text: "text-red-700 dark:text-red-400",         dot: "bg-red-500" },
+  canShare:     { bg: "bg-purple-100 dark:bg-purple-950/50",   text: "text-purple-700 dark:text-purple-400",   dot: "bg-purple-500" },
+  canDownload:  { bg: "bg-teal-100 dark:bg-teal-950/50",       text: "text-teal-700 dark:text-teal-400",       dot: "bg-teal-500" },
+  canPrint:     { bg: "bg-indigo-100 dark:bg-indigo-950/50",   text: "text-indigo-700 dark:text-indigo-400",   dot: "bg-indigo-500" },
+  canManageACL: { bg: "bg-gray-200 dark:bg-gray-800",          text: "text-gray-700 dark:text-gray-300",       dot: "bg-gray-500" },
+};
 
 interface CasefolderData {
   id: string;
@@ -104,6 +179,14 @@ function IconDownload({ className = "w-5 h-5" }: { className?: string }) {
   return (
     <svg className={className} fill="none" viewBox="0 0 24 24" strokeWidth={1.5} stroke="currentColor">
       <path strokeLinecap="round" strokeLinejoin="round" d="M3 16.5v2.25A2.25 2.25 0 0 0 5.25 21h13.5A2.25 2.25 0 0 0 21 18.75V16.5M16.5 12 12 16.5m0 0L7.5 12m4.5 4.5V3" />
+    </svg>
+  );
+}
+
+function IconPrinter({ className = "w-5 h-5" }: { className?: string }) {
+  return (
+    <svg className={className} fill="none" viewBox="0 0 24 24" strokeWidth={1.5} stroke="currentColor">
+      <path strokeLinecap="round" strokeLinejoin="round" d="M6.72 13.829c-.24.03-.48.062-.72.096m.72-.096a42.415 42.415 0 0 1 10.56 0m-10.56 0L6.34 18m10.94-4.171c.24.03.48.062.72.096m-.72-.096L17.66 18m0 0 .229 2.523a1.125 1.125 0 0 1-1.12 1.227H7.231c-.662 0-1.18-.568-1.12-1.227L6.34 18m11.318 0h1.091A2.25 2.25 0 0 0 21 15.75V9.456c0-1.081-.768-2.015-1.837-2.175a48.055 48.055 0 0 0-1.913-.247M6.34 18H5.25A2.25 2.25 0 0 1 3 15.75V9.456c0-1.081.768-2.015 1.837-2.175a48.041 48.041 0 0 1 1.913-.247m10.5 0a48.536 48.536 0 0 0-10.5 0m10.5 0V3.375c0-.621-.504-1.125-1.125-1.125h-8.25c-.621 0-1.125.504-1.125 1.125v3.659M18 10.5h.008v.008H18V10.5Zm-3 0h.008v.008H15V10.5Z" />
     </svg>
   );
 }
@@ -532,10 +615,12 @@ function DocumentViewer({
   files,
   selectedFileIndex,
   onSelectFile,
+  perms,
 }: {
   files: DocumentFile[];
   selectedFileIndex: number;
   onSelectFile: (index: number) => void;
+  perms: EffectiveDocumentPermissions;
 }) {
   if (files.length === 0) {
     return (
@@ -595,14 +680,6 @@ function DocumentViewer({
             </div>
           )}
         </div>
-        <a
-          href={fileUrl(file.storagePath)}
-          download={file.fileName}
-          className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-semibold text-[#02773b] bg-[#02773b]/10 hover:bg-[#02773b]/20 dark:text-emerald-400 dark:bg-[#02773b]/20 dark:hover:bg-[#02773b]/30 transition-colors shrink-0"
-        >
-          <IconDownload className="w-3.5 h-3.5" />
-          Download
-        </a>
       </div>
 
       {/* Viewer area */}
@@ -633,16 +710,20 @@ function DocumentViewer({
             </h3>
             <p className="text-sm text-gray-500 dark:text-gray-400 mb-5 max-w-xs">
               This file type ({file.mimeType}) cannot be previewed in the browser.
-              Download it to view the contents.
+              {perms.canDownload
+                ? " Download it to view the contents."
+                : " You do not have permission to download this file."}
             </p>
-            <a
-              href={fileUrl(file.storagePath)}
-              download={file.fileName}
-              className="inline-flex items-center gap-2 px-5 py-2.5 rounded-xl text-sm font-semibold text-white bg-[#02773b] hover:bg-[#025f2f] shadow-sm transition-colors"
-            >
-              <IconDownload className="w-4 h-4" />
-              Download {file.fileName}
-            </a>
+            {perms.canDownload && (
+              <a
+                href={downloadUrl(file.storagePath)}
+                download={file.fileName}
+                className="inline-flex items-center gap-2 px-5 py-2.5 rounded-xl text-sm font-semibold text-white bg-[#02773b] hover:bg-[#025f2f] shadow-sm transition-colors"
+              >
+                <IconDownload className="w-4 h-4" />
+                Download {file.fileName}
+              </a>
+            )}
           </div>
         )}
       </div>
@@ -839,6 +920,7 @@ export default function CasefolderDocumentViewerPage({
 
   const { document: doc, casefolder, fieldValues } = data;
   const createdByName = doc.createdBy.displayName || doc.createdBy.name || "Unknown";
+  const perms = doc.effectivePermissions ?? VIEW_ONLY_PERMISSIONS;
 
   /* ================================================================ */
   /*  Render                                                           */
@@ -1023,7 +1105,7 @@ export default function CasefolderDocumentViewerPage({
 
           {/* ---- Actions ---- */}
           <section className="space-y-2">
-            {!editMode && (
+            {!editMode && perms.canEdit && (
               <button
                 onClick={enterEditMode}
                 className="w-full inline-flex items-center justify-center gap-2 px-4 py-2.5 rounded-xl text-sm font-semibold text-[#02773b] bg-[#02773b]/10 hover:bg-[#02773b]/20 dark:text-emerald-400 dark:bg-[#02773b]/20 dark:hover:bg-[#02773b]/30 transition-colors"
@@ -1033,15 +1115,46 @@ export default function CasefolderDocumentViewerPage({
               </button>
             )}
 
-            {doc.files.length > 0 && (
+            {doc.files.length > 0 && perms.canDownload && (
               <a
-                href={fileUrl(doc.files[0].storagePath)}
+                href={downloadUrl(doc.files[0].storagePath)}
                 download={doc.files[0].fileName}
-                className="w-full inline-flex items-center justify-center gap-2 px-4 py-2.5 rounded-xl text-sm font-semibold text-[#dd9f42] bg-[#dd9f42]/10 hover:bg-[#dd9f42]/20 dark:text-[#dd9f42] dark:bg-[#dd9f42]/20 dark:hover:bg-[#dd9f42]/30 transition-colors"
+                className="w-full inline-flex items-center justify-center gap-2 px-4 py-2.5 rounded-xl text-sm font-semibold border border-karu-green text-karu-green hover:bg-karu-green-light dark:hover:bg-karu-green/10 transition-colors"
               >
                 <IconDownload className="w-4 h-4" />
                 Download Primary File
               </a>
+            )}
+
+            {doc.files.length > 0 && perms.canPrint && (
+              <button
+                type="button"
+                onClick={() => {
+                  // Fire-and-forget audit; don't block the print dialog.
+                  fetch(`/api/documents/${doc.id}/events`, {
+                    method: "POST",
+                    headers: { "Content-Type": "application/json" },
+                    body: JSON.stringify({ type: "printed" }),
+                  }).catch(() => {});
+                  window.print();
+                }}
+                className="w-full inline-flex items-center justify-center gap-2 px-4 py-2.5 rounded-xl text-sm font-semibold border border-karu-green text-karu-green hover:bg-karu-green-light dark:hover:bg-karu-green/10 transition-colors"
+              >
+                <IconPrinter className="w-4 h-4" />
+                Print
+              </button>
+            )}
+
+            {perms.canShare && (
+              <Link
+                href={`/documents/${doc.id}?share=1`}
+                className="w-full inline-flex items-center justify-center gap-2 px-4 py-2.5 rounded-xl text-sm font-semibold border border-karu-green text-karu-green hover:bg-karu-green-light dark:hover:bg-karu-green/10 transition-colors"
+              >
+                <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" strokeWidth={1.5} stroke="currentColor">
+                  <path strokeLinecap="round" strokeLinejoin="round" d="M7.217 10.907a2.25 2.25 0 1 0 0 2.186m0-2.186c.18.324.283.696.283 1.093s-.103.77-.283 1.093m0-2.186 9.566-5.314m-9.566 7.5 9.566 5.314m0 0a2.25 2.25 0 1 0 3.935 2.186 2.25 2.25 0 0 0-3.935-2.186Zm0-12.814a2.25 2.25 0 1 0 3.933-2.185 2.25 2.25 0 0 0-3.933 2.185Z" />
+                </svg>
+                Share
+              </Link>
             )}
 
             <Link
@@ -1098,15 +1211,17 @@ export default function CasefolderDocumentViewerPage({
                             {formatDate(file.uploadedAt)}
                           </p>
                         </div>
-                        <a
-                          href={fileUrl(file.storagePath)}
-                          download={file.fileName}
-                          onClick={(e) => e.stopPropagation()}
-                          className="shrink-0 p-1.5 rounded-md text-gray-400 dark:text-gray-500 hover:text-[#02773b] hover:bg-[#02773b]/10 dark:hover:text-emerald-400 dark:hover:bg-[#02773b]/20 transition-colors"
-                          title={`Download ${file.fileName}`}
-                        >
-                          <IconDownload className="w-3.5 h-3.5" />
-                        </a>
+                        {perms.canDownload && (
+                          <a
+                            href={downloadUrl(file.storagePath)}
+                            download={file.fileName}
+                            onClick={(e) => e.stopPropagation()}
+                            className="shrink-0 p-1.5 rounded-md text-gray-400 dark:text-gray-500 hover:text-[#02773b] hover:bg-[#02773b]/10 dark:hover:text-emerald-400 dark:hover:bg-[#02773b]/20 transition-colors"
+                            title={`Download ${file.fileName}`}
+                          >
+                            <IconDownload className="w-3.5 h-3.5" />
+                          </a>
+                        )}
                       </button>
                     </li>
                   ))}
@@ -1140,6 +1255,7 @@ export default function CasefolderDocumentViewerPage({
           files={doc.files}
           selectedFileIndex={selectedFileIndex}
           onSelectFile={setSelectedFileIndex}
+          perms={perms}
         />
       </main>
     </div>

@@ -3,6 +3,7 @@ import { auth } from "@/lib/auth";
 import { db } from "@/lib/db";
 import { writeAudit } from "@/lib/audit";
 import { generateReference } from "@/lib/reference";
+import { getDepartmentCode } from "@/lib/departments";
 import { logger } from "@/lib/logger";
 import crypto from "crypto";
 import fs from "fs/promises";
@@ -19,8 +20,8 @@ const ALLOWED_MIME_TYPES = new Set([
   "image/tiff",
 ]);
 
-/** Maximum file size: 50 MB */
-const MAX_FILE_SIZE = 50 * 1024 * 1024;
+/** Maximum file size: 2 GB */
+const MAX_FILE_SIZE = 2 * 1024 * 1024 * 1024;
 
 /**
  * Custom JSON serialiser that converts BigInt values to strings so that
@@ -29,6 +30,7 @@ const MAX_FILE_SIZE = 50 * 1024 * 1024;
 function serialiseBigInt(data: unknown): unknown {
   if (data === null || data === undefined) return data;
   if (typeof data === "bigint") return data.toString();
+  if (data instanceof Date) return data.toISOString();
   if (Array.isArray(data)) return data.map(serialiseBigInt);
   if (typeof data === "object") {
     const out: Record<string, unknown> = {};
@@ -194,7 +196,7 @@ export async function POST(req: NextRequest) {
       .filter(Boolean);
 
     // Derive a short department abbreviation for the reference number
-    const deptAbbr = department.replace(/[^A-Z0-9]/gi, "").slice(0, 6).toUpperCase() || "GEN";
+    const deptAbbr = getDepartmentCode(department);
     const referenceNumber = await generateReference("DOC", deptAbbr);
 
     // Read file buffer and compute content hash

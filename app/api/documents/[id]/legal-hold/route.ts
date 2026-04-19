@@ -16,6 +16,9 @@ export async function POST(
     if (!session?.user?.id) {
       return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
     }
+    const ipAddress =
+      req.headers.get("x-forwarded-for") ?? req.headers.get("x-real-ip") ?? undefined;
+    const userAgent = req.headers.get("user-agent") ?? undefined;
 
     const { id } = await params;
     const body = await req.json();
@@ -63,6 +66,20 @@ export async function POST(
       action: "document.legal_hold_placed",
       resourceType: "Document",
       resourceId: id,
+      ipAddress: ipAddress ?? undefined,
+      userAgent: userAgent ?? undefined,
+      metadata: {
+        reason: reason.trim(),
+        referenceNumber: document.referenceNumber,
+      },
+    });
+    await writeAudit({
+      userId: session.user.id,
+      action: "document.legal_hold_added",
+      resourceType: "Document",
+      resourceId: id,
+      ipAddress: ipAddress ?? undefined,
+      userAgent: userAgent ?? undefined,
       metadata: {
         reason: reason.trim(),
         referenceNumber: document.referenceNumber,
@@ -95,7 +112,7 @@ export async function POST(
 // DELETE /api/documents/[id]/legal-hold — release legal hold
 // ---------------------------------------------------------------------------
 export async function DELETE(
-  _req: NextRequest,
+  req: NextRequest,
   { params }: { params: Promise<{ id: string }> }
 ) {
   try {
@@ -103,6 +120,9 @@ export async function DELETE(
     if (!session?.user?.id) {
       return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
     }
+    const ipAddress =
+      req.headers.get("x-forwarded-for") ?? req.headers.get("x-real-ip") ?? undefined;
+    const userAgent = req.headers.get("user-agent") ?? undefined;
 
     const { id } = await params;
 
@@ -141,6 +161,8 @@ export async function DELETE(
       action: "document.legal_hold_released",
       resourceType: "Document",
       resourceId: id,
+      ipAddress: ipAddress ?? undefined,
+      userAgent: userAgent ?? undefined,
       metadata: {
         previousReason: document.legalHoldReason,
         referenceNumber: document.referenceNumber,

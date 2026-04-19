@@ -93,12 +93,23 @@ export async function GET(req: NextRequest) {
         email: true,
         department: true,
         jobTitle: true,
+        roles: { select: { role: { select: { name: true } } } },
       },
       take: limit,
       orderBy: { displayName: "asc" },
     });
 
-    return NextResponse.json({ users });
+    return NextResponse.json({
+      users: users.map((u) => ({
+        id: u.id,
+        name: u.name,
+        displayName: u.displayName,
+        email: u.email,
+        department: u.department,
+        jobTitle: u.jobTitle,
+        roles: u.roles.map((r) => r.role.name),
+      })),
+    });
   } catch {
     return NextResponse.json({ error: "Internal server error" }, { status: 500 });
   }

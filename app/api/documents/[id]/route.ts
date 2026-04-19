@@ -3,6 +3,7 @@ import { auth } from "@/lib/auth";
 import { db } from "@/lib/db";
 import { writeAudit } from "@/lib/audit";
 import { logger } from "@/lib/logger";
+import { getEffectiveDocumentPermissions } from "@/lib/document-permissions";
 
 /**
  * Custom JSON serialiser that converts BigInt values to strings.
@@ -10,6 +11,10 @@ import { logger } from "@/lib/logger";
 function serialiseBigInt(data: unknown): unknown {
   if (data === null || data === undefined) return data;
   if (typeof data === "bigint") return data.toString();
+  // Dates must be preserved as ISO strings — recursing into them treats them
+  // as empty objects (they have no own enumerable keys) which breaks every
+  // downstream `new Date(x)` with `Invalid Date`.
+  if (data instanceof Date) return data.toISOString();
   if (Array.isArray(data)) return data.map(serialiseBigInt);
   if (typeof data === "object") {
     const out: Record<string, unknown> = {};
@@ -25,7 +30,7 @@ function serialiseBigInt(data: unknown): unknown {
 // GET /api/documents/[id] — single document with full detail
 // ---------------------------------------------------------------------------
 export async function GET(
-  _req: NextRequest,
+  req: NextRequest,
   { params }: { params: Promise<{ id: string }> }
 ) {
   try {
@@ -61,6 +66,31 @@ export async function GET(
       return NextResponse.json({ error: "Document not found" }, { status: 404 });
     }
 
+    // If the document is linked to a casefolder (FormTemplate), load the
+    // template's fields so the client can render the casefolder-defined
+    // metadata fields alongside the document detail.
+    let casefolder:
+      | { id: string; name: string; fields: unknown }
+      | null = null;
+    const docMetadata = (document.metadata ?? null) as Record<string, unknown> | null;
+    const formTemplateId =
+      docMetadata && typeof docMetadata.formTemplateId === "string"
+        ? (docMetadata.formTemplateId as string)
+        : null;
+    if (formTemplateId) {
+      const template = await db.formTemplate.findUnique({
+        where: { id: formTemplateId },
+        select: { id: true, name: true, fields: true },
+      });
+      if (template) {
+        casefolder = {
+          id: template.id,
+          name: template.name,
+          fields: template.fields,
+        };
+      }
+    }
+
     // Fetch audit logs for this document
     const auditLogs = await db.auditLog.findMany({
       where: {
@@ -74,10 +104,42 @@ export async function GET(
       take: 50,
     });
 
+    // Resolve effective permissions (casefolder ACL + DAC + creator/admin).
+    // Callers MUST use this for action gating — do not infer from role alone.
+    const effectivePermissions = await getEffectiveDocumentPermissions(
+      {
+        user: {
+          id: session.user.id,
+          roles: session.user.roles,
+          permissions: session.user.permissions,
+          department: session.user.department,
+        },
+      },
+      document.id
+    );
+
+    const ipAddress =
+      req.headers.get("x-forwarded-for") ?? req.headers.get("x-real-ip") ?? undefined;
+    const userAgent = req.headers.get("user-agent") ?? undefined;
+    writeAudit({
+      userId: session.user.id,
+      action: "document.detail_viewed",
+      resourceType: "Document",
+      resourceId: id,
+      ipAddress: ipAddress ?? undefined,
+      userAgent: userAgent ?? undefined,
+      metadata: {
+        referenceNumber: document.referenceNumber,
+        title: document.title,
+      },
+    });
+
     return NextResponse.json(
       serialiseBigInt({
         ...document,
         auditLogs,
+        effectivePermissions,
+        casefolder,
       })
     );
   } catch (error) {
@@ -101,6 +163,9 @@ export async function PATCH(
     if (!session?.user?.id) {
       return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
     }
+    const ipAddress =
+      req.headers.get("x-forwarded-for") ?? req.headers.get("x-real-ip") ?? undefined;
+    const userAgent = req.headers.get("user-agent") ?? undefined;
 
     const { id } = await params;
     const body = await req.json();
@@ -169,13 +234,17 @@ export async function PATCH(
       },
     });
 
+    const changedFields = Object.keys(updateData);
+    if (tags !== undefined) changedFields.push("tags");
     await writeAudit({
       userId: session.user.id,
-      action: "document.updated",
+      action: "document.edited",
       resourceType: "Document",
       resourceId: id,
+      ipAddress: ipAddress ?? undefined,
+      userAgent: userAgent ?? undefined,
       metadata: {
-        changes: Object.keys(updateData),
+        changedFields,
         tagsUpdated: tags !== undefined,
       },
     });
@@ -201,7 +270,7 @@ export async function PATCH(
 // DELETE /api/documents/[id] — soft-delete (set status to DISPOSED)
 // ---------------------------------------------------------------------------
 export async function DELETE(
-  _req: NextRequest,
+  req: NextRequest,
   { params }: { params: Promise<{ id: string }> }
 ) {
   try {
@@ -209,6 +278,9 @@ export async function DELETE(
     if (!session?.user?.id) {
       return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
     }
+    const ipAddress =
+      req.headers.get("x-forwarded-for") ?? req.headers.get("x-real-ip") ?? undefined;
+    const userAgent = req.headers.get("user-agent") ?? undefined;
 
     const { id } = await params;
 
@@ -245,6 +317,17 @@ export async function DELETE(
       action: "document.disposed",
       resourceType: "Document",
       resourceId: id,
+      ipAddress: ipAddress ?? undefined,
+      userAgent: userAgent ?? undefined,
+      metadata: { referenceNumber: existing.referenceNumber },
+    });
+    await writeAudit({
+      userId: session.user.id,
+      action: "document.deleted",
+      resourceType: "Document",
+      resourceId: id,
+      ipAddress: ipAddress ?? undefined,
+      userAgent: userAgent ?? undefined,
       metadata: { referenceNumber: existing.referenceNumber },
     });
 

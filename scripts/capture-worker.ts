@@ -140,12 +140,58 @@ let refreshTimer: ReturnType<typeof setInterval> | null = null;
 let isShuttingDown = false;
 
 // ---------------------------------------------------------------------------
+// Department code lookup (mirrors lib/departments.ts)
+// ---------------------------------------------------------------------------
+
+const DEPT_CODE_MAP: Record<string, string> = {
+  "Vice Chancellor's Office": "VC",
+  "DVC (Planning, Finance & Administration)": "DVC-PFA",
+  "DVC (Academic, Research & Student Affairs)": "DVC-ARSA",
+  "Registrar (Planning & Administration)": "RG-PA",
+  "Registrar (Academic & Student Affairs)": "RG-ASA",
+  "School of Pure and Applied Sciences": "SPAS",
+  "School of Business": "SB",
+  "School of Education and Social Sciences": "SESS",
+  "School of Agriculture and Biotechnology": "SAB",
+  "School of Natural Resources and Environmental Studies": "SNRES",
+  "School of Nursing and Public Health": "SNPH",
+  "ICT Directorate": "ICT",
+  "Directorate of Quality Assurance and ISO": "DQAI",
+  "Directorate of Research, Innovation and Extension": "DRIE",
+  "Directorate of Resource Mobilization": "DRM",
+  "Directorate of Open, Distance and E-Learning": "ODEL",
+  "Directorate of Career Services and University-Industry Linkage": "DCSL",
+  "Directorate of Community Outreach": "DCO",
+  "Finance Department": "FIN",
+  "Human Resource Department": "HR",
+  "Procurement Department": "PROC",
+  "Internal Audit": "IA",
+  "Legal Office": "LEG",
+  "Library Services": "LIB",
+  "Registry (Records)": "REG",
+  "Admissions Office": "ADM",
+  "Estates Department": "EST",
+  "Security Services": "SEC",
+  "Health Services": "HLS",
+  "Planning Office": "PLN",
+  "Hostels & Accommodation": "HST",
+  Transport: "TRN",
+  "Department of Computer Science": "CS",
+  "Department of Business Management": "BM",
+  "Department of Education": "EDU",
+};
+
+function getDeptCode(department: string): string {
+  return DEPT_CODE_MAP[department] ?? (department.replace(/[^A-Z0-9]/gi, "").slice(0, 6).toUpperCase() || "GEN");
+}
+
+// ---------------------------------------------------------------------------
 // Reference number generation (mirrors lib/reference.ts)
 // ---------------------------------------------------------------------------
 
 async function generateReference(prefix: string, department: string): Promise<string> {
   const year = new Date().getFullYear();
-  const deptAbbr = department.replace(/[^A-Z0-9]/gi, "").slice(0, 6).toUpperCase() || "GEN";
+  const deptAbbr = getDeptCode(department);
   const pattern = `${prefix}-${year}-${deptAbbr}-`;
 
   const count = await prisma.document.count({

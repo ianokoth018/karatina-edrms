@@ -13,6 +13,7 @@ interface UserPermissions {
   canDelete: boolean;
   canShare: boolean;
   canDownload: boolean;
+  canPrint: boolean;
   canManageACL: boolean;
 }
 
@@ -33,6 +34,7 @@ interface ACLEntry {
   canDelete: boolean;
   canShare: boolean;
   canDownload: boolean;
+  canPrint: boolean;
   canManageACL: boolean;
   grantedById: string;
   grantedAt: string;
@@ -65,6 +67,7 @@ const PERM_KEYS = [
   "canDelete",
   "canShare",
   "canDownload",
+  "canPrint",
   "canManageACL",
 ] as const;
 
@@ -77,6 +80,7 @@ const PERM_LABELS: Record<PermKey, string> = {
   canDelete: "Delete",
   canShare: "Share",
   canDownload: "Download",
+  canPrint: "Print",
   canManageACL: "Manage ACL",
 };
 
@@ -87,6 +91,7 @@ const PERM_COLORS: Record<PermKey, { bg: string; text: string; dot: string }> = 
   canDelete:    { bg: "bg-red-100 dark:bg-red-950/50",         text: "text-red-700 dark:text-red-400",         dot: "bg-red-500" },
   canShare:     { bg: "bg-purple-100 dark:bg-purple-950/50",   text: "text-purple-700 dark:text-purple-400",   dot: "bg-purple-500" },
   canDownload:  { bg: "bg-teal-100 dark:bg-teal-950/50",       text: "text-teal-700 dark:text-teal-400",       dot: "bg-teal-500" },
+  canPrint:     { bg: "bg-indigo-100 dark:bg-indigo-950/50",   text: "text-indigo-700 dark:text-indigo-400",   dot: "bg-indigo-500" },
   canManageACL: { bg: "bg-gray-200 dark:bg-gray-800",          text: "text-gray-700 dark:text-gray-300",       dot: "bg-gray-500" },
 };
 
@@ -236,6 +241,7 @@ function defaultPerms(): Record<PermKey, boolean> {
     canDelete: false,
     canShare: false,
     canDownload: false,
+    canPrint: false,
     canManageACL: false,
   };
 }
@@ -1106,7 +1112,7 @@ export default function ACLPanel({ casefolderName, formTemplateId, userPermissio
             No access controls configured
           </h3>
           <p className="text-xs text-gray-500 dark:text-gray-400 mt-1 max-w-xs">
-            All authenticated users can view this casefolder. Grant specific access to restrict visibility.
+            No access has been granted. Only administrators can view this casefolder until access is explicitly configured.
           </p>
           {canManage && (
             <button

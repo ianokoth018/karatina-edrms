@@ -34,6 +34,13 @@ model User {
   delegationsFrom   Delegation[]   @relation("Delegator")
   delegationsTo     Delegation[]   @relation("Delegate")
   notifications     Notification[]
+  correspondencesAssigned Correspondence[] @relation("CorrespondenceAssignee")
+  correspondencesCreated  Correspondence[] @relation("CorrespondenceCreator")
+  documentComments        DocumentComment[]
+  signatures              DocumentSignature[]
+  dispositionApprovals    DispositionCertificate[] @relation("DispositionApprover")
+  dispositionWitnesses    DispositionCertificate[] @relation("DispositionWitness")
+  shareLinksCreated       DocumentShareLink[]      @relation("ShareLinkCreator")
 
   @@map("users")
 }
@@ -144,6 +151,10 @@ model Document {
   tags           DocumentTag[]
   workflowInstances WorkflowInstance[]
   accessControls DocumentAccessControl[]
+  shareLinks      DocumentShareLink[]
+  correspondences Correspondence[]
+  comments        DocumentComment[]
+  signatures      DocumentSignature[]
 
   @@index([status])
   @@index([department])
@@ -207,8 +218,36 @@ model DocumentAccessControl {
   canWrite   Boolean @default(false)
   canDelete  Boolean @default(false)
   canShare   Boolean @default(false)
+  canPrint   Boolean @default(false)
 
   @@map("document_access_controls")
+}
+
+/// Tokenised share link for external (by-email) sharing of a document.
+/// The token is an unguessable random string used in the public viewer URL.
+/// Access through the link is streamed by our ACL-aware endpoint after token
+/// validation (not expired, not revoked, matching documentId).
+model DocumentShareLink {
+  id           String    @id @default(cuid())
+  documentId   String
+  document     Document  @relation(fields: [documentId], references: [id], onDelete: Cascade)
+  token        String    @unique
+  email        String?   // optional — when set, link was emailed to this address
+  createdById  String
+  createdBy    User      @relation("ShareLinkCreator", fields: [createdById], references: [id])
+  canDownload  Boolean   @default(false)
+  canPrint     Boolean   @default(false)
+  expiresAt    DateTime?
+  revokedAt    DateTime?
+  revokedById  String?
+  accessCount  Int       @default(0)
+  lastAccessAt DateTime?
+  createdAt    DateTime  @default(now())
+
+  @@index([documentId])
+  @@index([token])
+  @@index([email])
+  @@map("document_share_links")
 }
 
 enum DocumentStatus {
@@ -244,26 +283,28 @@ model WorkflowTemplate {
 }
 
 model WorkflowInstance {
-  id               String   @id @default(cuid())
-  referenceNumber  String   @unique
-  templateId       String
-  template         WorkflowTemplate @relation(fields: [templateId], references: [id])
-  documentId       String?
-  document         Document? @relation(fields: [documentId], references: [id])
-  initiatedById    String
-  subject          String
-  status           WorkflowStatus @default(PENDING)
-  currentStepIndex Int      @default(0)
-  formData         Json     @default("{}")
-  startedAt        DateTime @default(now())
-  completedAt      DateTime?
-  dueAt            DateTime?
+  id                       String   @id @default(cuid())
+  referenceNumber          String   @unique
+  templateId               String
+  template                 WorkflowTemplate @relation(fields: [templateId], references: [id])
+  documentId               String?
+  document                 Document? @relation(fields: [documentId], references: [id])
+  initiatedById            String
+  originalInitiatedById    String?
+  subject                  String
+  status                   WorkflowStatus @default(PENDING)
+  currentStepIndex         Int      @default(0)
+  formData                 Json     @default("{}")
+  startedAt                DateTime @default(now())
+  completedAt              DateTime?
+  dueAt                    DateTime?
 
   tasks     WorkflowTask[]
   events    WorkflowEvent[]
 
   @@index([status])
   @@index([initiatedById])
+  @@index([originalInitiatedById])
   @@map("workflow_instances")
 }
 
@@ -354,7 +395,8 @@ model CasefolderACL {
   canEdit         Boolean  @default(false)  // can edit document metadata
   canDelete       Boolean  @default(false)  // can dispose/delete documents
   canShare        Boolean  @default(false)  // can share/circulate documents
-  canDownload     Boolean  @default(false)  // can download/print documents
+  canDownload     Boolean  @default(false)  // can download documents
+  canPrint        Boolean  @default(false)  // can print documents
   canManageACL    Boolean  @default(false)  // can manage access controls on this casefolder
   grantedById     String                    // who granted this access
   grantedAt       DateTime @default(now())
@@ -530,6 +572,74 @@ enum CaptureStatus {
   SKIPPED
 }
 
+// ── Correspondence Register ──────────────────────────────────────────────
+
+model Correspondence {
+  id              String    @id @default(cuid())
+  type            String    // INCOMING, OUTGOING, INTERNAL
+  referenceNumber String    @unique
+  subject         String
+  fromEntity      String    // sender name/org (incoming) or department (outgoing)
+  toEntity        String    // recipient dept (incoming) or external recipient (outgoing)
+  dateReceived    DateTime? // for incoming
+  dateSent        DateTime? // for outgoing
+  dueDate         DateTime? // response deadline
+  status          String    @default("DRAFT") // DRAFT, RECEIVED, REGISTERED, ASSIGNED, IN_PROGRESS, PENDING_APPROVAL, APPROVED, DISPATCHED, CLOSED, OVERDUE
+  priority        String    @default("NORMAL") // LOW, NORMAL, HIGH, URGENT
+  description     String?
+  dispatchMethod  String?   // POST, COURIER, EMAIL, HAND_DELIVERY
+  trackingNumber  String?   // courier tracking
+  channel         String?   // EMAIL, LETTER, SYSTEM_UPLOAD, SCAN
+  isConfidential  Boolean   @default(false)
+  documentId      String?   // link to scanned document
+  document        Document? @relation(fields: [documentId], references: [id])
+  assignedToId    String?   // staff responsible for current action
+  assignedTo      User?     @relation("CorrespondenceAssignee", fields: [assignedToId], references: [id])
+  assignedRole    String?   // queue/role for assignment (e.g., REGISTRY_CLERK, HR_OFFICER)
+  department      String?   // target department for routing
+  currentStep     String    @default("CAPTURE") // current workflow step
+  slaDeadline     DateTime? // SLA deadline for current step
+  slaBreached     Boolean   @default(false)
+  responseCorrespondenceId String? // link to outgoing response
+  createdById     String
+  createdBy       User      @relation("CorrespondenceCreator", fields: [createdById], references: [id])
+  createdAt       DateTime  @default(now())
+  updatedAt       DateTime  @updatedAt
+  closedAt        DateTime?
+  metadata        Json      @default("{}")
+
+  actionLogs      CorrespondenceActionLog[]
+
+  @@index([type])
+  @@index([status])
+  @@index([currentStep])
+  @@index([assignedToId])
+  @@index([assignedRole])
+  @@index([department])
+  @@index([createdById])
+  @@index([dateReceived])
+  @@index([dateSent])
+  @@index([slaBreached])
+}
+
+model CorrespondenceActionLog {
+  id               String   @id @default(cuid())
+  correspondenceId String
+  correspondence   Correspondence @relation(fields: [correspondenceId], references: [id], onDelete: Cascade)
+  action           String   // CAPTURED, REGISTERED, ASSIGNED, REVIEWED, FORWARDED, APPROVED, REJECTED, DISPATCHED, CLOSED, ESCALATED, REASSIGNED
+  fromStep         String   // step before action
+  toStep           String   // step after action
+  actorId          String
+  comment          String?
+  metadata         Json     @default("{}")
+  occurredAt       DateTime @default(now())
+
+  @@index([correspondenceId])
+  @@index([actorId])
+  @@index([occurredAt])
+  @@map("correspondence_action_logs")
+}
+
 // === Student Portal Integration ===
 model IntegrationSync {
   id            String   @id @default(cuid())
@@ -544,4 +654,67 @@ model IntegrationSync {
 
   @@unique([sourceSystem, sourceId])
   @@map("integration_syncs")
+}
+
+// === Document Comments / Discussion Threads ===
+model DocumentComment {
+  id          String   @id @default(cuid())
+  documentId  String
+  document    Document @relation(fields: [documentId], references: [id], onDelete: Cascade)
+  authorId    String
+  author      User     @relation(fields: [authorId], references: [id])
+  body        String
+  parentId    String?  // null = top-level, set = reply
+  parent      DocumentComment?  @relation("CommentReplies", fields: [parentId], references: [id])
+  replies     DocumentComment[] @relation("CommentReplies")
+  isResolved  Boolean  @default(false)
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  @@index([documentId])
+  @@index([parentId])
+  @@index([authorId])
+  @@map("document_comments")
+}
+
+// === Digital Signatures ===
+model DocumentSignature {
+  id            String   @id @default(cuid())
+  documentId    String
+  document      Document @relation(fields: [documentId], references: [id], onDelete: Cascade)
+  signerId      String
+  signer        User     @relation(fields: [signerId], references: [id])
+  signatureType String   // DRAWN, TYPED, UPLOADED
+  signatureData String   // base64 image (drawn), text (typed), or file path (uploaded)
+  reason        String?  // e.g., "Approved", "Reviewed", "Witnessed"
+  designation   String?  // signer's title at time of signing
+  ipAddress     String?
+  isVerified    Boolean  @default(true)
+  signedAt      DateTime @default(now())
+
+  @@index([documentId])
+  @@index([signerId])
+  @@map("document_signatures")
+}
+
+// === Disposition Certificates ===
+model DispositionCertificate {
+  id              String   @id @default(cuid())
+  certificateNo   String   @unique
+  disposalDate    DateTime
+  disposalMethod  String   // SHREDDING, INCINERATION, DIGITAL_DELETION, RECYCLING
+  approvedById    String
+  approvedBy      User     @relation("DispositionApprover", fields: [approvedById], references: [id])
+  witnessId       String?
+  witness         User?    @relation("DispositionWitness", fields: [witnessId], references: [id])
+  documentIds     Json     // array of document IDs disposed
+  documentCount   Int
+  remarks         String?
+  status          String   @default("DRAFT") // DRAFT, APPROVED, EXECUTED
+  createdAt       DateTime @default(now())
+  executedAt      DateTime?
+
+  @@index([approvedById])
+  @@index([status])
+  @@map("disposition_certificates")
 }

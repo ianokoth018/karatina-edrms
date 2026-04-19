@@ -3,6 +3,8 @@
 import { useState, useEffect, useCallback } from "react";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
+import { useSession } from "next-auth/react";
+import { Can } from "@/components/auth/can";
 
 /* ---------- constants ---------- */
 
@@ -67,6 +69,7 @@ interface PaginationInfo {
 
 export default function DocumentsPage() {
   const router = useRouter();
+  const { data: session } = useSession();
 
   /* state */
   const [documents, setDocuments] = useState<DocumentRow[]>([]);
@@ -86,6 +89,52 @@ export default function DocumentsPage() {
   const [departmentFilter, setDepartmentFilter] = useState("");
   const [dateFrom, setDateFrom] = useState("");
   const [dateTo, setDateTo] = useState("");
+
+  /* bulk selection */
+  const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
+  const [bulkAction, setBulkAction] = useState<string | null>(null);
+  const [isBulkProcessing, setIsBulkProcessing] = useState(false);
+  const [bulkInput, setBulkInput] = useState("");
+
+  function toggleSelect(id: string) {
+    setSelectedIds((prev) => {
+      const next = new Set(prev);
+      if (next.has(id)) next.delete(id); else next.add(id);
+      return next;
+    });
+  }
+  function toggleSelectAll() {
+    if (selectedIds.size === documents.length) {
+      setSelectedIds(new Set());
+    } else {
+      setSelectedIds(new Set(documents.map((d) => d.id)));
+    }
+  }
+  async function executeBulkAction(action: string, data?: Record<string, unknown>) {
+    if (selectedIds.size === 0) return;
+    setIsBulkProcessing(true);
+    try {
+      const res = await fetch("/api/documents/bulk", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ action, documentIds: Array.from(selectedIds), data }),
+      });
+      if (!res.ok) {
+        const err = await res.json().catch(() => null);
+        throw new Error(err?.error ?? "Bulk operation failed");
+      }
+      const result = await res.json();
+      setSelectedIds(new Set());
+      setBulkAction(null);
+      setBulkInput("");
+      fetchDocuments(pagination.page);
+      alert(`${result.affected} document(s) updated.`);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Bulk operation failed");
+    } finally {
+      setIsBulkProcessing(false);
+    }
+  }
 
   /* fetch documents */
   const fetchDocuments = useCallback(
@@ -175,15 +224,17 @@ export default function DocumentsPage() {
           </p>
         </div>
 
-        <Link
-          href="/documents/upload"
-          className="inline-flex items-center gap-2 h-10 px-5 rounded-xl bg-karu-green text-white font-medium text-sm transition-all hover:bg-karu-green-dark focus:ring-2 focus:ring-karu-green/20 focus:ring-offset-2 whitespace-nowrap"
-        >
-          <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" strokeWidth={2} stroke="currentColor">
-            <path strokeLinecap="round" strokeLinejoin="round" d="M3 16.5v2.25A2.25 2.25 0 0 0 5.25 21h13.5A2.25 2.25 0 0 0 21 18.75V16.5m-13.5-9L12 3m0 0 4.5 4.5M12 3v13.5" />
-          </svg>
-          Upload Document
-        </Link>
+        <Can permission="documents:create">
+          <Link
+            href="/documents/upload"
+            className="inline-flex items-center gap-2 h-10 px-5 rounded-xl bg-karu-green text-white font-medium text-sm transition-all hover:bg-karu-green-dark focus:ring-2 focus:ring-karu-green/20 focus:ring-offset-2 whitespace-nowrap"
+          >
+            <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" strokeWidth={2} stroke="currentColor">
+              <path strokeLinecap="round" strokeLinejoin="round" d="M3 16.5v2.25A2.25 2.25 0 0 0 5.25 21h13.5A2.25 2.25 0 0 0 21 18.75V16.5m-13.5-9L12 3m0 0 4.5 4.5M12 3v13.5" />
+            </svg>
+            Upload Document
+          </Link>
+        </Can>
       </div>
 
       {/* Search & filters */}
@@ -308,6 +359,14 @@ export default function DocumentsPage() {
           <table className="w-full text-sm">
             <thead>
               <tr className="border-b border-gray-200 dark:border-gray-800 bg-gray-50 dark:bg-gray-800/50">
+                <th className="px-4 py-3 w-10">
+                  <input
+                    type="checkbox"
+                    checked={documents.length > 0 && selectedIds.size === documents.length}
+                    onChange={toggleSelectAll}
+                    className="w-4 h-4 rounded border-gray-300 dark:border-gray-600 text-[#02773b] focus:ring-[#02773b]"
+                  />
+                </th>
                 <th className="text-left px-4 py-3 font-medium text-gray-500 dark:text-gray-400">Reference #</th>
                 <th className="text-left px-4 py-3 font-medium text-gray-500 dark:text-gray-400">Title</th>
                 <th className="text-left px-4 py-3 font-medium text-gray-500 dark:text-gray-400">Type</th>
@@ -321,7 +380,7 @@ export default function DocumentsPage() {
               {isLoading ? (
                 Array.from({ length: 5 }).map((_, i) => (
                   <tr key={i}>
-                    {Array.from({ length: 7 }).map((_, j) => (
+                    {Array.from({ length: 8 }).map((_, j) => (
                       <td key={j} className="px-4 py-3">
                         <div className="h-4 bg-gray-200 dark:bg-gray-700 rounded animate-pulse" style={{ width: `${50 + Math.random() * 50}%` }} />
                       </td>
@@ -330,7 +389,7 @@ export default function DocumentsPage() {
                 ))
               ) : documents.length === 0 ? (
                 <tr>
-                  <td colSpan={7} className="px-4 py-12 text-center">
+                  <td colSpan={8} className="px-4 py-12 text-center">
                     <div className="flex flex-col items-center gap-2">
                       <svg className="w-12 h-12 text-gray-300 dark:text-gray-600" fill="none" viewBox="0 0 24 24" strokeWidth={1} stroke="currentColor">
                         <path strokeLinecap="round" strokeLinejoin="round" d="M19.5 14.25v-2.625a3.375 3.375 0 0 0-3.375-3.375h-1.5A1.125 1.125 0 0 1 13.5 7.125v-1.5a3.375 3.375 0 0 0-3.375-3.375H8.25m6.75 12H9m1.5-12H5.625c-.621 0-1.125.504-1.125 1.125v17.25c0 .621.504 1.125 1.125 1.125h12.75c.621 0 1.125-.504 1.125-1.125V11.25a9 9 0 0 0-9-9Z" />
@@ -346,9 +405,17 @@ export default function DocumentsPage() {
                 documents.map((doc) => (
                   <tr
                     key={doc.id}
-                    className="hover:bg-gray-50 dark:hover:bg-gray-800/50 transition-colors cursor-pointer"
+                    className={`hover:bg-gray-50 dark:hover:bg-gray-800/50 transition-colors cursor-pointer ${selectedIds.has(doc.id) ? "bg-[#02773b]/5" : ""}`}
                     onClick={() => router.push(`/documents/${doc.id}`)}
                   >
+                    <td className="px-4 py-3" onClick={(e) => e.stopPropagation()}>
+                      <input
+                        type="checkbox"
+                        checked={selectedIds.has(doc.id)}
+                        onChange={() => toggleSelect(doc.id)}
+                        className="w-4 h-4 rounded border-gray-300 dark:border-gray-600 text-[#02773b] focus:ring-[#02773b]"
+                      />
+                    </td>
                     <td className="px-4 py-3 font-mono text-xs text-gray-600 dark:text-gray-400 whitespace-nowrap">
                       {doc.referenceNumber}
                     </td>
@@ -429,6 +496,84 @@ export default function DocumentsPage() {
             </tbody>
           </table>
         </div>
+
+        {/* Bulk action bar */}
+        {selectedIds.size > 0 && (
+          <div className="flex items-center gap-3 px-4 py-3 border-t border-[#02773b]/20 bg-[#02773b]/5 dark:bg-[#02773b]/10">
+            <span className="text-sm font-medium text-[#02773b]">
+              {selectedIds.size} selected
+            </span>
+            <div className="flex gap-2">
+              <button
+                onClick={() => { setBulkAction("tag"); setBulkInput(""); }}
+                className="h-8 px-3 rounded-lg border border-gray-200 dark:border-gray-700 text-xs font-medium text-gray-700 dark:text-gray-300 hover:bg-gray-50 dark:hover:bg-gray-800"
+              >
+                Tag
+              </button>
+              <button
+                onClick={() => { setBulkAction("transfer"); setBulkInput(""); }}
+                className="h-8 px-3 rounded-lg border border-gray-200 dark:border-gray-700 text-xs font-medium text-gray-700 dark:text-gray-300 hover:bg-gray-50 dark:hover:bg-gray-800"
+              >
+                Transfer
+              </button>
+              <button
+                onClick={() => executeBulkAction("archive")}
+                disabled={isBulkProcessing}
+                className="h-8 px-3 rounded-lg border border-orange-200 dark:border-orange-800 text-xs font-medium text-orange-700 dark:text-orange-400 hover:bg-orange-50 dark:hover:bg-orange-950/30"
+              >
+                Archive
+              </button>
+              <button
+                onClick={() => executeBulkAction("delete")}
+                disabled={isBulkProcessing}
+                className="h-8 px-3 rounded-lg border border-red-200 dark:border-red-800 text-xs font-medium text-red-700 dark:text-red-400 hover:bg-red-50 dark:hover:bg-red-950/30"
+              >
+                Delete
+              </button>
+            </div>
+            <button
+              onClick={() => setSelectedIds(new Set())}
+              className="ml-auto text-xs text-gray-400 hover:text-gray-600"
+            >
+              Clear selection
+            </button>
+          </div>
+        )}
+
+        {/* Bulk action input modal (inline) */}
+        {bulkAction && (
+          <div className="flex items-center gap-3 px-4 py-3 border-t border-gray-200 dark:border-gray-800 bg-gray-50 dark:bg-gray-800/50">
+            <span className="text-sm text-gray-600 dark:text-gray-400">
+              {bulkAction === "tag" ? "Enter tags (comma-separated):" : "Enter department name:"}
+            </span>
+            <input
+              type="text"
+              value={bulkInput}
+              onChange={(e) => setBulkInput(e.target.value)}
+              placeholder={bulkAction === "tag" ? "e.g., urgent, review" : "e.g., Finance Department"}
+              className="flex-1 h-8 rounded-lg border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-900 px-3 text-sm outline-none focus:border-[#02773b]"
+            />
+            <button
+              onClick={() => {
+                if (bulkAction === "tag") {
+                  executeBulkAction("tag", { tags: bulkInput.split(",").map((t) => t.trim()).filter(Boolean) });
+                } else {
+                  executeBulkAction("transfer", { department: bulkInput.trim() });
+                }
+              }}
+              disabled={!bulkInput.trim() || isBulkProcessing}
+              className="h-8 px-4 rounded-lg bg-[#02773b] text-white text-xs font-medium hover:bg-[#014d28] disabled:opacity-50"
+            >
+              {isBulkProcessing ? "..." : "Apply"}
+            </button>
+            <button
+              onClick={() => { setBulkAction(null); setBulkInput(""); }}
+              className="text-xs text-gray-400 hover:text-gray-600"
+            >
+              Cancel
+            </button>
+          </div>
+        )}
 
         {/* Pagination */}
         {pagination.totalPages > 1 && (

@@ -1,6 +1,9 @@
 "use client";
 
 import { useState, useEffect, useCallback } from "react";
+import { useSession } from "next-auth/react";
+import { useRouter } from "next/navigation";
+import { Can } from "@/components/auth/can";
 
 /* ---------- types ---------- */
 
@@ -174,6 +177,13 @@ function ToastContainer({ toasts, onDismiss }: { toasts: Toast[]; onDismiss: (id
 /* ---------- main component ---------- */
 
 export default function DispositionPage() {
+  const { data: session, status } = useSession();
+  const router = useRouter();
+  useEffect(() => {
+    if (status === "loading") return;
+    const p = session?.user?.permissions ?? [];
+    if (!p.includes("admin:manage") && !p.includes("records_disposition:read")) router.replace("/records/casefolders");
+  }, [session, status, router]);
   /* data state */
   const [documents, setDocuments] = useState<DispositionDocument[]>([]);
   const [pagination, setPagination] = useState<PaginationInfo>({
@@ -374,14 +384,16 @@ export default function DispositionPage() {
           </p>
         </div>
 
-        <button
-          onClick={handleScan}
-          disabled={scanning}
-          className="inline-flex items-center gap-2 h-10 px-5 rounded-xl bg-[#dd9f42] text-white font-medium text-sm transition-all hover:bg-[#c98d35] focus:ring-2 focus:ring-[#dd9f42]/30 focus:ring-offset-2 disabled:opacity-60 disabled:cursor-not-allowed whitespace-nowrap"
-        >
-          <ScanIcon className={`w-4 h-4 ${scanning ? "animate-spin" : ""}`} />
-          {scanning ? "Scanning..." : "Run Retention Scan"}
-        </button>
+        <Can anyOf={["records:manage", "admin:manage"]}>
+          <button
+            onClick={handleScan}
+            disabled={scanning}
+            className="inline-flex items-center gap-2 h-10 px-5 rounded-xl bg-[#dd9f42] text-white font-medium text-sm transition-all hover:bg-[#c98d35] focus:ring-2 focus:ring-[#dd9f42]/30 focus:ring-offset-2 disabled:opacity-60 disabled:cursor-not-allowed whitespace-nowrap"
+          >
+            <ScanIcon className={`w-4 h-4 ${scanning ? "animate-spin" : ""}`} />
+            {scanning ? "Scanning..." : "Run Retention Scan"}
+          </button>
+        </Can>
       </div>
 
       {/* Stats cards */}
@@ -482,27 +494,33 @@ export default function DispositionPage() {
             {selectedIds.size} selected
           </span>
           <div className="h-5 w-px bg-gray-200 dark:bg-gray-700" />
-          <button
-            onClick={() => openActionModal("DESTROY")}
-            className="inline-flex items-center gap-1.5 h-8 px-3.5 rounded-lg bg-red-600 text-white text-xs font-medium hover:bg-red-700 transition-colors"
-          >
-            <TrashIcon className="w-3.5 h-3.5" />
-            Destroy
-          </button>
-          <button
-            onClick={() => openActionModal("ARCHIVE_PERMANENT")}
-            className="inline-flex items-center gap-1.5 h-8 px-3.5 rounded-lg bg-blue-600 text-white text-xs font-medium hover:bg-blue-700 transition-colors"
-          >
-            <ArchiveIcon className="w-3.5 h-3.5" />
-            Archive
-          </button>
-          <button
-            onClick={() => openActionModal("REVIEW")}
-            className="inline-flex items-center gap-1.5 h-8 px-3.5 rounded-lg bg-[#dd9f42] text-white text-xs font-medium hover:bg-[#c98d35] transition-colors"
-          >
-            <ClipboardIcon className="w-3.5 h-3.5" />
-            Review
-          </button>
+          <Can anyOf={["records:delete", "records:manage"]}>
+            <button
+              onClick={() => openActionModal("DESTROY")}
+              className="inline-flex items-center gap-1.5 h-8 px-3.5 rounded-lg bg-red-600 text-white text-xs font-medium hover:bg-red-700 transition-colors"
+            >
+              <TrashIcon className="w-3.5 h-3.5" />
+              Destroy
+            </button>
+          </Can>
+          <Can anyOf={["records:manage", "admin:manage"]}>
+            <button
+              onClick={() => openActionModal("ARCHIVE_PERMANENT")}
+              className="inline-flex items-center gap-1.5 h-8 px-3.5 rounded-lg bg-blue-600 text-white text-xs font-medium hover:bg-blue-700 transition-colors"
+            >
+              <ArchiveIcon className="w-3.5 h-3.5" />
+              Archive
+            </button>
+          </Can>
+          <Can anyOf={["records:update", "records:manage"]}>
+            <button
+              onClick={() => openActionModal("REVIEW")}
+              className="inline-flex items-center gap-1.5 h-8 px-3.5 rounded-lg bg-[#dd9f42] text-white text-xs font-medium hover:bg-[#c98d35] transition-colors"
+            >
+              <ClipboardIcon className="w-3.5 h-3.5" />
+              Review
+            </button>
+          </Can>
           <button
             onClick={clearSelection}
             className="inline-flex items-center gap-1.5 h-8 px-3.5 rounded-lg border border-gray-200 dark:border-gray-700 text-gray-600 dark:text-gray-400 text-xs font-medium hover:bg-gray-100 dark:hover:bg-gray-800 transition-colors"
@@ -562,14 +580,16 @@ export default function DispositionPage() {
                       <p className="text-xs text-gray-400 dark:text-gray-500 max-w-sm">
                         Run a retention scan to identify documents that have passed their retention period, or adjust your filters.
                       </p>
-                      <button
-                        onClick={handleScan}
-                        disabled={scanning}
-                        className="mt-2 inline-flex items-center gap-2 h-9 px-4 rounded-lg bg-[#dd9f42] text-white text-xs font-medium hover:bg-[#c98d35] transition-colors disabled:opacity-60"
-                      >
-                        <ScanIcon className="w-3.5 h-3.5" />
-                        Run Retention Scan
-                      </button>
+                      <Can anyOf={["records:manage", "admin:manage"]}>
+                        <button
+                          onClick={handleScan}
+                          disabled={scanning}
+                          className="mt-2 inline-flex items-center gap-2 h-9 px-4 rounded-lg bg-[#dd9f42] text-white text-xs font-medium hover:bg-[#c98d35] transition-colors disabled:opacity-60"
+                        >
+                          <ScanIcon className="w-3.5 h-3.5" />
+                          Run Retention Scan
+                        </button>
+                      </Can>
                     </div>
                   </td>
                 </tr>

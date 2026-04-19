@@ -2,7 +2,12 @@
 
 import { useState, useEffect, useRef, use } from "react";
 import Link from "next/link";
-import { useRouter } from "next/navigation";
+import { useRouter, useSearchParams } from "next/navigation";
+import { useSession } from "next-auth/react";
+import CommentsPanel from "@/components/document/comments-panel";
+import SignaturePanel from "@/components/document/signature-panel";
+import { ShareDialog } from "@/components/document/share-dialog";
+import { Can } from "@/components/auth/can";
 
 /* ---------- types ---------- */
 
@@ -56,6 +61,35 @@ interface WorkflowRef {
   subject: string;
 }
 
+interface CasefolderField {
+  id?: string;
+  name: string;
+  label?: string;
+  type?: string;
+  required?: boolean;
+  options?: string[];
+  placeholder?: string;
+}
+
+interface CasefolderSummary {
+  id: string;
+  name: string;
+  fields: CasefolderField[] | unknown;
+}
+
+interface EffectiveDocumentPermissions {
+  canView: boolean;
+  canEdit: boolean;
+  canDelete: boolean;
+  canShare: boolean;
+  canDownload: boolean;
+  canPrint: boolean;
+  canCreate: boolean;
+  canManageACL: boolean;
+  isAdmin: boolean;
+  isCreator: boolean;
+}
+
 interface DocumentDetail {
   id: string;
   referenceNumber: string;
@@ -81,7 +115,97 @@ interface DocumentDetail {
   accessControls: AccessControl[];
   workflowInstances: WorkflowRef[];
   auditLogs: AuditLogEntry[];
+  effectivePermissions?: EffectiveDocumentPermissions;
+  casefolder?: CasefolderSummary | null;
 }
+
+/** Field-name housekeeping keys that are rendered by other UI elsewhere and
+ *  should be skipped in the casefolder metadata card. */
+const CASEFOLDER_HIDDEN_FIELDS = new Set<string>([
+  "memo_type",
+  "memo_category",
+  "forwarded_to_hod",
+  "hod_name",
+  "body_html",
+  "bodyHtml",
+  "memoReference",
+]);
+
+/** Safely coerce the template `fields` Json into the CasefolderField shape. */
+function parseCasefolderFields(fields: unknown): CasefolderField[] {
+  if (!Array.isArray(fields)) return [];
+  return fields.filter(
+    (f): f is CasefolderField =>
+      typeof f === "object" && f !== null && typeof (f as CasefolderField).name === "string"
+  );
+}
+
+/** Format an arbitrary metadata value into a display string. */
+function formatCasefolderValue(value: unknown): string | null {
+  if (value === null || value === undefined) return null;
+  if (typeof value === "string") return value.trim() === "" ? null : value;
+  if (typeof value === "number" || typeof value === "boolean") return String(value);
+  if (Array.isArray(value)) {
+    const parts = value
+      .map((v) => (v === null || v === undefined ? "" : String(v)))
+      .filter((s) => s !== "");
+    return parts.length ? parts.join(", ") : null;
+  }
+  try {
+    return JSON.stringify(value);
+  } catch {
+    return String(value);
+  }
+}
+
+/** Fallback when the API payload predates effectivePermissions: they're on the
+ * page, so treat them as view-only. Every mutating action is gated off. */
+const VIEW_ONLY_PERMISSIONS: EffectiveDocumentPermissions = {
+  canView: true,
+  canEdit: false,
+  canDelete: false,
+  canShare: false,
+  canDownload: false,
+  canPrint: false,
+  canCreate: false,
+  canManageACL: false,
+  isAdmin: false,
+  isCreator: false,
+};
+
+/* ---------- effective permissions pill config ---------- */
+
+const EFFECTIVE_PERM_KEYS = [
+  "canView",
+  "canEdit",
+  "canDelete",
+  "canShare",
+  "canDownload",
+  "canPrint",
+  "canManageACL",
+] as const;
+
+type EffectivePermKey = (typeof EFFECTIVE_PERM_KEYS)[number];
+
+const EFFECTIVE_PERM_LABELS: Record<EffectivePermKey, string> = {
+  canView: "View",
+  canEdit: "Edit",
+  canDelete: "Delete",
+  canShare: "Share",
+  canDownload: "Download",
+  canPrint: "Print",
+  canManageACL: "Manage ACL",
+};
+
+const EFFECTIVE_PERM_COLORS: Record<EffectivePermKey, { bg: string; text: string; dot: string }> = {
+  canView:      { bg: "bg-emerald-100 dark:bg-emerald-950/50", text: "text-emerald-700 dark:text-emerald-400", dot: "bg-emerald-500" },
+  canEdit:      { bg: "bg-amber-100 dark:bg-amber-950/50",     text: "text-amber-700 dark:text-amber-400",     dot: "bg-amber-500" },
+  canDelete:    { bg: "bg-red-100 dark:bg-red-950/50",         text: "text-red-700 dark:text-red-400",         dot: "bg-red-500" },
+  canShare:     { bg: "bg-purple-100 dark:bg-purple-950/50",   text: "text-purple-700 dark:text-purple-400",   dot: "bg-purple-500" },
+  canDownload:  { bg: "bg-teal-100 dark:bg-teal-950/50",       text: "text-teal-700 dark:text-teal-400",       dot: "bg-teal-500" },
+  canPrint:     { bg: "bg-indigo-100 dark:bg-indigo-950/50",   text: "text-indigo-700 dark:text-indigo-400",   dot: "bg-indigo-500" },
+  canManageACL: { bg: "bg-gray-200 dark:bg-gray-800",          text: "text-gray-700 dark:text-gray-300",       dot: "bg-gray-500" },
+};
 
 /* ---------- constants ---------- */
 
@@ -129,13 +253,15 @@ export default function DocumentDetailPage({
 }) {
   const { id } = use(params);
   const router = useRouter();
+  const searchParams = useSearchParams();
   const versionInputRef = useRef<HTMLInputElement>(null);
 
   /* state */
   const [doc, setDoc] = useState<DocumentDetail | null>(null);
   const [isLoading, setIsLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
-  const [activeTab, setActiveTab] = useState<"details" | "versions" | "access" | "audit">("details");
+  const [activeTab, setActiveTab] = useState<"details" | "versions" | "comments" | "signatures" | "access" | "audit">("details");
+  const { data: sessionData } = useSession();
 
   /* edit mode */
   const [isEditing, setIsEditing] = useState(false);
@@ -153,6 +279,17 @@ export default function DocumentDetailPage({
 
   /* access control */
   const [showGrantAccess, setShowGrantAccess] = useState(false);
+
+  /* top-level share dialog (distinct from the ACL "Grant Access" modal) */
+  const [showShareDialog, setShowShareDialog] = useState(false);
+
+  /* Auto-open Share flow when arriving via `?share=1` from another page. */
+  useEffect(() => {
+    if (searchParams.get("share") === "1") {
+      setShowShareDialog(true);
+    }
+  }, [searchParams]);
+
   const [grantType, setGrantType] = useState<"user" | "role">("user");
   const [grantSearch, setGrantSearch] = useState("");
   const [grantSearchResults, setGrantSearchResults] = useState<{ id: string; name: string; displayName?: string; email?: string }[]>([]);
@@ -166,6 +303,21 @@ export default function DocumentDetailPage({
   const [showLegalHold, setShowLegalHold] = useState(false);
   const [legalHoldReason, setLegalHoldReason] = useState("");
   const [isTogglingHold, setIsTogglingHold] = useState(false);
+
+  /* OCR */
+  const [ocrText, setOcrText] = useState<string | null>(null);
+  const [isRunningOcr, setIsRunningOcr] = useState(false);
+
+  /* version comparison */
+  const [compareMode, setCompareMode] = useState(false);
+  const [compareV1, setCompareV1] = useState<string | null>(null);
+  const [compareV2, setCompareV2] = useState<string | null>(null);
+  const [comparisonResult, setComparisonResult] = useState<{
+    version1: { id: string; versionNum: number; changeNote: string; sizeBytes: string; storagePath: string; createdAt: string };
+    version2: { id: string; versionNum: number; changeNote: string; sizeBytes: string; storagePath: string; createdAt: string };
+    changes: { field: string; before: string | null; after: string | null }[];
+  } | null>(null);
+  const [isComparing, setIsComparing] = useState(false);
 
   /* access control search */
   function searchGrantTarget(query: string) {
@@ -261,6 +413,57 @@ export default function DocumentDetailPage({
     }
   }
 
+  /* OCR handlers */
+  async function fetchOcrStatus() {
+    try {
+      const res = await fetch(`/api/documents/${id}/ocr`);
+      if (res.ok) {
+        const data = await res.json();
+        setOcrText(data.ocrText ?? null);
+      }
+    } catch { /* ignore */ }
+  }
+
+  async function handleRunOcr() {
+    setIsRunningOcr(true);
+    setError(null);
+    try {
+      const res = await fetch(`/api/documents/${id}/ocr`, { method: "POST" });
+      if (!res.ok) {
+        const data = await res.json().catch(() => null);
+        throw new Error(data?.error ?? "OCR processing failed");
+      }
+      const data = await res.json();
+      setOcrText(data.ocrText);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "OCR processing failed");
+    } finally {
+      setIsRunningOcr(false);
+    }
+  }
+
+  /* version comparison handler */
+  async function handleCompareVersions() {
+    if (!compareV1 || !compareV2) return;
+    setIsComparing(true);
+    setError(null);
+    try {
+      const res = await fetch(
+        `/api/documents/${id}/versions/compare?v1=${encodeURIComponent(compareV1)}&v2=${encodeURIComponent(compareV2)}`
+      );
+      if (!res.ok) {
+        const data = await res.json().catch(() => null);
+        throw new Error(data?.error ?? "Comparison failed");
+      }
+      const data = await res.json();
+      setComparisonResult(data);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Comparison failed");
+    } finally {
+      setIsComparing(false);
+    }
+  }
+
   /* fetch document */
   async function fetchDocument() {
     setIsLoading(true);
@@ -282,6 +485,7 @@ export default function DocumentDetailPage({
 
   useEffect(() => {
     fetchDocument();
+    fetchOcrStatus();
   }, [id]); // eslint-disable-line react-hooks/exhaustive-deps
 
   /* edit handlers */
@@ -389,7 +593,7 @@ export default function DocumentDetailPage({
   /* loading state */
   if (isLoading) {
     return (
-      <div className="p-6 max-w-5xl mx-auto space-y-6">
+      <div className="p-6 space-y-6">
         <div className="flex items-center gap-3">
           <div className="w-10 h-10 rounded-lg bg-gray-200 dark:bg-gray-700 animate-pulse" />
           <div className="space-y-2">
@@ -404,7 +608,7 @@ export default function DocumentDetailPage({
 
   if (error && !doc) {
     return (
-      <div className="p-6 max-w-5xl mx-auto">
+      <div className="p-6">
         <div className="rounded-xl bg-red-50 dark:bg-red-950/30 border border-red-200 dark:border-red-800 px-6 py-8 text-center">
           <svg className="mx-auto w-12 h-12 text-red-400 mb-3" fill="none" viewBox="0 0 24 24" strokeWidth={1} stroke="currentColor">
             <path strokeLinecap="round" strokeLinejoin="round" d="M12 9v3.75m9-.75a9 9 0 1 1-18 0 9 9 0 0 1 18 0Zm-9 3.75h.008v.008H12v-.008Z" />
@@ -421,9 +625,10 @@ export default function DocumentDetailPage({
   if (!doc) return null;
 
   const isPdf = doc.files[0]?.mimeType === "application/pdf";
+  const perms = doc.effectivePermissions ?? VIEW_ONLY_PERMISSIONS;
 
   return (
-    <div className="p-6 max-w-5xl mx-auto space-y-6 animate-fade-in">
+    <div className="p-6 space-y-6 animate-fade-in">
       {/* Header */}
       <div className="flex flex-col sm:flex-row sm:items-start gap-4">
         <Link
@@ -459,40 +664,48 @@ export default function DocumentDetailPage({
         <div className="flex items-center gap-2 flex-shrink-0">
           {!isEditing && doc.status !== "DISPOSED" && (
             <>
-              <button
-                onClick={startEditing}
-                className="inline-flex items-center gap-1.5 h-9 px-3 rounded-lg border border-gray-200 dark:border-gray-700 text-sm font-medium text-gray-700 dark:text-gray-300 hover:bg-gray-50 dark:hover:bg-gray-800 transition-colors"
-              >
-                <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" strokeWidth={1.5} stroke="currentColor">
-                  <path strokeLinecap="round" strokeLinejoin="round" d="m16.862 4.487 1.687-1.688a1.875 1.875 0 1 1 2.652 2.652L10.582 16.07a4.5 4.5 0 0 1-1.897 1.13L6 18l.8-2.685a4.5 4.5 0 0 1 1.13-1.897l8.932-8.931Zm0 0L19.5 7.125M18 14v4.75A2.25 2.25 0 0 1 15.75 21H5.25A2.25 2.25 0 0 1 3 18.75V8.25A2.25 2.25 0 0 1 5.25 6H10" />
-                </svg>
-                Edit
-              </button>
+              {perms.canEdit && (
+                <Can anyOf={["documents:update", "documents:manage"]}>
+                  <button
+                    onClick={startEditing}
+                    className="inline-flex items-center gap-1.5 h-9 px-3 rounded-lg border border-gray-200 dark:border-gray-700 text-sm font-medium text-gray-700 dark:text-gray-300 hover:bg-gray-50 dark:hover:bg-gray-800 transition-colors"
+                  >
+                    <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" strokeWidth={1.5} stroke="currentColor">
+                      <path strokeLinecap="round" strokeLinejoin="round" d="m16.862 4.487 1.687-1.688a1.875 1.875 0 1 1 2.652 2.652L10.582 16.07a4.5 4.5 0 0 1-1.897 1.13L6 18l.8-2.685a4.5 4.5 0 0 1 1.13-1.897l8.932-8.931Zm0 0L19.5 7.125M18 14v4.75A2.25 2.25 0 0 1 15.75 21H5.25A2.25 2.25 0 0 1 3 18.75V8.25A2.25 2.25 0 0 1 5.25 6H10" />
+                    </svg>
+                    Edit
+                  </button>
+                </Can>
+              )}
 
-              <button
-                onClick={handleCheckout}
-                className={`inline-flex items-center gap-1.5 h-9 px-3 rounded-lg border text-sm font-medium transition-colors ${
-                  doc.status === "CHECKED_OUT"
-                    ? "border-amber-300 dark:border-amber-700 text-amber-700 dark:text-amber-400 hover:bg-amber-50 dark:hover:bg-amber-950/30"
-                    : "border-gray-200 dark:border-gray-700 text-gray-700 dark:text-gray-300 hover:bg-gray-50 dark:hover:bg-gray-800"
-                }`}
-              >
-                {doc.status === "CHECKED_OUT" ? (
-                  <>
-                    <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" strokeWidth={1.5} stroke="currentColor">
-                      <path strokeLinecap="round" strokeLinejoin="round" d="M9 8.25H7.5a2.25 2.25 0 0 0-2.25 2.25v9a2.25 2.25 0 0 0 2.25 2.25h9a2.25 2.25 0 0 0 2.25-2.25v-9a2.25 2.25 0 0 0-2.25-2.25H15m0-3-3-3m0 0-3 3m3-3V15" />
-                    </svg>
-                    Check In
-                  </>
-                ) : (
-                  <>
-                    <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" strokeWidth={1.5} stroke="currentColor">
-                      <path strokeLinecap="round" strokeLinejoin="round" d="M9 8.25H7.5a2.25 2.25 0 0 0-2.25 2.25v9a2.25 2.25 0 0 0 2.25 2.25h9a2.25 2.25 0 0 0 2.25-2.25v-9a2.25 2.25 0 0 0-2.25-2.25H15M9 12l3 3m0 0 3-3m-3 3V2.25" />
-                    </svg>
-                    Check Out
-                  </>
-                )}
-              </button>
+              {perms.canEdit && (
+                <Can anyOf={["documents:update", "documents:manage"]}>
+                <button
+                  onClick={handleCheckout}
+                  className={`inline-flex items-center gap-1.5 h-9 px-3 rounded-lg border text-sm font-medium transition-colors ${
+                    doc.status === "CHECKED_OUT"
+                      ? "border-amber-300 dark:border-amber-700 text-amber-700 dark:text-amber-400 hover:bg-amber-50 dark:hover:bg-amber-950/30"
+                      : "border-gray-200 dark:border-gray-700 text-gray-700 dark:text-gray-300 hover:bg-gray-50 dark:hover:bg-gray-800"
+                  }`}
+                >
+                  {doc.status === "CHECKED_OUT" ? (
+                    <>
+                      <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" strokeWidth={1.5} stroke="currentColor">
+                        <path strokeLinecap="round" strokeLinejoin="round" d="M9 8.25H7.5a2.25 2.25 0 0 0-2.25 2.25v9a2.25 2.25 0 0 0 2.25 2.25h9a2.25 2.25 0 0 0 2.25-2.25v-9a2.25 2.25 0 0 0-2.25-2.25H15m0-3-3-3m0 0-3 3m3-3V15" />
+                      </svg>
+                      Check In
+                    </>
+                  ) : (
+                    <>
+                      <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" strokeWidth={1.5} stroke="currentColor">
+                        <path strokeLinecap="round" strokeLinejoin="round" d="M9 8.25H7.5a2.25 2.25 0 0 0-2.25 2.25v9a2.25 2.25 0 0 0 2.25 2.25h9a2.25 2.25 0 0 0 2.25-2.25v-9a2.25 2.25 0 0 0-2.25-2.25H15M9 12l3 3m0 0 3-3m-3 3V2.25" />
+                      </svg>
+                      Check Out
+                    </>
+                  )}
+                </button>
+                </Can>
+              )}
 
               <Link
                 href={`/workflows?documentId=${doc.id}`}
@@ -504,15 +717,31 @@ export default function DocumentDetailPage({
                 Start Workflow
               </Link>
 
-              <button
-                onClick={() => setShowDeleteConfirm(true)}
-                className="p-2 rounded-lg text-gray-400 hover:text-red-500 hover:bg-red-50 dark:hover:bg-red-950/30 transition-colors"
-                title="Delete"
-              >
-                <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" strokeWidth={1.5} stroke="currentColor">
-                  <path strokeLinecap="round" strokeLinejoin="round" d="m14.74 9-.346 9m-4.788 0L9.26 9m9.968-3.21c.342.052.682.107 1.022.166m-1.022-.165L18.16 19.673a2.25 2.25 0 0 1-2.244 2.077H8.084a2.25 2.25 0 0 1-2.244-2.077L4.772 5.79m14.456 0a48.108 48.108 0 0 0-3.478-.397m-12 .562c.34-.059.68-.114 1.022-.165m0 0a48.11 48.11 0 0 1 3.478-.397m7.5 0v-.916c0-1.18-.91-2.164-2.09-2.201a51.964 51.964 0 0 0-3.32 0c-1.18.037-2.09 1.022-2.09 2.201v.916m7.5 0a48.667 48.667 0 0 0-7.5 0" />
-                </svg>
-              </button>
+              {perms.canShare && (
+                <button
+                  onClick={() => setShowShareDialog(true)}
+                  className="inline-flex items-center gap-1.5 h-9 px-3 rounded-lg border border-karu-green text-karu-green text-sm font-medium hover:bg-karu-green-light dark:hover:bg-karu-green/10 transition-colors"
+                >
+                  <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" strokeWidth={1.5} stroke="currentColor">
+                    <path strokeLinecap="round" strokeLinejoin="round" d="M7.217 10.907a2.25 2.25 0 1 0 0 2.186m0-2.186c.18.324.283.696.283 1.093s-.103.77-.283 1.093m0-2.186 9.566-5.314m-9.566 7.5 9.566 5.314m0 0a2.25 2.25 0 1 0 3.935 2.186 2.25 2.25 0 0 0-3.935-2.186Zm0-12.814a2.25 2.25 0 1 0 3.933-2.185 2.25 2.25 0 0 0-3.933 2.185Z" />
+                  </svg>
+                  Share
+                </button>
+              )}
+
+              {perms.canDelete && (
+                <Can anyOf={["documents:delete", "documents:manage"]}>
+                  <button
+                    onClick={() => setShowDeleteConfirm(true)}
+                    className="p-2 rounded-lg text-gray-400 hover:text-red-500 hover:bg-red-50 dark:hover:bg-red-950/30 transition-colors"
+                    title="Delete"
+                  >
+                    <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" strokeWidth={1.5} stroke="currentColor">
+                      <path strokeLinecap="round" strokeLinejoin="round" d="m14.74 9-.346 9m-4.788 0L9.26 9m9.968-3.21c.342.052.682.107 1.022.166m-1.022-.165L18.16 19.673a2.25 2.25 0 0 1-2.244 2.077H8.084a2.25 2.25 0 0 1-2.244-2.077L4.772 5.79m14.456 0a48.108 48.108 0 0 0-3.478-.397m-12 .562c.34-.059.68-.114 1.022-.165m0 0a48.11 48.11 0 0 1 3.478-.397m7.5 0v-.916c0-1.18-.91-2.164-2.09-2.201a51.964 51.964 0 0 0-3.32 0c-1.18.037-2.09 1.022-2.09 2.201v.916m7.5 0a48.667 48.667 0 0 0-7.5 0" />
+                    </svg>
+                  </button>
+                </Can>
+              )}
             </>
           )}
         </div>
@@ -556,47 +785,89 @@ export default function DocumentDetailPage({
         </div>
       )}
 
-      {/* File preview */}
-      {doc.files.length > 0 && (
-        <div className="bg-white dark:bg-gray-900 rounded-xl border border-gray-200 dark:border-gray-800 overflow-hidden animate-slide-up delay-100">
-          {isPdf ? (
-            <div className="relative">
-              <iframe
-                src={`/${doc.files[0].storagePath}`}
-                className="w-full h-[500px] border-0"
-                title="Document preview"
-              />
-            </div>
-          ) : (
-            <div className="p-6 flex items-center gap-4">
-              <div className="flex-shrink-0 w-12 h-12 rounded-lg bg-gray-100 dark:bg-gray-800 flex items-center justify-center">
-                <svg className="w-6 h-6 text-gray-400" fill="none" viewBox="0 0 24 24" strokeWidth={1.5} stroke="currentColor">
-                  <path strokeLinecap="round" strokeLinejoin="round" d="M19.5 14.25v-2.625a3.375 3.375 0 0 0-3.375-3.375h-1.5A1.125 1.125 0 0 1 13.5 7.125v-1.5a3.375 3.375 0 0 0-3.375-3.375H8.25m2.25 0H5.625c-.621 0-1.125.504-1.125 1.125v17.25c0 .621.504 1.125 1.125 1.125h12.75c.621 0 1.125-.504 1.125-1.125V11.25a9 9 0 0 0-9-9Z" />
-                </svg>
+      {/* Two-column body: viewer pinned right on lg+, tabs/content on left */}
+      <div className="flex flex-col lg:flex-row gap-6">
+        {/* Right column — File preview. First in DOM so it renders on top on mobile. */}
+        <div className="lg:order-2 lg:w-[55%] xl:w-[60%]">
+          <div className="lg:sticky lg:top-6">
+            {doc.files.length > 0 ? (
+              <div className="bg-white dark:bg-gray-900 rounded-xl border border-gray-200 dark:border-gray-800 overflow-hidden animate-slide-up delay-100 flex flex-col min-h-0">
+                {isPdf ? (
+                  <div className="relative flex-1 min-h-0 bg-gray-100 dark:bg-gray-900">
+                    <iframe
+                      src={`/api/files?path=${encodeURIComponent(doc.files[0].storagePath)}`}
+                      className="w-full h-[calc(100vh-8rem)] lg:h-[calc(100vh-6rem)] min-h-[600px] border-0"
+                      title="Document preview"
+                    />
+                  </div>
+                ) : (
+                  <div className="p-6 flex items-center gap-4">
+                    <div className="flex-shrink-0 w-12 h-12 rounded-lg bg-gray-100 dark:bg-gray-800 flex items-center justify-center">
+                      <svg className="w-6 h-6 text-gray-400" fill="none" viewBox="0 0 24 24" strokeWidth={1.5} stroke="currentColor">
+                        <path strokeLinecap="round" strokeLinejoin="round" d="M19.5 14.25v-2.625a3.375 3.375 0 0 0-3.375-3.375h-1.5A1.125 1.125 0 0 1 13.5 7.125v-1.5a3.375 3.375 0 0 0-3.375-3.375H8.25m2.25 0H5.625c-.621 0-1.125.504-1.125 1.125v17.25c0 .621.504 1.125 1.125 1.125h12.75c.621 0 1.125-.504 1.125-1.125V11.25a9 9 0 0 0-9-9Z" />
+                      </svg>
+                    </div>
+                    <div className="flex-1 min-w-0">
+                      <p className="text-sm font-medium text-gray-900 dark:text-gray-100 truncate">{doc.files[0].fileName}</p>
+                      <p className="text-xs text-gray-500 dark:text-gray-400">{formatFileSize(doc.files[0].sizeBytes)}</p>
+                    </div>
+                    {perms.canDownload && (
+                      <a
+                        href={`/api/files?path=${encodeURIComponent(doc.files[0].storagePath)}&download=1`}
+                        download
+                        className="inline-flex items-center gap-1.5 h-9 px-4 rounded-lg bg-karu-green text-white text-sm font-medium hover:bg-karu-green-dark transition-colors"
+                      >
+                        <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" strokeWidth={1.5} stroke="currentColor">
+                          <path strokeLinecap="round" strokeLinejoin="round" d="M3 16.5v2.25A2.25 2.25 0 0 0 5.25 21h13.5A2.25 2.25 0 0 0 21 18.75V16.5M16.5 12 12 16.5m0 0L7.5 12m4.5 4.5V3" />
+                        </svg>
+                        Download
+                      </a>
+                    )}
+                    {perms.canPrint && (
+                      <button
+                        type="button"
+                        onClick={() => {
+                          // Fire-and-forget audit; don't block the print dialog.
+                          fetch(`/api/documents/${id}/events`, {
+                            method: "POST",
+                            headers: { "Content-Type": "application/json" },
+                            body: JSON.stringify({ type: "printed" }),
+                          }).catch(() => {});
+                          window.print();
+                        }}
+                        className="inline-flex items-center gap-1.5 h-9 px-4 rounded-lg border border-karu-green/30 text-karu-green text-sm font-medium hover:bg-karu-green-light dark:hover:bg-karu-green/10 transition-colors"
+                      >
+                        <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" strokeWidth={1.5} stroke="currentColor">
+                          <path strokeLinecap="round" strokeLinejoin="round" d="M6.72 13.829c-.24.03-.48.062-.72.096m.72-.096a42.415 42.415 0 0 1 10.56 0m-10.56 0L6.34 18m10.94-4.171c.24.03.48.062.72.096m-.72-.096L17.66 18m0 0 .229 2.523a1.125 1.125 0 0 1-1.12 1.227H7.231c-.662 0-1.18-.568-1.12-1.227L6.34 18m11.318 0h1.091A2.25 2.25 0 0 0 21 15.75V9.456c0-1.081-.768-2.015-1.837-2.175a48.055 48.055 0 0 0-1.913-.247M6.34 18H5.25A2.25 2.25 0 0 1 3 15.75V9.456c0-1.081.768-2.015 1.837-2.175a48.041 48.041 0 0 1 1.913-.247m10.5 0a48.536 48.536 0 0 0-10.5 0m10.5 0V3.375c0-.621-.504-1.125-1.125-1.125h-8.25c-.621 0-1.125.504-1.125 1.125v3.659M18 10.5h.008v.008H18V10.5Zm-3 0h.008v.008H15V10.5Z" />
+                        </svg>
+                        Print
+                      </button>
+                    )}
+                  </div>
+                )}
               </div>
-              <div className="flex-1 min-w-0">
-                <p className="text-sm font-medium text-gray-900 dark:text-gray-100 truncate">{doc.files[0].fileName}</p>
-                <p className="text-xs text-gray-500 dark:text-gray-400">{formatFileSize(doc.files[0].sizeBytes)}</p>
+            ) : (
+              <div className="bg-white dark:bg-gray-900 rounded-xl border border-gray-200 dark:border-gray-800 p-10 flex flex-col items-center justify-center text-center animate-slide-up delay-100 min-h-[320px]">
+                <div className="w-14 h-14 rounded-2xl bg-gray-100 dark:bg-gray-800 flex items-center justify-center mb-4">
+                  <svg className="w-7 h-7 text-gray-400 dark:text-gray-500" fill="none" viewBox="0 0 24 24" strokeWidth={1.5} stroke="currentColor">
+                    <path strokeLinecap="round" strokeLinejoin="round" d="M19.5 14.25v-2.625a3.375 3.375 0 0 0-3.375-3.375h-1.5A1.125 1.125 0 0 1 13.5 7.125v-1.5a3.375 3.375 0 0 0-3.375-3.375H8.25m3.75 9v7.5m2.25-6.466a9.016 9.016 0 0 0-3.461-.203c-.536.072-.974.478-1.021 1.017-.15 1.722.608 3.127 2.096 3.652m5.579-9.848a8.985 8.985 0 0 1-.39 6.157 1.158 1.158 0 0 1-1.239.604l-.285-.054M8.25 2.25H5.625c-.621 0-1.125.504-1.125 1.125v17.25c0 .621.504 1.125 1.125 1.125h12.75c.621 0 1.125-.504 1.125-1.125V11.25a9 9 0 0 0-9-9Z" />
+                  </svg>
+                </div>
+                <p className="text-sm font-medium text-gray-900 dark:text-gray-100">No file attached</p>
+                <p className="text-xs text-gray-500 dark:text-gray-400 mt-1 max-w-xs">
+                  This document has no files uploaded yet. Upload a new version to attach a file.
+                </p>
               </div>
-              <a
-                href={`/${doc.files[0].storagePath}`}
-                download
-                className="inline-flex items-center gap-1.5 h-9 px-4 rounded-lg bg-karu-green text-white text-sm font-medium hover:bg-karu-green-dark transition-colors"
-              >
-                <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" strokeWidth={1.5} stroke="currentColor">
-                  <path strokeLinecap="round" strokeLinejoin="round" d="M3 16.5v2.25A2.25 2.25 0 0 0 5.25 21h13.5A2.25 2.25 0 0 0 21 18.75V16.5M16.5 12 12 16.5m0 0L7.5 12m4.5 4.5V3" />
-                </svg>
-                Download
-              </a>
-            </div>
-          )}
+            )}
+          </div>
         </div>
-      )}
 
-      {/* Tabs */}
-      <div className="border-b border-gray-200 dark:border-gray-800">
-        <nav className="flex gap-6">
-          {(["details", "versions", "access", "audit"] as const).map((tab) => (
+        {/* Left column — tabs + tab content */}
+        <div className="lg:order-1 lg:flex-1 min-w-0 space-y-4">
+          {/* Tabs */}
+          <div className="border-b border-gray-200 dark:border-gray-800">
+            <nav className="flex gap-6">
+          {(["details", "versions", "comments", "signatures", "access", "audit"] as const).map((tab) => (
             <button
               key={tab}
               onClick={() => setActiveTab(tab)}
@@ -624,6 +895,45 @@ export default function DocumentDetailPage({
           <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
             {/* Main content */}
             <div className="lg:col-span-2 space-y-6">
+              {/* Casefolder metadata fields — only when the document is linked
+                  to a FormTemplate via metadata.formTemplateId. Mirrors the
+                  casefolder file-viewer sidebar styling. */}
+              {(() => {
+                const cf = doc.casefolder;
+                const cfFields = parseCasefolderFields(cf?.fields).filter(
+                  (f) => !CASEFOLDER_HIDDEN_FIELDS.has(f.name),
+                );
+                if (!cf || cfFields.length === 0) return null;
+                const rawMetadata = (doc.metadata ?? {}) as Record<string, unknown>;
+                return (
+                  <div className="bg-white dark:bg-gray-900 rounded-xl border border-gray-200 dark:border-gray-800 p-6">
+                    <h3 className="text-sm font-semibold text-gray-900 dark:text-gray-100 mb-4">
+                      {cf.name} &mdash; Metadata
+                    </h3>
+                    <dl className="space-y-3">
+                      {cfFields.map((field) => {
+                        const raw = rawMetadata[field.name];
+                        const display = formatCasefolderValue(raw);
+                        return (
+                          <div key={field.name} className="space-y-1">
+                            <dt className="text-[11px] font-semibold uppercase tracking-wider text-gray-400 dark:text-gray-500">
+                              {field.label || field.name}
+                            </dt>
+                            <dd className="text-sm text-gray-900 dark:text-gray-100">
+                              {display !== null ? (
+                                display
+                              ) : (
+                                <span className="text-gray-300 dark:text-gray-600">&mdash;</span>
+                              )}
+                            </dd>
+                          </div>
+                        );
+                      })}
+                    </dl>
+                  </div>
+                );
+              })()}
+
               {/* Edit form or display */}
               {isEditing ? (
                 <div className="bg-white dark:bg-gray-900 rounded-xl border border-gray-200 dark:border-gray-800 p-6 space-y-5">
@@ -704,7 +1014,7 @@ export default function DocumentDetailPage({
               <div className="bg-white dark:bg-gray-900 rounded-xl border border-gray-200 dark:border-gray-800 p-6">
                 <div className="flex items-center justify-between mb-4">
                   <h3 className="text-sm font-semibold text-gray-900 dark:text-gray-100">Files</h3>
-                  {doc.status !== "DISPOSED" && (
+                  {doc.status !== "DISPOSED" && perms.canEdit && (
                     <div className="flex items-center gap-2">
                       <input
                         type="text"
@@ -744,18 +1054,88 @@ export default function DocumentDetailPage({
                           {formatFileSize(f.sizeBytes)} &middot; {f.mimeType}
                         </p>
                       </div>
-                      <a
-                        href={`/${f.storagePath}`}
-                        download
-                        className="p-1.5 rounded-lg text-gray-400 hover:text-karu-green hover:bg-gray-100 dark:hover:bg-gray-700 transition-colors"
-                      >
-                        <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" strokeWidth={1.5} stroke="currentColor">
-                          <path strokeLinecap="round" strokeLinejoin="round" d="M3 16.5v2.25A2.25 2.25 0 0 0 5.25 21h13.5A2.25 2.25 0 0 0 21 18.75V16.5M16.5 12 12 16.5m0 0L7.5 12m4.5 4.5V3" />
-                        </svg>
-                      </a>
+                      {perms.canDownload && (
+                        <a
+                          href={`/api/files?path=${encodeURIComponent(f.storagePath)}&download=1`}
+                          download
+                          className="p-1.5 rounded-lg text-gray-400 hover:text-karu-green hover:bg-gray-100 dark:hover:bg-gray-700 transition-colors"
+                        >
+                          <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" strokeWidth={1.5} stroke="currentColor">
+                            <path strokeLinecap="round" strokeLinejoin="round" d="M3 16.5v2.25A2.25 2.25 0 0 0 5.25 21h13.5A2.25 2.25 0 0 0 21 18.75V16.5M16.5 12 12 16.5m0 0L7.5 12m4.5 4.5V3" />
+                          </svg>
+                        </a>
+                      )}
                     </div>
                   ))}
                 </div>
+              </div>
+
+              {/* OCR Text section */}
+              <div className="bg-white dark:bg-gray-900 rounded-xl border border-gray-200 dark:border-gray-800 p-6">
+                <div className="flex items-center justify-between mb-4">
+                  <h3 className="text-sm font-semibold text-gray-900 dark:text-gray-100 flex items-center gap-2">
+                    <svg className="w-4 h-4 text-gray-400" fill="none" viewBox="0 0 24 24" strokeWidth={1.5} stroke="currentColor">
+                      <path strokeLinecap="round" strokeLinejoin="round" d="M7.5 3.75H6A2.25 2.25 0 0 0 3.75 6v1.5M16.5 3.75H18A2.25 2.25 0 0 1 20.25 6v1.5M20.25 16.5V18A2.25 2.25 0 0 1 18 20.25h-1.5M3.75 16.5V18A2.25 2.25 0 0 0 6 20.25h1.5M3.75 12h16.5" />
+                    </svg>
+                    OCR Text
+                    {ocrText && (
+                      <span className="inline-flex items-center px-2 py-0.5 rounded-full text-[10px] font-medium bg-blue-50 dark:bg-blue-900/20 text-blue-600 dark:text-blue-400">
+                        {ocrText.length.toLocaleString()} chars
+                      </span>
+                    )}
+                  </h3>
+                  {doc.files.length > 0 && (
+                    <button
+                      onClick={handleRunOcr}
+                      disabled={isRunningOcr}
+                      className="inline-flex items-center gap-1.5 h-8 px-3 rounded-lg text-xs font-medium text-karu-green border border-karu-green/30 hover:bg-karu-green-light dark:hover:bg-karu-green/10 transition-colors disabled:opacity-60"
+                    >
+                      {isRunningOcr ? (
+                        <>
+                          <svg className="w-3.5 h-3.5 animate-spin" fill="none" viewBox="0 0 24 24">
+                            <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" />
+                            <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z" />
+                          </svg>
+                          Processing...
+                        </>
+                      ) : (
+                        <>
+                          <svg className="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" strokeWidth={1.5} stroke="currentColor">
+                            <path strokeLinecap="round" strokeLinejoin="round" d="M7.5 3.75H6A2.25 2.25 0 0 0 3.75 6v1.5M16.5 3.75H18A2.25 2.25 0 0 1 20.25 6v1.5M20.25 16.5V18A2.25 2.25 0 0 1 18 20.25h-1.5M3.75 16.5V18A2.25 2.25 0 0 0 6 20.25h1.5M3.75 12h16.5" />
+                          </svg>
+                          {ocrText ? "Re-run OCR" : "Run OCR"}
+                        </>
+                      )}
+                    </button>
+                  )}
+                </div>
+
+                {isRunningOcr ? (
+                  <div className="flex items-center justify-center py-8">
+                    <div className="flex items-center gap-3 text-sm text-gray-500 dark:text-gray-400">
+                      <svg className="w-5 h-5 animate-spin text-karu-green" fill="none" viewBox="0 0 24 24">
+                        <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" />
+                        <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z" />
+                      </svg>
+                      Processing document with OCR...
+                    </div>
+                  </div>
+                ) : ocrText ? (
+                  <pre className="max-h-64 overflow-auto rounded-lg bg-gray-50 dark:bg-gray-800 p-4 text-xs text-gray-700 dark:text-gray-300 font-mono whitespace-pre-wrap leading-relaxed">
+                    {ocrText}
+                  </pre>
+                ) : (
+                  <div className="py-6 text-center">
+                    <svg className="mx-auto w-10 h-10 text-gray-300 dark:text-gray-600 mb-2" fill="none" viewBox="0 0 24 24" strokeWidth={1} stroke="currentColor">
+                      <path strokeLinecap="round" strokeLinejoin="round" d="M7.5 3.75H6A2.25 2.25 0 0 0 3.75 6v1.5M16.5 3.75H18A2.25 2.25 0 0 1 20.25 6v1.5M20.25 16.5V18A2.25 2.25 0 0 1 18 20.25h-1.5M3.75 16.5V18A2.25 2.25 0 0 0 6 20.25h1.5M3.75 12h16.5" />
+                    </svg>
+                    <p className="text-sm text-gray-400 dark:text-gray-500">
+                      {doc.files.length > 0
+                        ? "No OCR text extracted yet. Click \"Run OCR\" to process this document."
+                        : "No files available for OCR processing."}
+                    </p>
+                  </div>
+                )}
               </div>
             </div>
 
@@ -841,47 +1221,188 @@ export default function DocumentDetailPage({
 
         {/* Versions tab */}
         {activeTab === "versions" && (
-          <div className="bg-white dark:bg-gray-900 rounded-xl border border-gray-200 dark:border-gray-800 overflow-hidden">
-            <table className="w-full text-sm">
-              <thead>
-                <tr className="border-b border-gray-200 dark:border-gray-800 bg-gray-50 dark:bg-gray-800/50">
-                  <th className="text-left px-4 py-3 font-medium text-gray-500 dark:text-gray-400">Version</th>
-                  <th className="text-left px-4 py-3 font-medium text-gray-500 dark:text-gray-400">Change Note</th>
-                  <th className="text-left px-4 py-3 font-medium text-gray-500 dark:text-gray-400">Size</th>
-                  <th className="text-left px-4 py-3 font-medium text-gray-500 dark:text-gray-400">Date</th>
-                  <th className="text-right px-4 py-3 font-medium text-gray-500 dark:text-gray-400">Download</th>
-                </tr>
-              </thead>
-              <tbody className="divide-y divide-gray-100 dark:divide-gray-800">
-                {doc.versions.length === 0 ? (
-                  <tr>
-                    <td colSpan={5} className="px-4 py-8 text-center text-gray-400 dark:text-gray-500">
-                      No version history
-                    </td>
+          <div className="space-y-4">
+            {/* Compare mode toggle */}
+            {doc.versions.length >= 2 && (
+              <div className="flex items-center justify-between">
+                <button
+                  onClick={() => {
+                    setCompareMode(!compareMode);
+                    setCompareV1(null);
+                    setCompareV2(null);
+                    setComparisonResult(null);
+                  }}
+                  className={`inline-flex items-center gap-1.5 h-8 px-3 rounded-lg text-xs font-medium transition-colors ${
+                    compareMode
+                      ? "bg-karu-green text-white hover:bg-karu-green-dark"
+                      : "border border-gray-200 dark:border-gray-700 text-gray-700 dark:text-gray-300 hover:bg-gray-50 dark:hover:bg-gray-800"
+                  }`}
+                >
+                  <svg className="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" strokeWidth={1.5} stroke="currentColor">
+                    <path strokeLinecap="round" strokeLinejoin="round" d="M7.5 21 3 16.5m0 0L7.5 12M3 16.5h13.5m0-13.5L21 7.5m0 0L16.5 12M21 7.5H7.5" />
+                  </svg>
+                  {compareMode ? "Exit Compare" : "Compare Versions"}
+                </button>
+                {compareMode && compareV1 && compareV2 && (
+                  <button
+                    onClick={handleCompareVersions}
+                    disabled={isComparing}
+                    className="inline-flex items-center gap-1.5 h-8 px-4 rounded-lg bg-karu-green text-white text-xs font-medium hover:bg-karu-green-dark disabled:opacity-60 transition-colors"
+                  >
+                    {isComparing ? (
+                      <>
+                        <svg className="w-3.5 h-3.5 animate-spin" fill="none" viewBox="0 0 24 24">
+                          <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" />
+                          <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z" />
+                        </svg>
+                        Comparing...
+                      </>
+                    ) : (
+                      "Compare Selected"
+                    )}
+                  </button>
+                )}
+              </div>
+            )}
+
+            {compareMode && (
+              <p className="text-xs text-gray-500 dark:text-gray-400">
+                Select two versions to compare. Click the radio buttons in the &quot;V1&quot; and &quot;V2&quot; columns.
+              </p>
+            )}
+
+            {/* Versions table */}
+            <div className="bg-white dark:bg-gray-900 rounded-xl border border-gray-200 dark:border-gray-800 overflow-hidden">
+              <table className="w-full text-sm">
+                <thead>
+                  <tr className="border-b border-gray-200 dark:border-gray-800 bg-gray-50 dark:bg-gray-800/50">
+                    {compareMode && (
+                      <>
+                        <th className="text-center px-2 py-3 font-medium text-gray-500 dark:text-gray-400 w-12">V1</th>
+                        <th className="text-center px-2 py-3 font-medium text-gray-500 dark:text-gray-400 w-12">V2</th>
+                      </>
+                    )}
+                    <th className="text-left px-4 py-3 font-medium text-gray-500 dark:text-gray-400">Version</th>
+                    <th className="text-left px-4 py-3 font-medium text-gray-500 dark:text-gray-400">Change Note</th>
+                    <th className="text-left px-4 py-3 font-medium text-gray-500 dark:text-gray-400">Size</th>
+                    <th className="text-left px-4 py-3 font-medium text-gray-500 dark:text-gray-400">Date</th>
+                    <th className="text-right px-4 py-3 font-medium text-gray-500 dark:text-gray-400">Download</th>
                   </tr>
-                ) : (
-                  doc.versions.map((v) => (
-                    <tr key={v.id} className="hover:bg-gray-50 dark:hover:bg-gray-800/50">
-                      <td className="px-4 py-3 font-medium text-gray-900 dark:text-gray-100">v{v.versionNum}</td>
-                      <td className="px-4 py-3 text-gray-600 dark:text-gray-400">{v.changeNote}</td>
-                      <td className="px-4 py-3 text-gray-500 dark:text-gray-400">{formatFileSize(v.sizeBytes)}</td>
-                      <td className="px-4 py-3 text-gray-500 dark:text-gray-400 whitespace-nowrap text-xs">{formatDate(v.createdAt)}</td>
-                      <td className="px-4 py-3 text-right">
-                        <a
-                          href={`/${v.storagePath}`}
-                          download
-                          className="p-1.5 inline-flex rounded-lg text-gray-400 hover:text-karu-green hover:bg-gray-100 dark:hover:bg-gray-700 transition-colors"
-                        >
-                          <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" strokeWidth={1.5} stroke="currentColor">
-                            <path strokeLinecap="round" strokeLinejoin="round" d="M3 16.5v2.25A2.25 2.25 0 0 0 5.25 21h13.5A2.25 2.25 0 0 0 21 18.75V16.5M16.5 12 12 16.5m0 0L7.5 12m4.5 4.5V3" />
-                          </svg>
-                        </a>
+                </thead>
+                <tbody className="divide-y divide-gray-100 dark:divide-gray-800">
+                  {doc.versions.length === 0 ? (
+                    <tr>
+                      <td colSpan={compareMode ? 7 : 5} className="px-4 py-8 text-center text-gray-400 dark:text-gray-500">
+                        No version history
                       </td>
                     </tr>
-                  ))
+                  ) : (
+                    doc.versions.map((v) => (
+                      <tr
+                        key={v.id}
+                        className={`hover:bg-gray-50 dark:hover:bg-gray-800/50 ${
+                          compareMode && (compareV1 === v.id || compareV2 === v.id)
+                            ? "bg-karu-green-light/30 dark:bg-karu-green/5"
+                            : ""
+                        }`}
+                      >
+                        {compareMode && (
+                          <>
+                            <td className="text-center px-2 py-3">
+                              <input
+                                type="radio"
+                                name="compare-v1"
+                                checked={compareV1 === v.id}
+                                onChange={() => setCompareV1(v.id)}
+                                className="h-3.5 w-3.5 accent-karu-green"
+                              />
+                            </td>
+                            <td className="text-center px-2 py-3">
+                              <input
+                                type="radio"
+                                name="compare-v2"
+                                checked={compareV2 === v.id}
+                                onChange={() => setCompareV2(v.id)}
+                                className="h-3.5 w-3.5 accent-karu-green"
+                              />
+                            </td>
+                          </>
+                        )}
+                        <td className="px-4 py-3 font-medium text-gray-900 dark:text-gray-100">v{v.versionNum}</td>
+                        <td className="px-4 py-3 text-gray-600 dark:text-gray-400">{v.changeNote}</td>
+                        <td className="px-4 py-3 text-gray-500 dark:text-gray-400">{formatFileSize(v.sizeBytes)}</td>
+                        <td className="px-4 py-3 text-gray-500 dark:text-gray-400 whitespace-nowrap text-xs">{formatDate(v.createdAt)}</td>
+                        <td className="px-4 py-3 text-right">
+                          {perms.canDownload && (
+                            <a
+                              href={`/api/files?path=${encodeURIComponent(v.storagePath)}&download=1`}
+                              download
+                              className="p-1.5 inline-flex rounded-lg text-gray-400 hover:text-karu-green hover:bg-gray-100 dark:hover:bg-gray-700 transition-colors"
+                            >
+                              <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" strokeWidth={1.5} stroke="currentColor">
+                                <path strokeLinecap="round" strokeLinejoin="round" d="M3 16.5v2.25A2.25 2.25 0 0 0 5.25 21h13.5A2.25 2.25 0 0 0 21 18.75V16.5M16.5 12 12 16.5m0 0L7.5 12m4.5 4.5V3" />
+                              </svg>
+                            </a>
+                          )}
+                        </td>
+                      </tr>
+                    ))
+                  )}
+                </tbody>
+              </table>
+            </div>
+
+            {/* Comparison result panel */}
+            {comparisonResult && (
+              <div className="bg-white dark:bg-gray-900 rounded-xl border border-gray-200 dark:border-gray-800 overflow-hidden">
+                <div className="px-5 py-3 border-b border-gray-200 dark:border-gray-800 flex items-center justify-between bg-gray-50 dark:bg-gray-800/50">
+                  <h3 className="text-sm font-semibold text-gray-900 dark:text-gray-100 flex items-center gap-2">
+                    <svg className="w-4 h-4 text-karu-green" fill="none" viewBox="0 0 24 24" strokeWidth={1.5} stroke="currentColor">
+                      <path strokeLinecap="round" strokeLinejoin="round" d="M7.5 21 3 16.5m0 0L7.5 12M3 16.5h13.5m0-13.5L21 7.5m0 0L16.5 12M21 7.5H7.5" />
+                    </svg>
+                    Comparison: v{comparisonResult.version1.versionNum} vs v{comparisonResult.version2.versionNum}
+                  </h3>
+                  <button
+                    onClick={() => setComparisonResult(null)}
+                    className="p-1 rounded-lg text-gray-400 hover:text-gray-600 dark:hover:text-gray-300 hover:bg-gray-100 dark:hover:bg-gray-700 transition-colors"
+                  >
+                    <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" strokeWidth={2} stroke="currentColor">
+                      <path strokeLinecap="round" strokeLinejoin="round" d="M6 18 18 6M6 6l12 12" />
+                    </svg>
+                  </button>
+                </div>
+
+                {comparisonResult.changes.length === 0 ? (
+                  <div className="px-5 py-8 text-center text-gray-400 dark:text-gray-500 text-sm">
+                    No differences found between these versions.
+                  </div>
+                ) : (
+                  <div className="divide-y divide-gray-100 dark:divide-gray-800">
+                    {/* Side-by-side header */}
+                    <div className="grid grid-cols-3 px-5 py-2 bg-gray-50 dark:bg-gray-800/30 text-xs font-medium text-gray-500 dark:text-gray-400">
+                      <div>Field</div>
+                      <div className="text-center">v{comparisonResult.version1.versionNum} (Before)</div>
+                      <div className="text-center">v{comparisonResult.version2.versionNum} (After)</div>
+                    </div>
+                    {comparisonResult.changes.map((change, idx) => (
+                      <div key={idx} className="grid grid-cols-3 px-5 py-3 text-sm items-start gap-2">
+                        <div className="font-medium text-gray-900 dark:text-gray-100">{change.field}</div>
+                        <div className="text-center">
+                          <span className="inline-block px-2 py-1 rounded bg-red-50 dark:bg-red-950/30 text-red-700 dark:text-red-400 text-xs break-all">
+                            {change.before ?? "--"}
+                          </span>
+                        </div>
+                        <div className="text-center">
+                          <span className="inline-block px-2 py-1 rounded bg-emerald-50 dark:bg-emerald-950/30 text-emerald-700 dark:text-emerald-400 text-xs break-all">
+                            {change.after ?? "--"}
+                          </span>
+                        </div>
+                      </div>
+                    ))}
+                  </div>
                 )}
-              </tbody>
-            </table>
+              </div>
+            )}
           </div>
         )}
 
@@ -947,22 +1468,24 @@ export default function DocumentDetailPage({
                   Access Controls
                   <span className="text-xs font-normal text-gray-400">({doc.accessControls.length})</span>
                 </h3>
-                <button
-                  onClick={() => {
-                    setShowGrantAccess(true);
-                    setGrantSearch("");
-                    setGrantSelectedId("");
-                    setGrantSelectedName("");
-                    setGrantSearchResults([]);
-                    setGrantPerms({ canRead: true, canWrite: false, canDelete: false, canShare: false });
-                  }}
-                  className="inline-flex items-center gap-1.5 h-8 px-3 rounded-lg bg-[#02773b] text-white text-xs font-medium hover:bg-[#014d28] transition-colors"
-                >
-                  <svg className="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" strokeWidth={2} stroke="currentColor">
-                    <path strokeLinecap="round" strokeLinejoin="round" d="M12 4.5v15m7.5-7.5h-15" />
-                  </svg>
-                  Grant Access
-                </button>
+                {perms.canShare && (
+                  <button
+                    onClick={() => {
+                      setShowGrantAccess(true);
+                      setGrantSearch("");
+                      setGrantSelectedId("");
+                      setGrantSelectedName("");
+                      setGrantSearchResults([]);
+                      setGrantPerms({ canRead: true, canWrite: false, canDelete: false, canShare: false });
+                    }}
+                    className="inline-flex items-center gap-1.5 h-8 px-3 rounded-lg bg-[#02773b] text-white text-xs font-medium hover:bg-[#014d28] transition-colors"
+                  >
+                    <svg className="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" strokeWidth={2} stroke="currentColor">
+                      <path strokeLinecap="round" strokeLinejoin="round" d="M12 4.5v15m7.5-7.5h-15" />
+                    </svg>
+                    Grant Access
+                  </button>
+                )}
               </div>
 
               <table className="w-full text-sm">
@@ -1209,7 +1732,40 @@ export default function DocumentDetailPage({
             </div>
           </div>
         )}
+
+        {/* Comments tab */}
+        {activeTab === "comments" && (
+          <div className="bg-white dark:bg-gray-900 rounded-xl border border-gray-200 dark:border-gray-800 p-5">
+            <CommentsPanel
+              documentId={doc.id}
+              currentUserId={sessionData?.user?.id ?? ""}
+            />
+          </div>
+        )}
+
+        {/* Signatures tab */}
+        {activeTab === "signatures" && (
+          <div className="bg-white dark:bg-gray-900 rounded-xl border border-gray-200 dark:border-gray-800 p-5">
+            <SignaturePanel
+              documentId={doc.id}
+              currentUserId={sessionData?.user?.id ?? ""}
+            />
+          </div>
+        )}
+          </div>
+          {/* end tab content */}
+        </div>
+        {/* end left column */}
       </div>
+      {/* end two-column body */}
+
+      {/* Top-level Share dialog (distinct from the ACL Grant Access modal) */}
+      <ShareDialog
+        open={showShareDialog}
+        onClose={() => setShowShareDialog(false)}
+        documentId={doc.id}
+        documentTitle={doc.title}
+      />
     </div>
   );
 }

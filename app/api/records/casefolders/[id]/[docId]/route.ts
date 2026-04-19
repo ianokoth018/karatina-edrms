@@ -3,6 +3,7 @@ import { auth } from "@/lib/auth";
 import { db } from "@/lib/db";
 import { writeAudit } from "@/lib/audit";
 import { logger } from "@/lib/logger";
+import { getEffectiveDocumentPermissions } from "@/lib/document-permissions";
 
 /**
  * Custom JSON serialiser that converts BigInt values to strings so that
@@ -11,6 +12,7 @@ import { logger } from "@/lib/logger";
 function serialiseBigInt(data: unknown): unknown {
   if (data === null || data === undefined) return data;
   if (typeof data === "bigint") return data.toString();
+  if (data instanceof Date) return data.toISOString();
   if (Array.isArray(data)) return data.map(serialiseBigInt);
   if (typeof data === "object") {
     const out: Record<string, unknown> = {};
@@ -127,6 +129,13 @@ export async function GET(
       if (metadata[camelCase] !== undefined) { fieldValues[fname] = metadata[camelCase]; continue; }
     }
 
+    // Compute effective permissions for this user on this document so the UI
+    // can gate action buttons without a second round-trip.
+    const effectivePermissions = await getEffectiveDocumentPermissions(
+      session,
+      document.id
+    );
+
     return NextResponse.json(
       serialiseBigInt({
         document: {
@@ -143,6 +152,7 @@ export async function GET(
           createdBy: document.createdBy,
           files: document.files,
           versions: document.versions,
+          effectivePermissions,
         },
         casefolder: {
           id: template.id,

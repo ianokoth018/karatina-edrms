@@ -1,6 +1,9 @@
 "use client";
 
 import { useState, useEffect, useCallback, useRef, useMemo } from "react";
+import { useSession } from "next-auth/react";
+import { useRouter } from "next/navigation";
+import { Can } from "@/components/auth/can";
 
 /* ---------- types ---------- */
 
@@ -271,6 +274,13 @@ function ClassificationSelect({
 /* ---------- main page ---------- */
 
 export default function RetentionSchedulesPage() {
+  const { data: session, status } = useSession();
+  const router = useRouter();
+  useEffect(() => {
+    if (status === "loading") return;
+    const p = session?.user?.permissions ?? [];
+    if (!p.includes("admin:manage") && !p.includes("records_retention:read")) router.replace("/records/casefolders");
+  }, [session, status, router]);
   /* ---- data state ---- */
   const [schedules, setSchedules] = useState<Schedule[]>([]);
   const [nodes, setNodes] = useState<ClassificationNode[]>([]);
@@ -465,13 +475,15 @@ export default function RetentionSchedulesPage() {
             Define how long records are kept and what happens when they expire
           </p>
         </div>
-        <button
-          onClick={openCreateModal}
-          className="inline-flex items-center gap-2 h-10 px-5 rounded-xl bg-karu-green text-white font-medium text-sm transition-all hover:bg-karu-green-dark focus:ring-2 focus:ring-karu-green/20 focus:ring-offset-2 whitespace-nowrap"
-        >
-          <PlusIcon />
-          New Schedule
-        </button>
+        <Can anyOf={["records:create", "records:manage"]}>
+          <button
+            onClick={openCreateModal}
+            className="inline-flex items-center gap-2 h-10 px-5 rounded-xl bg-karu-green text-white font-medium text-sm transition-all hover:bg-karu-green-dark focus:ring-2 focus:ring-karu-green/20 focus:ring-offset-2 whitespace-nowrap"
+          >
+            <PlusIcon />
+            New Schedule
+          </button>
+        </Can>
       </div>
 
       {/* Stats cards */}
@@ -687,20 +699,24 @@ export default function RetentionSchedulesPage() {
                     </td>
                     <td className="px-4 py-3">
                       <div className="flex items-center justify-end gap-1">
-                        <button
-                          onClick={() => openEditModal(schedule)}
-                          className="p-1.5 rounded-lg text-gray-400 hover:text-karu-green hover:bg-karu-green-light dark:hover:bg-karu-green/10 transition-colors"
-                          title="Edit"
-                        >
-                          <PencilIcon />
-                        </button>
-                        <button
-                          onClick={() => setDeleteTarget(schedule)}
-                          className="p-1.5 rounded-lg text-gray-400 hover:text-red-600 hover:bg-red-50 dark:hover:bg-red-950/30 transition-colors"
-                          title="Delete"
-                        >
-                          <TrashIcon />
-                        </button>
+                        <Can anyOf={["records:update", "records:manage"]}>
+                          <button
+                            onClick={() => openEditModal(schedule)}
+                            className="p-1.5 rounded-lg text-gray-400 hover:text-karu-green hover:bg-karu-green-light dark:hover:bg-karu-green/10 transition-colors"
+                            title="Edit"
+                          >
+                            <PencilIcon />
+                          </button>
+                        </Can>
+                        <Can anyOf={["records:delete", "records:manage"]}>
+                          <button
+                            onClick={() => setDeleteTarget(schedule)}
+                            className="p-1.5 rounded-lg text-gray-400 hover:text-red-600 hover:bg-red-50 dark:hover:bg-red-950/30 transition-colors"
+                            title="Delete"
+                          >
+                            <TrashIcon />
+                          </button>
+                        </Can>
                       </div>
                     </td>
                   </tr>

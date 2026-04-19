@@ -1,6 +1,9 @@
 "use client";
 
 import { useState, useEffect, useCallback, Fragment } from "react";
+import { useSession } from "next-auth/react";
+import { useRouter } from "next/navigation";
+import { Can } from "@/components/auth/can";
 
 /* ================================================================
    Types
@@ -283,6 +286,13 @@ const textareaClass =
    ================================================================ */
 
 export default function PhysicalRecordsPage() {
+  const { data: session, status } = useSession();
+  const router = useRouter();
+  useEffect(() => {
+    if (status === "loading") return;
+    const p = session?.user?.permissions ?? [];
+    if (!p.includes("admin:manage") && !p.includes("records_physical:read")) router.replace("/records/casefolders");
+  }, [session, status, router]);
   /* -------- list state -------- */
   const [records, setRecords] = useState<PhysicalRecord[]>([]);
   const [pagination, setPagination] = useState<PaginationInfo>({
@@ -573,13 +583,15 @@ export default function PhysicalRecordsPage() {
           </p>
         </div>
 
-        <button
-          onClick={openCreate}
-          className="inline-flex items-center gap-2 h-10 px-5 rounded-xl bg-karu-green text-white font-medium text-sm transition-all hover:bg-karu-green-dark focus:ring-2 focus:ring-karu-green/20 focus:ring-offset-2 whitespace-nowrap"
-        >
-          <IconPlus />
-          New Record
-        </button>
+        <Can anyOf={["records:create", "records:manage"]}>
+          <button
+            onClick={openCreate}
+            className="inline-flex items-center gap-2 h-10 px-5 rounded-xl bg-karu-green text-white font-medium text-sm transition-all hover:bg-karu-green-dark focus:ring-2 focus:ring-karu-green/20 focus:ring-offset-2 whitespace-nowrap"
+          >
+            <IconPlus />
+            New Record
+          </button>
+        </Can>
       </div>
 
       {/* -------- Stats row -------- */}
@@ -860,44 +872,52 @@ export default function PhysicalRecordsPage() {
                         <div className="flex items-center justify-end gap-1">
                           {/* Edit */}
                           {rec.status !== "DISPOSED" && (
-                            <button
-                              onClick={() => openEdit(rec)}
-                              className="p-1.5 rounded-lg text-gray-400 hover:text-karu-green hover:bg-gray-100 dark:hover:bg-gray-800 transition-colors"
-                              title="Edit"
-                            >
-                              <IconEdit />
-                            </button>
+                            <Can anyOf={["records:update", "records:manage"]}>
+                              <button
+                                onClick={() => openEdit(rec)}
+                                className="p-1.5 rounded-lg text-gray-400 hover:text-karu-green hover:bg-gray-100 dark:hover:bg-gray-800 transition-colors"
+                                title="Edit"
+                              >
+                                <IconEdit />
+                              </button>
+                            </Can>
                           )}
 
                           {/* Checkout / Checkin */}
                           {rec.status === "AVAILABLE" && (
-                            <button
-                              onClick={() => openCheckout(rec)}
-                              className="p-1.5 rounded-lg text-gray-400 hover:text-karu-gold hover:bg-gray-100 dark:hover:bg-gray-800 transition-colors"
-                              title="Check Out"
-                            >
-                              <IconCheckout />
-                            </button>
+                            <Can anyOf={["records:update", "records:manage"]}>
+                              <button
+                                onClick={() => openCheckout(rec)}
+                                className="p-1.5 rounded-lg text-gray-400 hover:text-karu-gold hover:bg-gray-100 dark:hover:bg-gray-800 transition-colors"
+                                title="Check Out"
+                              >
+                                <IconCheckout />
+                              </button>
+                            </Can>
                           )}
                           {rec.status === "CHECKED_OUT" && (
-                            <button
-                              onClick={() => handleCheckin(rec)}
-                              className="p-1.5 rounded-lg text-amber-500 hover:text-emerald-600 hover:bg-gray-100 dark:hover:bg-gray-800 transition-colors"
-                              title="Check In"
-                            >
-                              <IconCheckin />
-                            </button>
+                            <Can anyOf={["records:update", "records:manage"]}>
+                              <button
+                                onClick={() => handleCheckin(rec)}
+                                className="p-1.5 rounded-lg text-amber-500 hover:text-emerald-600 hover:bg-gray-100 dark:hover:bg-gray-800 transition-colors"
+                                title="Check In"
+                              >
+                                <IconCheckin />
+                              </button>
+                            </Can>
                           )}
 
                           {/* Dispose */}
                           {rec.status !== "DISPOSED" && rec.status !== "CHECKED_OUT" && (
-                            <button
-                              onClick={() => handleDispose(rec)}
-                              className="p-1.5 rounded-lg text-gray-400 hover:text-red-600 hover:bg-gray-100 dark:hover:bg-gray-800 transition-colors"
-                              title="Dispose"
-                            >
-                              <IconTrash />
-                            </button>
+                            <Can anyOf={["records:delete", "records:manage"]}>
+                              <button
+                                onClick={() => handleDispose(rec)}
+                                className="p-1.5 rounded-lg text-gray-400 hover:text-red-600 hover:bg-gray-100 dark:hover:bg-gray-800 transition-colors"
+                                title="Dispose"
+                              >
+                                <IconTrash />
+                              </button>
+                            </Can>
                           )}
                         </div>
                       </td>

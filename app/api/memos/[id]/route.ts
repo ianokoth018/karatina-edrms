@@ -30,7 +30,7 @@ export async function GET(
             title: true,
             status: true,
             files: {
-              select: { id: true, fileName: true, mimeType: true, sizeBytes: true },
+              select: { id: true, fileName: true, mimeType: true, sizeBytes: true, storagePath: true },
             },
           },
         },
@@ -58,17 +58,78 @@ export async function GET(
       return NextResponse.json({ error: "Memo not found" }, { status: 404 });
     }
 
-    // Check user involvement
+    // Check user involvement — same rules as the list API:
+    // initiator OR has already acted (COMPLETED task) OR is at the current active step (lowest pending stepIndex)
+    // Elevated roles (VC / DVC / Director / Dean / Registrar PA / Admin) bypass the filter.
     const userId = session.user.id;
+    const userRoles = (session.user.roles as string[] | undefined) ?? [];
+    const ELEVATED_READ_ROLES = new Set([
+      "VICE_CHANCELLOR", "DVC_PFA", "DVC_ARSA",
+      "ADMIN", "DIRECTOR", "DEAN", "REGISTRAR_PA",
+    ]);
+    const hasElevatedAccess = userRoles.some((r) => ELEVATED_READ_ROLES.has(r));
+
+    const pendingTasksForAccess = memo.tasks.filter((t) => t.status === "PENDING");
+    const lowestPendingForAccess =
+      pendingTasksForAccess.length > 0
+        ? Math.min(...pendingTasksForAccess.map((t) => t.stepIndex))
+        : Infinity;
     const isInvolved =
+      hasElevatedAccess ||
       memo.initiatedById === userId ||
-      memo.tasks.some((t) => t.assigneeId === userId);
+      memo.tasks.some((t) => t.assigneeId === userId && t.status === "COMPLETED") ||
+      pendingTasksForAccess.some(
+        (t) => t.assigneeId === userId && t.stepIndex === lowestPendingForAccess
+      );
 
     if (!isInvolved) {
-      return NextResponse.json({ error: "Access denied" }, { status: 403 });
+      return NextResponse.json({ error: "Memo not found" }, { status: 404 });
     }
 
     const formData = memo.formData as Record<string, unknown>;
+
+    // Resolve any CC entries that look like user IDs (cuid format) to display names.
+    // Free-text entries (department names, titles) are kept as-is.
+    const rawCc = Array.isArray((formData as Record<string, unknown>)?.cc)
+      ? ((formData as Record<string, unknown>).cc as string[])
+      : [];
+    const cuidLike = rawCc.filter((c) => typeof c === "string" && /^c[a-z0-9]{20,}$/i.test(c));
+    let resolvedCc: string[] = rawCc;
+    if (cuidLike.length > 0) {
+      const users = await db.user.findMany({
+        where: { id: { in: cuidLike } },
+        select: { id: true, name: true, displayName: true },
+      });
+      const nameById = new Map(users.map((u) => [u.id, u.displayName || u.name]));
+      resolvedCc = rawCc.map((c) => nameById.get(c) ?? c);
+    }
+
+    // If the memo was endorsed by an HOD, the initiator on record will be the
+    // HOD while `originalInitiatedById` still points to the real author. Resolve
+    // their display info so the UI can show a secondary "originally drafted by"
+    // line.
+    let originalInitiatedBy: {
+      id: string;
+      name: string;
+      displayName: string | null;
+      department: string | null;
+      jobTitle: string | null;
+    } | null = null;
+    if (
+      memo.originalInitiatedById &&
+      memo.originalInitiatedById !== memo.initiatedById
+    ) {
+      originalInitiatedBy = await db.user.findUnique({
+        where: { id: memo.originalInitiatedById },
+        select: {
+          id: true,
+          name: true,
+          displayName: true,
+          department: true,
+          jobTitle: true,
+        },
+      });
+    }
 
     // Find the current pending task for this user (if any)
     const currentUserPendingTask = memo.tasks.find(
@@ -83,8 +144,11 @@ export async function GET(
       currentUserPendingTask?.stepIndex === lowestPendingIndex;
 
     // Compute memo status
+    const isCommunicating = (formData?.memoType as string) === "communicating";
     let memoStatus = "DRAFT";
-    if (memo.status === "COMPLETED") {
+    if (isCommunicating && memo.status === "COMPLETED") {
+      memoStatus = "SENT";
+    } else if (memo.status === "COMPLETED") {
       memoStatus = "APPROVED";
     } else if (memo.status === "REJECTED") {
       memoStatus = "REJECTED";
@@ -151,7 +215,15 @@ export async function GET(
         data: event.data,
         occurredAt: event.occurredAt,
       })),
-      document: memo.document,
+      document: memo.document
+        ? {
+            ...memo.document,
+            files: memo.document.files.map((f) => ({
+              ...f,
+              sizeBytes: Number(f.sizeBytes),
+            })),
+          }
+        : null,
       canAct: isCurrentUsersTurn,
       currentAction: currentUserPendingTask
         ? {
@@ -164,9 +236,12 @@ export async function GET(
         : null,
       initiatedById: memo.initiatedById,
       isInitiator: memo.initiatedById === userId,
+      originalInitiatedBy,
       departmentOffice: (formData?.departmentOffice as string) ?? "",
       designation: (formData?.designation as string) ?? "",
-      cc: (formData?.cc as string[]) ?? [],
+      cc: resolvedCc,
+      senderIsSuperior: (formData?.senderIsSuperior as boolean) ?? true,
+      memoType: (formData?.memoType as string) ?? "administrative",
     };
 
     return NextResponse.json(enriched);
@@ -194,15 +269,18 @@ export async function PATCH(
 
     const { id } = await params;
     const body = await req.json();
-    const { action, comment } = body as {
-      action: "RECOMMEND" | "APPROVE" | "REJECT" | "RETURN";
+    const { action, comment, clarifyUserId, clarifyDepartment, additionalCc } = body as {
+      action: "RECOMMEND" | "APPROVE" | "REJECT" | "RETURN" | "SEEK_CLARIFICATION";
       comment?: string;
+      clarifyUserId?: string; // target user for SEEK_CLARIFICATION
+      clarifyDepartment?: string; // target department for SEEK_CLARIFICATION
+      additionalCc?: string[]; // extra CC recipients added at APPROVE time
     };
 
-    const validActions = ["RECOMMEND", "APPROVE", "REJECT", "RETURN"];
+    const validActions = ["RECOMMEND", "APPROVE", "REJECT", "RETURN", "SEEK_CLARIFICATION"];
     if (!action || !validActions.includes(action)) {
       return NextResponse.json(
-        { error: "Invalid action. Must be RECOMMEND, APPROVE, REJECT, or RETURN" },
+        { error: "Invalid action" },
         { status: 400 }
       );
     }
@@ -210,6 +288,20 @@ export async function PATCH(
     if ((action === "REJECT" || action === "RETURN") && !comment?.trim()) {
       return NextResponse.json(
         { error: "Comment is required when rejecting or returning a memo" },
+        { status: 400 }
+      );
+    }
+
+    if (action === "SEEK_CLARIFICATION" && !comment?.trim()) {
+      return NextResponse.json(
+        { error: "A question/comment is required when seeking clarification" },
+        { status: 400 }
+      );
+    }
+
+    if (action === "SEEK_CLARIFICATION" && !clarifyUserId && !clarifyDepartment) {
+      return NextResponse.json(
+        { error: "Select a user or department to seek clarification from" },
         { status: 400 }
       );
     }
@@ -258,6 +350,115 @@ export async function PATCH(
       );
     }
 
+    // SEEK_CLARIFICATION doesn't complete the task — handle separately
+    if (action === "SEEK_CLARIFICATION") {
+      if (clarifyUserId) {
+        // Verify the target user exists
+        const targetUser = await db.user.findUnique({
+          where: { id: clarifyUserId },
+          select: { id: true, name: true, displayName: true },
+        });
+        if (!targetUser) {
+          return NextResponse.json({ error: "Target user not found" }, { status: 404 });
+        }
+
+        // Create the clarification event (task stays PENDING)
+        await db.workflowEvent.create({
+          data: {
+            instanceId: memo.id,
+            eventType: "MEMO_CLARIFICATION_REQUESTED",
+            actorId: userId,
+            data: {
+              actorName: session.user.name,
+              stepName: currentTask.stepName,
+              targetUserId: targetUser.id,
+              targetUserName: targetUser.displayName || targetUser.name,
+              question: comment!.trim(),
+            },
+          },
+        });
+
+        // Notify the target user
+        await db.notification.create({
+          data: {
+            userId: targetUser.id,
+            type: "MEMO_CLARIFICATION_REQUESTED",
+            title: "Clarification Requested",
+            body: `${session.user.name} is seeking clarification on memo "${memo.subject}": ${comment!.trim().slice(0, 100)}`,
+            linkUrl: `/memos/${memo.id}`,
+          },
+        });
+
+        await writeAudit({
+          userId: session.user.id,
+          action: "memo.seek_clarification",
+          resourceType: "Memo",
+          resourceId: memo.id,
+          metadata: {
+            targetUserId: targetUser.id,
+            question: comment!.trim(),
+          },
+        });
+      } else {
+        // Department-wide clarification
+        const users = await db.user.findMany({
+          where: {
+            department: clarifyDepartment,
+            id: { not: session.user.id },
+          },
+          select: { id: true, name: true, displayName: true },
+        });
+
+        if (users.length === 0) {
+          return NextResponse.json(
+            { error: "No users found in that department" },
+            { status: 404 }
+          );
+        }
+
+        // Create a single clarification event for the department
+        await db.workflowEvent.create({
+          data: {
+            instanceId: memo.id,
+            eventType: "MEMO_CLARIFICATION_REQUESTED",
+            actorId: userId,
+            data: {
+              actorName: session.user.name,
+              stepName: currentTask.stepName,
+              targetDepartment: clarifyDepartment,
+              targetUserCount: users.length,
+              question: comment!.trim(),
+            },
+          },
+        });
+
+        // Notify every user in the department
+        await db.notification.createMany({
+          data: users.map((u) => ({
+            userId: u.id,
+            type: "MEMO_CLARIFICATION_REQUESTED",
+            title: "Clarification Requested",
+            body: `${session.user.name} is seeking clarification on memo "${memo.subject}": ${comment!.trim().slice(0, 100)}`,
+            linkUrl: `/memos/${memo.id}`,
+          })),
+        });
+
+        await writeAudit({
+          userId: session.user.id,
+          action: "memo.seek_clarification",
+          resourceType: "Memo",
+          resourceId: memo.id,
+          metadata: {
+            targetDepartment: clarifyDepartment,
+            userCount: users.length,
+            question: comment!.trim(),
+          },
+        });
+      }
+
+      return NextResponse.json({ success: true, action: "SEEK_CLARIFICATION" });
+    }
+
     // Validate action type against step
     if (action === "APPROVE" && currentTask.stepName !== "Final Approval") {
       return NextResponse.json(
@@ -293,7 +494,36 @@ export async function PATCH(
         },
       });
 
+      // 1b. If this was the HOD Endorsement step and the HOD approved, reassign
+      // the memo's identity so it now bears the HOD's name. Preserve the real
+      // author via originalInitiatedById (keep the first-ever author if already set).
+      if (currentTask.stepName === "HOD Endorsement" && taskAction === "APPROVED") {
+        await tx.workflowInstance.update({
+          where: { id: memo.id },
+          data: {
+            originalInitiatedById: memo.originalInitiatedById ?? memo.initiatedById,
+            initiatedById: session.user.id,
+          },
+        });
+        await tx.workflowEvent.create({
+          data: {
+            instanceId: memo.id,
+            eventType: "MEMO_ENDORSED_BY_HOD",
+            actorId: session.user.id,
+            data: {
+              previousInitiatedById: memo.initiatedById,
+              newInitiatedById: session.user.id,
+              hodName: session.user.name,
+            },
+          },
+        });
+      }
+
       // 2. Create workflow event
+      const extraCcForEvent =
+        action === "APPROVE" && Array.isArray(additionalCc)
+          ? additionalCc.map((c) => (typeof c === "string" ? c.trim() : "")).filter(Boolean)
+          : [];
       await tx.workflowEvent.create({
         data: {
           instanceId: memo.id,
@@ -306,6 +536,7 @@ export async function PATCH(
             action: taskAction,
             comment: comment?.trim() || null,
             actorName: session.user.name,
+            ...(extraCcForEvent.length > 0 ? { additionalCc: extraCcForEvent } : {}),
           },
         },
       });
@@ -333,20 +564,101 @@ export async function PATCH(
           });
         }
       } else if (action === "APPROVE") {
-        // Final approval -- complete the workflow
+        // Final approval -- complete the workflow. If the approver added extra
+        // CCs, merge them into the memo's formData.cc so they appear on the
+        // final template.
+        const existingCc = Array.isArray((formData as Record<string, unknown>)?.cc)
+          ? ((formData as Record<string, unknown>).cc as string[])
+          : [];
+        const extraCc = (additionalCc ?? [])
+          .map((c) => (typeof c === "string" ? c.trim() : ""))
+          .filter(Boolean);
+        const mergedCc = Array.from(new Set([...existingCc, ...extraCc]));
+
         await tx.workflowInstance.update({
           where: { id: memo.id },
           data: {
             status: "COMPLETED",
             completedAt: new Date(),
+            ...(extraCc.length > 0
+              ? { formData: { ...(formData as Record<string, unknown>), cc: mergedCc } }
+              : {}),
           },
         });
 
-        // Archive the document
-        if (memo.documentId) {
+        // --- Option A: Archive the document on FINAL approval only ---
+        // Guards:
+        //   * taskAction === "APPROVED" (not RETURN / REJECT)
+        //   * no remaining PENDING tasks on the workflow (i.e. this was truly
+        //     the last step — so a mid-chain HOD Endorsement or Recommendation
+        //     cannot trigger archival)
+        //   * skip communicating memos — they are created already ARCHIVED, so
+        //     we do not rewrite them here
+        const memoTypeValue = (formData as Record<string, unknown>)?.memoType;
+        const isCommunicatingMemo = memoTypeValue === "communicating";
+
+        const remainingPending = await tx.workflowTask.count({
+          where: {
+            instanceId: memo.id,
+            status: "PENDING",
+          },
+        });
+
+        const shouldArchive =
+          taskAction === "APPROVED" &&
+          remainingPending === 0 &&
+          !isCommunicatingMemo &&
+          !!memo.documentId;
+
+        if (shouldArchive && memo.documentId) {
+          const docUpdate: Record<string, unknown> = { status: "ARCHIVED" };
+          if (extraCc.length > 0) {
+            const existingDoc = await tx.document.findUnique({
+              where: { id: memo.documentId },
+              select: { metadata: true },
+            });
+            const meta = (existingDoc?.metadata as Record<string, unknown>) ?? {};
+            docUpdate.metadata = {
+              ...meta,
+              cc: mergedCc,
+              copy_to: mergedCc.join(", "),
+            };
+          }
           await tx.document.update({
             where: { id: memo.documentId },
-            data: { status: "ARCHIVED" },
+            data: docUpdate,
+          });
+
+          // Emit a workflow event for the audit trail
+          await tx.workflowEvent.create({
+            data: {
+              instanceId: memo.id,
+              eventType: "MEMO_ARCHIVED",
+              actorId: userId,
+              data: {
+                documentId: memo.documentId,
+                reason: "Final approval — filed into Internal Memo casefolder",
+                actorName: session.user.name,
+              },
+            },
+          });
+        } else if (memo.documentId && extraCc.length > 0 && !isCommunicatingMemo) {
+          // Not archiving (shouldn't happen at APPROVE but be defensive) —
+          // still sync CCs into metadata so the final template renders them.
+          const existingDoc = await tx.document.findUnique({
+            where: { id: memo.documentId },
+            select: { metadata: true },
+          });
+          const meta = (existingDoc?.metadata as Record<string, unknown>) ?? {};
+          await tx.document.update({
+            where: { id: memo.documentId },
+            data: {
+              metadata: {
+                ...meta,
+                cc: mergedCc,
+                copy_to: mergedCc.join(", "),
+              },
+            },
           });
         }
 
@@ -492,6 +804,46 @@ export async function PATCH(
         comment: comment?.trim(),
       },
     });
+
+    if (currentTask.stepName === "HOD Endorsement" && taskAction === "APPROVED") {
+      await writeAudit({
+        userId: session.user.id,
+        action: "memo.endorsed_by_hod",
+        resourceType: "Memo",
+        resourceId: memo.id,
+        metadata: {
+          taskId: currentTask.id,
+          previousInitiatedById: memo.initiatedById,
+          newInitiatedById: session.user.id,
+          hodName: session.user.name,
+          memoReference: formData?.memoReference,
+        },
+      });
+    }
+
+    // Audit the archival if this APPROVE was truly the final step.
+    // We re-check the same conditions here (outside the tx) so the audit row
+    // only fires when the document was actually archived.
+    if (action === "APPROVE" && memo.documentId) {
+      const stillPending = await db.workflowTask.count({
+        where: { instanceId: memo.id, status: "PENDING" },
+      });
+      const memoTypeValue = (formData as Record<string, unknown>)?.memoType;
+      const isCommunicatingMemo = memoTypeValue === "communicating";
+      if (stillPending === 0 && !isCommunicatingMemo) {
+        await writeAudit({
+          userId: session.user.id,
+          action: "memo.archived",
+          resourceType: "Document",
+          resourceId: memo.documentId,
+          metadata: {
+            workflowInstanceId: memo.id,
+            memoReference: formData?.memoReference,
+            subject: memo.subject,
+          },
+        });
+      }
+    }
 
     return NextResponse.json({ success: true, action });
   } catch (error) {

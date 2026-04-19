@@ -10,8 +10,8 @@ export async function GET() {
   }
 
   try {
-    // Attempt to fetch real counts from the database
-    const [totalDocuments, activeWorkflows, pendingTasks, recentUploads] =
+    const userId = session.user.id;
+    const [totalDocuments, activeWorkflows, pendingTasks, recentUploads, myMemos, pendingMemos] =
       await Promise.all([
         db.document.count().catch(() => 0),
         db.workflowInstance
@@ -24,7 +24,7 @@ export async function GET() {
         db.workflowTask
           .count({
             where: {
-              assigneeId: session.user.id,
+              assigneeId: userId,
               status: "PENDING",
             },
           })
@@ -33,43 +33,49 @@ export async function GET() {
           .count({
             where: {
               createdAt: {
-                gte: new Date(Date.now() - 7 * 24 * 60 * 60 * 1000), // last 7 days
+                gte: new Date(Date.now() - 7 * 24 * 60 * 60 * 1000),
               },
             },
           })
           .catch(() => 0),
+        db.workflowInstance
+          .count({
+            where: {
+              document: { documentType: "MEMO" },
+              OR: [
+                { initiatedById: userId },
+                { tasks: { some: { assigneeId: userId } } },
+              ],
+            },
+          })
+          .catch(() => 0),
+        db.workflowTask
+          .count({
+            where: {
+              assigneeId: userId,
+              status: "PENDING",
+              instance: { document: { documentType: "MEMO" } },
+            },
+          })
+          .catch(() => 0),
       ]);
-
-    // If the database is empty (all counts are 0), return mock data
-    // so the dashboard still looks useful during development
-    const isEmpty =
-      totalDocuments === 0 &&
-      activeWorkflows === 0 &&
-      pendingTasks === 0 &&
-      recentUploads === 0;
-
-    if (isEmpty) {
-      return NextResponse.json({
-        totalDocuments: 1_284,
-        activeWorkflows: 23,
-        pendingTasks: 7,
-        recentUploads: 42,
-      });
-    }
 
     return NextResponse.json({
       totalDocuments,
       activeWorkflows,
       pendingTasks,
       recentUploads,
+      myMemos,
+      pendingMemos,
     });
   } catch {
-    // If the database is not yet migrated or unreachable, return mock data
     return NextResponse.json({
-      totalDocuments: 1_284,
-      activeWorkflows: 23,
-      pendingTasks: 7,
-      recentUploads: 42,
+      totalDocuments: 0,
+      activeWorkflows: 0,
+      pendingTasks: 0,
+      recentUploads: 0,
+      myMemos: 0,
+      pendingMemos: 0,
     });
   }
 }

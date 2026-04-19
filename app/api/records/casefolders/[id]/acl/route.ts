@@ -14,6 +14,7 @@ const PERMISSION_FIELDS = [
   "canDelete",
   "canShare",
   "canDownload",
+  "canPrint",
   "canManageACL",
 ] as const;
 
@@ -27,6 +28,7 @@ const ALL_PERMISSIONS: Permissions = {
   canDelete: true,
   canShare: true,
   canDownload: true,
+  canPrint: true,
   canManageACL: true,
 };
 
@@ -37,6 +39,7 @@ const DEFAULT_PERMISSIONS: Permissions = {
   canDelete: false,
   canShare: false,
   canDownload: false,
+  canPrint: false,
   canManageACL: false,
 };
 
@@ -172,19 +175,18 @@ export async function GET(
       return false;
     });
 
+    const isAdmin = session.user.permissions.includes("admin:manage");
+
     let userPermissions: Permissions;
 
-    if (matchingAcls.length > 0) {
-      // Merge with OR logic
-      userPermissions = mergePermissions(matchingAcls);
-    } else if (aclEntries.length === 0) {
-      // No ACL entries exist at all: default canView for all authenticated users
-      userPermissions = { ...DEFAULT_PERMISSIONS };
-    } else if (template.createdById === userId) {
-      // No matching ACLs, but user is the creator: grant all permissions
+    if (isAdmin) {
+      // Admins always have full access regardless of ACL configuration
       userPermissions = { ...ALL_PERMISSIONS };
+    } else if (matchingAcls.length > 0) {
+      // User has at least one matching ACL entry — merge with OR logic
+      userPermissions = mergePermissions(matchingAcls);
     } else {
-      // ACL entries exist but none match this user: no permissions
+      // No matching ACL (whether entries exist or not): deny all access
       userPermissions = {
         canView: false,
         canCreate: false,
@@ -192,6 +194,7 @@ export async function GET(
         canDelete: false,
         canShare: false,
         canDownload: false,
+        canPrint: false,
         canManageACL: false,
       };
     }

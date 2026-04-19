@@ -2,6 +2,7 @@
 
 import { useState, useCallback, useEffect, useMemo, Suspense } from "react";
 import { useSearchParams, useRouter } from "next/navigation";
+import { useSession } from "next-auth/react";
 
 // ---------------------------------------------------------------------------
 // Types
@@ -25,7 +26,10 @@ interface FormField {
     | "section"
     | "divider"
     | "richtext"
-    | "table";
+    | "table"
+    | "step"
+    | "user_picker"
+    | "multi_user_picker";
   label: string;
   name: string;
   placeholder?: string;
@@ -50,6 +54,21 @@ interface FormField {
     value?: string;
   };
   tableColumns?: { label: string; name: string; type: string }[];
+  // Dynamic data source for select/multiselect/radio/checkbox
+  dataSource?: {
+    type: "departments" | "users" | "roles" | "casefolders" | "api";
+    endpoint?: string;           // Custom API endpoint (for type "api")
+    labelField?: string;         // Field from response to use as label (default: "name")
+    valueField?: string;         // Field from response to use as value (default: "name")
+    dependsOn?: string;          // Field name this depends on (e.g., department select for user list)
+  };
+  // For user_picker and multi_user_picker
+  maxUsers?: number;           // Max users for multi_user_picker (default 5)
+  orderable?: boolean;         // Whether users can be reordered (multi_user_picker)
+  excludeFields?: string[];    // IDs of other user picker fields whose selected values should be excluded
+  // For step
+  stepIcon?: string;           // Optional icon name for the step
+  includeReviewStep?: boolean; // If true, auto-add a review step at end (only on first step field)
   // Casefolder / XML mapping
   fieldLevel?: "casefolder" | "document"; // batch-level = casefolder, document-level = per-file
   xmlFieldName?: string; // exact XML field name from scanner (e.g., "Student Name", "Document Description")
@@ -109,6 +128,14 @@ const FIELD_GROUPS: { title: string; items: FieldPaletteItem[] }[] = [
     items: [
       { type: "section", label: "Section Header", icon: "H" },
       { type: "divider", label: "Divider", icon: "\u2500" },
+      { type: "step", label: "Form Step", icon: "\u2630" },
+    ],
+  },
+  {
+    title: "People",
+    items: [
+      { type: "user_picker", label: "User Selector", icon: "\u263A" },
+      { type: "multi_user_picker", label: "Multi-User Selector", icon: "\u2687" },
     ],
   },
 ];
@@ -130,6 +157,9 @@ const DEFAULT_LABELS: Record<FieldType, string> = {
   divider: "",
   richtext: "Rich Text",
   table: "Data Table",
+  step: "Step",
+  user_picker: "User Selector",
+  multi_user_picker: "Multi-User Selector",
 };
 
 const SELECTION_TYPES: FieldType[] = ["select", "multiselect", "radio", "checkbox"];
@@ -270,6 +300,9 @@ function FieldTypeIcon({ type, className = "w-5 h-5" }: { type: FieldType; class
     divider: "\u2014",
     richtext: "\u270d",
     table: "\u2637",
+    step: "\u2630",
+    user_picker: "\u263A",
+    multi_user_picker: "\u2687",
   };
   return (
     <span className={`inline-flex items-center justify-center text-sm font-bold ${className}`}>
@@ -381,7 +414,16 @@ function PropCheckbox({
 function FormDesignerInner() {
   const searchParams = useSearchParams();
   const router = useRouter();
+  const { data: session, status } = useSession();
   const formId = searchParams.get("id");
+
+  useEffect(() => {
+    if (status === "loading") return;
+    const perms = session?.user?.permissions ?? [];
+    if (!perms.includes("admin:manage") && !perms.includes("forms:manage")) {
+      router.replace("/dashboard");
+    }
+  }, [session, status, router]);
 
   // ---- State ----
   const [formName, setFormName] = useState("Untitled Form");
@@ -478,6 +520,10 @@ function FormDesignerInner() {
         newField.tableColumns = [
           { label: "Column 1", name: "col_1", type: "text" },
         ];
+      }
+      if (type === "multi_user_picker") {
+        newField.maxUsers = 5;
+        newField.orderable = true;
       }
       setFields((prev) => [...prev, newField]);
       setSelectedFieldId(newField.id);
@@ -653,19 +699,24 @@ function FormDesignerInner() {
   // ===========================================================================
   function renderFieldCard(field: FormField, idx: number) {
     const isSelected = selectedFieldId === field.id;
-    const isHalf = field.width === "half";
+    const isHalf = field.width === "half" && field.type !== "step" && field.type !== "multi_user_picker";
 
     return (
       <div
-        key={field.id}
         className={`${isHalf ? "inline-block align-top w-[calc(50%-4px)] mr-2 last:mr-0" : "block w-full"}`}
       >
         <div
           onClick={() => setSelectedFieldId(field.id)}
-          className={`bg-white dark:bg-gray-900 rounded-xl border-2 p-3 cursor-pointer transition-all group ${
+          className={`rounded-xl border-2 p-3 cursor-pointer transition-all group ${
+            field.type === "step"
+              ? "bg-[#02773b]/5 dark:bg-[#02773b]/10"
+              : "bg-white dark:bg-gray-900"
+          } ${
             isSelected
               ? "border-[#02773b] shadow-sm shadow-[#02773b]/10"
-              : "border-gray-200 dark:border-gray-700 hover:border-gray-300 dark:hover:border-gray-600"
+              : field.type === "step"
+                ? "border-[#02773b]/20 dark:border-[#02773b]/30 hover:border-[#02773b]/40"
+                : "border-gray-200 dark:border-gray-700 hover:border-gray-300 dark:hover:border-gray-600"
           }`}
         >
           {field.type === "divider" ? (
@@ -687,6 +738,25 @@ function FormDesignerInner() {
                   <div className="min-w-0">
                     <p className="text-sm font-bold text-gray-900 dark:text-gray-100 truncate">{field.label || "Section Header"}</p>
                     <p className="text-[10px] text-gray-400 font-mono">{field.name}</p>
+                  </div>
+                </div>
+              </div>
+              <div className="flex items-center gap-0.5 opacity-0 group-hover:opacity-100 transition-opacity">
+                <button onClick={(e) => { e.stopPropagation(); moveField(field.id, "up"); }} disabled={idx === 0} className="p-1 rounded hover:bg-gray-100 dark:hover:bg-gray-800 disabled:opacity-30 text-gray-400" title="Move up"><IconChevronUp className="w-3.5 h-3.5" /></button>
+                <button onClick={(e) => { e.stopPropagation(); moveField(field.id, "down"); }} disabled={idx === fields.length - 1} className="p-1 rounded hover:bg-gray-100 dark:hover:bg-gray-800 disabled:opacity-30 text-gray-400" title="Move down"><IconChevronDown className="w-3.5 h-3.5" /></button>
+                <button onClick={(e) => { e.stopPropagation(); deleteField(field.id); }} className="p-1 rounded hover:bg-red-50 dark:hover:bg-red-950/30 text-gray-400 hover:text-red-500" title="Delete"><IconTrash className="w-3.5 h-3.5" /></button>
+              </div>
+            </div>
+          ) : field.type === "step" ? (
+            <div className="flex items-center gap-3">
+              <div className="flex-1">
+                <div className="flex items-center gap-3">
+                  <div className="w-8 h-8 rounded-full bg-[#02773b] text-white flex items-center justify-center text-sm font-bold flex-shrink-0">
+                    {fields.filter((f) => f.type === "step").indexOf(field) + 1}
+                  </div>
+                  <div className="min-w-0">
+                    <p className="text-sm font-bold text-gray-900 dark:text-gray-100 truncate">{field.label || "Step"}</p>
+                    {field.helpText && <p className="text-[10px] text-gray-500 truncate">{field.helpText}</p>}
                   </div>
                 </div>
               </div>
@@ -945,7 +1015,7 @@ function FormDesignerInner() {
                 <div className="space-y-2 pl-3 border-l-2 border-[#02773b]/20">
                   {fields.filter((f) => f.fieldLevel !== "document").map((field) => {
                     const idx = fields.indexOf(field);
-                    return renderFieldCard(field, idx);
+                    return <div key={field.id}>{renderFieldCard(field, idx)}</div>;
                   })}
                 </div>
               </div>
@@ -962,7 +1032,7 @@ function FormDesignerInner() {
                 <div className="space-y-2 pl-3 border-l-2 border-blue-500/20">
                   {fields.filter((f) => f.fieldLevel === "document").map((field) => {
                     const idx = fields.indexOf(field);
-                    return renderFieldCard(field, idx);
+                    return <div key={field.id}>{renderFieldCard(field, idx)}</div>;
                   })}
                 </div>
               </div>
@@ -1225,10 +1295,22 @@ function PropertiesPanel({
   const isSelection = SELECTION_TYPES.includes(field.type);
   const isNumber = field.type === "number";
   const isTable = field.type === "table";
-  const isLayout = field.type === "section" || field.type === "divider";
+  const isLayout = field.type === "section" || field.type === "divider" || field.type === "step";
+  const isUserPicker = field.type === "user_picker";
+  const isMultiUserPicker = field.type === "multi_user_picker";
+  const isAnyUserPicker = isUserPicker || isMultiUserPicker;
+  const isStep = field.type === "step";
 
-  // Other fields for conditional visibility
-  const otherFields = allFields.filter((f) => f.id !== field.id && f.type !== "divider" && f.type !== "section");
+  // Other fields for conditional visibility (exclude layout types that have no value)
+  const otherFields = allFields.filter((f) => f.id !== field.id && f.type !== "divider" && f.type !== "section" && f.type !== "step");
+
+  // Other user picker fields for excludeFields
+  const otherUserPickerFields = allFields.filter(
+    (f) => f.id !== field.id && (f.type === "user_picker" || f.type === "multi_user_picker")
+  );
+
+  // Check if this is the first step field in the form
+  const isFirstStep = isStep && allFields.filter((f) => f.type === "step").indexOf(field) === 0;
 
   // The trigger field for conditions
   const conditionTriggerField = field.condition
@@ -1280,6 +1362,24 @@ function PropertiesPanel({
           />
           <p className="text-[10px] text-gray-400 mt-0.5">Auto-generated from label. Must be unique.</p>
         </div>
+        {isStep && (
+          <div>
+            <PropLabel htmlFor="prop-helptext">Description</PropLabel>
+            <PropInput
+              id="prop-helptext"
+              value={field.helpText ?? ""}
+              onChange={(v) => onUpdate({ helpText: v || undefined })}
+              placeholder="Step description"
+            />
+          </div>
+        )}
+        {isStep && isFirstStep && (
+          <PropCheckbox
+            label="Auto-add Review step at end"
+            checked={!!field.includeReviewStep}
+            onChange={(v) => onUpdate({ includeReviewStep: v })}
+          />
+        )}
         {!isLayout && (
           <>
             <div>
@@ -1300,6 +1400,12 @@ function PropertiesPanel({
                 placeholder="Help text shown below field"
               />
             </div>
+            {isMultiUserPicker ? (
+              <div>
+                <PropLabel>Width</PropLabel>
+                <p className="text-[10px] text-gray-400">Multi-User Selector is always full width</p>
+              </div>
+            ) : (
             <div>
               <PropLabel>Width</PropLabel>
               <div className="flex rounded-lg overflow-hidden border border-gray-300 dark:border-gray-600">
@@ -1327,12 +1433,66 @@ function PropertiesPanel({
                 </button>
               </div>
             </div>
+            )}
           </>
         )}
       </CollapsibleSection>
 
+      {/* User Picker Settings */}
+      {isAnyUserPicker && (
+        <CollapsibleSection title="User Picker Settings">
+          {isMultiUserPicker && (
+            <>
+              <div>
+                <PropLabel htmlFor="prop-maxusers">Max Users</PropLabel>
+                <PropInput
+                  id="prop-maxusers"
+                  type="number"
+                  value={field.maxUsers ?? 5}
+                  onChange={(v) => onUpdate({ maxUsers: v ? parseInt(v) : 5 })}
+                  placeholder="5"
+                />
+                <p className="text-[10px] text-gray-400 mt-0.5">Maximum number of users that can be selected</p>
+              </div>
+              <PropCheckbox
+                label="Allow reordering"
+                checked={field.orderable ?? true}
+                onChange={(v) => onUpdate({ orderable: v })}
+              />
+            </>
+          )}
+          {otherUserPickerFields.length > 0 && (
+            <div>
+              <PropLabel>Exclude users from</PropLabel>
+              <div className="space-y-1.5 mt-1">
+                {otherUserPickerFields.map((f) => (
+                  <label key={f.id} className="flex items-center gap-2 cursor-pointer group">
+                    <input
+                      type="checkbox"
+                      checked={(field.excludeFields ?? []).includes(f.id)}
+                      onChange={(e) => {
+                        const current = field.excludeFields ?? [];
+                        const next = e.target.checked
+                          ? [...current, f.id]
+                          : current.filter((id) => id !== f.id);
+                        onUpdate({ excludeFields: next.length ? next : undefined });
+                      }}
+                      className="rounded border-gray-300 dark:border-gray-600 text-[#02773b] focus:ring-[#02773b]/30 w-4 h-4"
+                    />
+                    <span className="text-sm text-gray-700 dark:text-gray-300 group-hover:text-gray-900 dark:group-hover:text-gray-100 transition-colors truncate">
+                      {f.label} ({f.type === "user_picker" ? "Single" : "Multi"})
+                    </span>
+                  </label>
+                ))}
+              </div>
+              <p className="text-[10px] text-gray-400 mt-1">Users selected in checked fields will be excluded from this picker</p>
+            </div>
+          )}
+        </CollapsibleSection>
+      )}
+
       {/* Validation */}
-      {!isLayout && (
+      {!isLayout && !isAnyUserPicker && (
         <CollapsibleSection title="Validation">
           <PropCheckbox
             label="Required"
@@ -1452,97 +1612,246 @@ function PropertiesPanel({
         </CollapsibleSection>
       )}
 
+      {/* Validation for user pickers (just Required) */}
+      {isAnyUserPicker && (
+        <CollapsibleSection title="Validation">
+          <PropCheckbox
+            label="Required"
+            checked={!!field.required}
+            onChange={(v) => onUpdate({ required: v })}
+          />
+        </CollapsibleSection>
+      )}
+
       {/* Options (for select, multiselect, radio, checkbox) */}
       {isSelection && (
         <CollapsibleSection title="Options">
-          <div className="space-y-2">
-            {(field.options ?? []).map((opt, i) => (
-              <div key={i} className="flex items-center gap-1.5">
-                <div className="flex-1 grid grid-cols-2 gap-1">
-                  <input
-                    type="text"
-                    value={opt.label}
-                    onChange={(e) => {
-                      const newOpts = [...(field.options ?? [])];
-                      newOpts[i] = {
-                        ...newOpts[i],
-                        label: e.target.value,
-                        value: slugify(e.target.value),
-                      };
-                      onUpdate({ options: newOpts });
-                    }}
-                    placeholder="Label"
-                    className="h-7 rounded border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-800 px-2 text-xs text-gray-900 dark:text-gray-100 placeholder:text-gray-400 focus:border-[#02773b] focus:ring-1 focus:ring-[#02773b]/30 outline-none transition-colors"
-                  />
-                  <input
-                    type="text"
-                    value={opt.value}
-                    onChange={(e) => {
-                      const newOpts = [...(field.options ?? [])];
-                      newOpts[i] = { ...newOpts[i], value: e.target.value };
-                      onUpdate({ options: newOpts });
-                    }}
-                    placeholder="Value"
-                    className="h-7 rounded border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-800 px-2 text-xs text-gray-900 dark:text-gray-100 font-mono placeholder:text-gray-400 focus:border-[#02773b] focus:ring-1 focus:ring-[#02773b]/30 outline-none transition-colors"
-                  />
-                </div>
-                {/* Move option up */}
-                <button
-                  onClick={() => {
-                    if (i === 0) return;
-                    const newOpts = [...(field.options ?? [])];
-                    [newOpts[i - 1], newOpts[i]] = [newOpts[i], newOpts[i - 1]];
-                    onUpdate({ options: newOpts });
-                  }}
-                  disabled={i === 0}
-                  className="p-0.5 rounded text-gray-400 hover:text-gray-600 disabled:opacity-30"
-                  title="Move up"
-                >
-                  <IconChevronUp className="w-3 h-3" />
-                </button>
-                {/* Move option down */}
-                <button
-                  onClick={() => {
-                    const opts = field.options ?? [];
-                    if (i >= opts.length - 1) return;
-                    const newOpts = [...opts];
-                    [newOpts[i], newOpts[i + 1]] = [newOpts[i + 1], newOpts[i]];
-                    onUpdate({ options: newOpts });
-                  }}
-                  disabled={i >= (field.options ?? []).length - 1}
-                  className="p-0.5 rounded text-gray-400 hover:text-gray-600 disabled:opacity-30"
-                  title="Move down"
-                >
-                  <IconChevronDown className="w-3 h-3" />
-                </button>
-                {/* Remove option */}
-                <button
-                  onClick={() => {
-                    const newOpts = (field.options ?? []).filter((_, j) => j !== i);
-                    onUpdate({ options: newOpts });
-                  }}
-                  className="p-0.5 rounded text-gray-400 hover:text-red-500"
-                  title="Remove option"
-                >
-                  <IconMinus className="w-3 h-3" />
-                </button>
-              </div>
-            ))}
+          {/* Data Source Toggle */}
+          <div>
+            <PropLabel>Option Source</PropLabel>
+            <div className="flex rounded-lg overflow-hidden border border-gray-300 dark:border-gray-600">
+              <button
+                type="button"
+                onClick={() => onUpdate({ dataSource: undefined })}
+                className={`flex-1 py-1.5 text-xs font-medium transition-colors ${
+                  !field.dataSource
+                    ? "bg-[#02773b] text-white"
+                    : "bg-white dark:bg-gray-800 text-gray-600 dark:text-gray-300 hover:bg-gray-50 dark:hover:bg-gray-700"
+                }`}
+              >
+                Static
+              </button>
+              <button
+                type="button"
+                onClick={() => onUpdate({ dataSource: { type: "departments" }, options: undefined })}
+                className={`flex-1 py-1.5 text-xs font-medium transition-colors border-l border-gray-300 dark:border-gray-600 ${
+                  field.dataSource
+                    ? "bg-[#02773b] text-white"
+                    : "bg-white dark:bg-gray-800 text-gray-600 dark:text-gray-300 hover:bg-gray-50 dark:hover:bg-gray-700"
+                }`}
+              >
+                Dynamic
+              </button>
+            </div>
           </div>
-          <button
-            type="button"
-            onClick={() => {
-              const newOpts = [
-                ...(field.options ?? []),
-                { label: `Option ${(field.options ?? []).length + 1}`, value: `option_${(field.options ?? []).length + 1}` },
-              ];
-              onUpdate({ options: newOpts });
-            }}
-            className="flex items-center gap-1.5 text-xs font-medium text-[#02773b] hover:text-[#026332] transition-colors"
-          >
-            <IconPlus className="w-3.5 h-3.5" />
-            Add option
-          </button>
+
+          {/* Dynamic data source configuration */}
+          {field.dataSource && (
+            <>
+              <div>
+                <PropLabel>Data Source</PropLabel>
+                <select
+                  value={field.dataSource.type}
+                  onChange={(e) => {
+                    const dsType = e.target.value as FormField["dataSource"] extends { type: infer T } ? T : never;
+                    onUpdate({
+                      dataSource: {
+                        type: dsType as any,
+                        ...(dsType === "api" ? { endpoint: "", labelField: "name", valueField: "id" } : {}),
+                        ...(dsType === "users" ? { dependsOn: "" } : {}),
+                      },
+                    });
+                  }}
+                  className="w-full h-8 rounded-lg border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-800 px-2 text-xs text-gray-900 dark:text-gray-100 focus:border-[#02773b] focus:ring-1 focus:ring-[#02773b]/30 outline-none transition-colors"
+                >
+                  <option value="departments">Departments</option>
+                  <option value="users">Users (by Department)</option>
+                  <option value="roles">Roles</option>
+                  <option value="casefolders">Casefolders</option>
+                  <option value="api">Custom API</option>
+                </select>
+              </div>
+
+              {/* Description of selected source */}
+              <div className="p-2 rounded-lg bg-blue-50 dark:bg-blue-950/20 border border-blue-100 dark:border-blue-900/30">
+                <p className="text-[10px] text-blue-600 dark:text-blue-400 leading-relaxed">
+                  {field.dataSource.type === "departments" && "Fetches all departments from the system. Options auto-update as departments are added."}
+                  {field.dataSource.type === "users" && "Fetches users filtered by a department field. Set 'Depends on' to link to a department dropdown."}
+                  {field.dataSource.type === "roles" && "Fetches all roles defined in the system."}
+                  {field.dataSource.type === "casefolders" && "Fetches all active casefolder names."}
+                  {field.dataSource.type === "api" && "Fetches options from a custom API endpoint. Response must be a JSON array."}
+                </p>
+              </div>
+
+              {/* Users: depends on */}
+              {field.dataSource.type === "users" && (
+                <div>
+                  <PropLabel>Depends On (Department Field)</PropLabel>
+                  <select
+                    value={field.dataSource.dependsOn ?? ""}
+                    onChange={(e) =>
+                      onUpdate({
+                        dataSource: { ...field.dataSource!, dependsOn: e.target.value || undefined },
+                      })
+                    }
+                    className="w-full h-8 rounded-lg border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-800 px-2 text-xs text-gray-900 dark:text-gray-100 focus:border-[#02773b] focus:ring-1 focus:ring-[#02773b]/30 outline-none transition-colors"
+                  >
+                    <option value="">Select a field...</option>
+                    {allFields
+                      .filter((f) => f.id !== field.id && (f.type === "select" || f.type === "text"))
+                      .map((f) => (
+                        <option key={f.id} value={f.name}>
+                          {f.label} ({f.name})
+                        </option>
+                      ))}
+                  </select>
+                  <p className="text-[10px] text-gray-400 mt-0.5">
+                    When user selects a department in that field, this dropdown populates with its users
+                  </p>
+                </div>
+              )}
+
+              {/* Custom API */}
+              {field.dataSource.type === "api" && (
+                <>
+                  <div>
+                    <PropLabel htmlFor="prop-ds-endpoint">API Endpoint</PropLabel>
+                    <PropInput
+                      id="prop-ds-endpoint"
+                      value={field.dataSource.endpoint ?? ""}
+                      onChange={(v) =>
+                        onUpdate({ dataSource: { ...field.dataSource!, endpoint: v } })
+                      }
+                      placeholder="/api/custom/options"
+                    />
+                  </div>
+                  <div className="grid grid-cols-2 gap-2">
+                    <div>
+                      <PropLabel>Label Field</PropLabel>
+                      <PropInput
+                        value={field.dataSource.labelField ?? "name"}
+                        onChange={(v) =>
+                          onUpdate({ dataSource: { ...field.dataSource!, labelField: v || "name" } })
+                        }
+                        placeholder="name"
+                      />
+                    </div>
+                    <div>
+                      <PropLabel>Value Field</PropLabel>
+                      <PropInput
+                        value={field.dataSource.valueField ?? "id"}
+                        onChange={(v) =>
+                          onUpdate({ dataSource: { ...field.dataSource!, valueField: v || "id" } })
+                        }
+                        placeholder="id"
+                      />
+                    </div>
+                  </div>
+                </>
+              )}
+            </>
+          )}
+
+          {/* Static options (only when not using data source) */}
+          {!field.dataSource && (
+            <>
+              <div className="space-y-2">
+                {(field.options ?? []).map((opt, i) => (
+                  <div key={i} className="flex items-center gap-1.5">
+                    <div className="flex-1 grid grid-cols-2 gap-1">
+                      <input
+                        type="text"
+                        value={opt.label}
+                        onChange={(e) => {
+                          const newOpts = [...(field.options ?? [])];
+                          newOpts[i] = {
+                            ...newOpts[i],
+                            label: e.target.value,
+                            value: slugify(e.target.value),
+                          };
+                          onUpdate({ options: newOpts });
+                        }}
+                        placeholder="Label"
+                        className="h-7 rounded border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-800 px-2 text-xs text-gray-900 dark:text-gray-100 placeholder:text-gray-400 focus:border-[#02773b] focus:ring-1 focus:ring-[#02773b]/30 outline-none transition-colors"
+                      />
+                      <input
+                        type="text"
+                        value={opt.value}
+                        onChange={(e) => {
+                          const newOpts = [...(field.options ?? [])];
+                          newOpts[i] = { ...newOpts[i], value: e.target.value };
+                          onUpdate({ options: newOpts });
+                        }}
+                        placeholder="Value"
+                        className="h-7 rounded border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-800 px-2 text-xs text-gray-900 dark:text-gray-100 font-mono placeholder:text-gray-400 focus:border-[#02773b] focus:ring-1 focus:ring-[#02773b]/30 outline-none transition-colors"
+                      />
+                    </div>
+                    <button
+                      onClick={() => {
+                        if (i === 0) return;
+                        const newOpts = [...(field.options ?? [])];
+                        [newOpts[i - 1], newOpts[i]] = [newOpts[i], newOpts[i - 1]];
+                        onUpdate({ options: newOpts });
+                      }}
+                      disabled={i === 0}
+                      className="p-0.5 rounded text-gray-400 hover:text-gray-600 disabled:opacity-30"
+                      title="Move up"
+                    >
+                      <IconChevronUp className="w-3 h-3" />
+                    </button>
+                    <button
+                      onClick={() => {
+                        const opts = field.options ?? [];
+                        if (i >= opts.length - 1) return;
+                        const newOpts = [...opts];
+                        [newOpts[i], newOpts[i + 1]] = [newOpts[i + 1], newOpts[i]];
+                        onUpdate({ options: newOpts });
+                      }}
+                      disabled={i >= (field.options ?? []).length - 1}
+                      className="p-0.5 rounded text-gray-400 hover:text-gray-600 disabled:opacity-30"
+                      title="Move down"
+                    >
+                      <IconChevronDown className="w-3 h-3" />
+                    </button>
+                    <button
+                      onClick={() => {
+                        const newOpts = (field.options ?? []).filter((_, j) => j !== i);
+                        onUpdate({ options: newOpts });
+                      }}
+                      className="p-0.5 rounded text-gray-400 hover:text-red-500"
+                      title="Remove option"
+                    >
+                      <IconMinus className="w-3 h-3" />
+                    </button>
+                  </div>
+                ))}
+              </div>
+              <button
+                type="button"
+                onClick={() => {
+                  const newOpts = [
+                    ...(field.options ?? []),
+                    { label: `Option ${(field.options ?? []).length + 1}`, value: `option_${(field.options ?? []).length + 1}` },
+                  ];
+                  onUpdate({ options: newOpts });
+                }}
+                className="flex items-center gap-1.5 text-xs font-medium text-[#02773b] hover:text-[#026332] transition-colors"
+              >
+                <IconPlus className="w-3.5 h-3.5" />
+                Add option
+              </button>
+            </>
+          )}
         </CollapsibleSection>
       )}
 
@@ -1724,7 +2033,7 @@ function PropertiesPanel({
       )}
 
       {/* Default Value */}
-      {!isLayout && (
+      {!isLayout && !isAnyUserPicker && (
         <CollapsibleSection title="Default Value" defaultOpen={false}>
           <div>
             <PropLabel>Default value</PropLabel>
@@ -1842,7 +2151,8 @@ function renderPreviewField(
   isFieldVisible: (f: FormField, v: Record<string, string>) => boolean,
   setValue: (name: string, value: string) => void,
   tableRows: Record<string, Record<string, string>[]>,
-  setTableRows: React.Dispatch<React.SetStateAction<Record<string, Record<string, string>[]>>>
+  setTableRows: React.Dispatch<React.SetStateAction<Record<string, Record<string, string>[]>>>,
+  allFields?: FormField[]
 ) {
   if (!isFieldVisible(field, values)) return null;
   const isHalf = field.width === "half";
@@ -1858,6 +2168,64 @@ function renderPreviewField(
   }
   if (field.type === "divider") {
     return <div key={field.id} className="w-full px-2 mb-4"><hr className="border-gray-200 dark:border-gray-700" /></div>;
+  }
+  if (field.type === "step") {
+    const stepNumber = allFields ? allFields.filter((f) => f.type === "step").indexOf(field) + 1 : 1;
+    return (
+      <div key={field.id} className="w-full px-2 mt-6 mb-2">
+        <div className="flex items-center gap-3 p-3 bg-[#02773b]/5 border border-[#02773b]/20 rounded-lg">
+          <div className="w-8 h-8 rounded-full bg-[#02773b] text-white flex items-center justify-center text-sm font-bold">{stepNumber}</div>
+          <div>
+            <h3 className="font-semibold text-gray-900 dark:text-gray-100">{field.label}</h3>
+            {field.helpText && <p className="text-xs text-gray-500">{field.helpText}</p>}
+          </div>
+        </div>
+      </div>
+    );
+  }
+  if (field.type === "user_picker") {
+    return (
+      <div key={field.id} className={wrapClass}>
+        <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">
+          {field.label}{field.required && <span className="text-red-500 ml-0.5">*</span>}
+        </label>
+        <div className="space-y-2">
+          <select disabled className={inputBase}>
+            <option>{field.placeholder || "Select department..."}</option>
+          </select>
+          <select disabled className={inputBase}>
+            <option>Select user...</option>
+          </select>
+        </div>
+        {field.helpText && <p className="text-xs text-gray-400 mt-1">{field.helpText}</p>}
+      </div>
+    );
+  }
+  if (field.type === "multi_user_picker") {
+    return (
+      <div key={field.id} className="w-full px-2 mb-4">
+        <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">
+          {field.label}{field.required && <span className="text-red-500 ml-0.5">*</span>}
+        </label>
+        <div className="rounded-lg border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-800 p-3">
+          <div className="flex flex-wrap gap-2 mb-2">
+            <span className="inline-flex items-center gap-1 px-2.5 py-1 rounded-full bg-[#02773b]/10 text-[#02773b] text-xs font-medium">
+              <svg className="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" strokeWidth={1.5} stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" d="M15.75 6a3.75 3.75 0 1 1-7.5 0 3.75 3.75 0 0 1 7.5 0ZM4.501 20.118a7.5 7.5 0 0 1 14.998 0A17.933 17.933 0 0 1 12 21.75c-2.676 0-5.216-.584-7.499-1.632Z" /></svg>
+              Example User
+              <button type="button" className="ml-0.5 text-[#02773b]/60 hover:text-[#02773b]">&times;</button>
+            </span>
+          </div>
+          <div className="flex items-center justify-between">
+            <button type="button" className="inline-flex items-center gap-1.5 text-xs font-medium text-[#02773b] hover:text-[#026332] transition-colors">
+              <svg className="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" strokeWidth={2} stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" d="M12 4.5v15m7.5-7.5h-15" /></svg>
+              Add User
+            </button>
+            <span className="text-[10px] text-gray-400">Max {field.maxUsers ?? 5} users</span>
+          </div>
+        </div>
+        {field.helpText && <p className="text-xs text-gray-400 mt-1">{field.helpText}</p>}
+      </div>
+    );
   }
 
   return (
@@ -1978,7 +2346,7 @@ function PreviewMode({
                     <div className="flex-1 h-px bg-[#02773b]/10" />
                   </div>
                   <div className="flex flex-wrap -mx-2">
-                    {fields.filter((f) => f.fieldLevel !== "document").map((field) => renderPreviewField(field, values, isFieldVisible, setValue, tableRows, setTableRows))}
+                    {fields.filter((f) => f.fieldLevel !== "document").map((field) => renderPreviewField(field, values, isFieldVisible, setValue, tableRows, setTableRows, fields))}
                   </div>
                 </div>
               )}
@@ -1992,7 +2360,7 @@ function PreviewMode({
                     <div className="flex-1 h-px bg-blue-500/10" />
                   </div>
                   <div className="flex flex-wrap -mx-2">
-                    {fields.filter((f) => f.fieldLevel === "document").map((field) => renderPreviewField(field, values, isFieldVisible, setValue, tableRows, setTableRows))}
+                    {fields.filter((f) => f.fieldLevel === "document").map((field) => renderPreviewField(field, values, isFieldVisible, setValue, tableRows, setTableRows, fields))}
                   </div>
                 </div>
               )}

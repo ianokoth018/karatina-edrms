@@ -6,767 +6,77 @@ import { useRouter } from "next/navigation";
 import RichTextEditor from "@/components/memo/rich-text-editor";
 import MemoPreview from "@/components/memo/memo-preview";
 import MemoDocument from "@/components/memo/memo-document";
-
-/* ========================================================================== */
-/*  Types                                                                     */
-/* ========================================================================== */
-
-interface UserOption {
-  id: string;
-  name: string;
-  displayName: string;
-  email: string;
-  department: string | null;
-  jobTitle: string | null;
-}
+import { DepartmentUserSelect, type UserOption } from "@/components/shared/department-user-select";
+import { DepartmentUserPicker } from "@/components/shared/department-user-picker";
+import { MultiUserInput } from "@/components/shared/multi-user-input";
+import { getDepartmentMemoCode, getDepartmentOffice } from "@/lib/departments";
+import { isSenderMoreSenior } from "@/lib/role-hierarchy";
 
 /* ========================================================================== */
 /*  Constants                                                                 */
 /* ========================================================================== */
 
-const STEPS = [
+const ADMIN_STEPS = [
   { num: 1, label: "Compose" },
   { num: 2, label: "Review & Generate" },
   { num: 3, label: "Recommenders & Approver" },
   { num: 4, label: "Submit" },
 ];
 
-/** Maps department names to department office title for memo header */
-const DEPARTMENT_MAP: Record<string, { office: string }> = {
-  "Registrar (AA)": {
-    office: "OFFICE OF THE REGISTRAR",
-  },
-  "Vice Chancellor": {
-    office: "OFFICE OF THE VICE CHANCELLOR",
-  },
-  "Deputy Vice Chancellor (ARSA)": {
-    office: "OFFICE OF THE DEPUTY VICE CHANCELLOR",
-  },
-  "Deputy Vice Chancellor (AFD)": {
-    office: "OFFICE OF THE DEPUTY VICE CHANCELLOR",
-  },
-  Finance: {
-    office: "OFFICE OF THE FINANCE OFFICER",
-  },
-  ICT: {
-    office: "DIRECTORATE OF ICT",
-  },
-  "Human Resources": {
-    office: "DIRECTORATE OF HUMAN RESOURCES",
-  },
-};
+const COMMUNICATING_STEPS = [
+  { num: 1, label: "Compose" },
+  { num: 2, label: "Review & Generate" },
+  { num: 3, label: "Submit" },
+];
 
-/* ========================================================================== */
-/*  DepartmentUserSelect — pick department, then pick user                    */
-/* ========================================================================== */
+/* Department map is now centralised in lib/departments.ts */
 
-interface DepartmentInfo {
-  name: string;
-  userCount: number;
-}
-
-function DepartmentUserSelect({
-  onSelect,
-  excludeIds,
-  selectedUser,
-  onClear,
-}: {
-  onSelect: (user: UserOption) => void;
-  excludeIds: string[];
-  selectedUser: UserOption | null;
-  onClear: () => void;
-}) {
-  const [departments, setDepartments] = useState<DepartmentInfo[]>([]);
-  const [selectedDept, setSelectedDept] = useState("");
-  const [deptQuery, setDeptQuery] = useState("");
-  const [isDeptOpen, setIsDeptOpen] = useState(false);
-  const [deptUsers, setDeptUsers] = useState<UserOption[]>([]);
-  const [isLoadingDepts, setIsLoadingDepts] = useState(false);
-  const [isLoadingUsers, setIsLoadingUsers] = useState(false);
-  const [userFilter, setUserFilter] = useState("");
-  const deptWrapperRef = useRef<HTMLDivElement>(null);
-
-  // Close dropdown on outside click
-  useEffect(() => {
-    function handleClickOutside(e: MouseEvent) {
-      if (
-        deptWrapperRef.current &&
-        !deptWrapperRef.current.contains(e.target as Node)
-      ) {
-        setIsDeptOpen(false);
-        // Reset query text to selected department name if one is selected
-        if (selectedDept) setDeptQuery(selectedDept);
-        else setDeptQuery("");
-      }
-    }
-    document.addEventListener("mousedown", handleClickOutside);
-    return () => document.removeEventListener("mousedown", handleClickOutside);
-  }, [selectedDept]);
-
-  // Fetch departments on mount
-  useEffect(() => {
-    setIsLoadingDepts(true);
-    fetch("/api/users/search?departments=true")
-      .then((r) => r.json())
-      .then((data) => setDepartments(data.departments ?? []))
-      .catch(() => {})
-      .finally(() => setIsLoadingDepts(false));
-  }, []);
-
-  // Fetch users when department changes
-  useEffect(() => {
-    if (!selectedDept) {
-      setDeptUsers([]);
-      return;
-    }
-    setIsLoadingUsers(true);
-    const excludeParam = excludeIds.length
-      ? `&exclude=${excludeIds.join(",")}`
-      : "";
-    fetch(
-      `/api/users/search?department=${encodeURIComponent(selectedDept)}&limit=50${excludeParam}`
-    )
-      .then((r) => r.json())
-      .then((data) => setDeptUsers(data.users ?? []))
-      .catch(() => {})
-      .finally(() => setIsLoadingUsers(false));
-  }, [selectedDept, excludeIds]);
-
-  function getInitials(name: string) {
-    return name
-      .split(" ")
-      .map((n) => n[0])
-      .join("")
-      .toUpperCase()
-      .slice(0, 2);
-  }
-
-  function handleSelectDept(dept: DepartmentInfo) {
-    setSelectedDept(dept.name);
-    setDeptQuery(dept.name);
-    setIsDeptOpen(false);
-    setUserFilter("");
-  }
-
-  function handleClearDept() {
-    setSelectedDept("");
-    setDeptQuery("");
-    setDeptUsers([]);
-    setUserFilter("");
-  }
-
-  const filteredDepts = deptQuery && deptQuery !== selectedDept
-    ? departments.filter((d) =>
-        d.name.toLowerCase().includes(deptQuery.toLowerCase())
-      )
-    : departments;
-
-  const filteredUsers = userFilter
-    ? deptUsers.filter((u) =>
-        u.displayName.toLowerCase().includes(userFilter.toLowerCase()) ||
-        (u.jobTitle?.toLowerCase().includes(userFilter.toLowerCase()) ?? false)
-      )
-    : deptUsers;
-
-  // Selected user display
-  if (selectedUser) {
-    return (
-      <div className="flex items-center gap-3 px-4 py-3 rounded-xl border border-gray-200 dark:border-gray-700 bg-gray-50 dark:bg-gray-800/60">
-        <div className="w-9 h-9 rounded-full bg-[#02773b] flex items-center justify-center text-white text-sm font-semibold flex-shrink-0">
-          {getInitials(selectedUser.displayName)}
-        </div>
-        <div className="flex-1 min-w-0">
-          <p className="text-sm font-medium text-gray-900 dark:text-gray-100 truncate">
-            {selectedUser.displayName}
-          </p>
-          <p className="text-xs text-gray-500 dark:text-gray-400 truncate">
-            {[selectedUser.jobTitle, selectedUser.department]
-              .filter(Boolean)
-              .join(" - ") || selectedUser.email}
-          </p>
-        </div>
-        <button
-          type="button"
-          onClick={() => {
-            onClear();
-            handleClearDept();
-          }}
-          className="p-1.5 rounded-lg text-gray-400 hover:text-red-500 hover:bg-red-50 dark:hover:bg-red-950/30 transition-colors"
-          title="Remove"
-        >
-          <svg
-            className="w-4 h-4"
-            fill="none"
-            viewBox="0 0 24 24"
-            strokeWidth={2}
-            stroke="currentColor"
-          >
-            <path
-              strokeLinecap="round"
-              strokeLinejoin="round"
-              d="M6 18 18 6M6 6l12 12"
-            />
-          </svg>
-        </button>
-      </div>
-    );
-  }
-
-  return (
-    <div className="space-y-3">
-      {/* Department combobox */}
-      <div ref={deptWrapperRef} className="relative">
-        <div className="relative">
-          <div className="pointer-events-none absolute left-3.5 top-1/2 -translate-y-1/2 text-gray-400">
-            <svg
-              className="w-4 h-4"
-              fill="none"
-              viewBox="0 0 24 24"
-              strokeWidth={1.5}
-              stroke="currentColor"
-            >
-              <path
-                strokeLinecap="round"
-                strokeLinejoin="round"
-                d="M3.75 21h16.5M4.5 3h15M5.25 3v18m13.5-18v18M9 6.75h1.5m-1.5 3h1.5m-1.5 3h1.5m3-6H15m-1.5 3H15m-1.5 3H15M9 21v-3.375c0-.621.504-1.125 1.125-1.125h3.75c.621 0 1.125.504 1.125 1.125V21"
-              />
-            </svg>
-          </div>
-          <input
-            type="text"
-            value={deptQuery}
-            onChange={(e) => {
-              setDeptQuery(e.target.value);
-              setIsDeptOpen(true);
-              if (!e.target.value.trim()) {
-                setSelectedDept("");
-                setDeptUsers([]);
-              }
-            }}
-            onFocus={() => setIsDeptOpen(true)}
-            placeholder={isLoadingDepts ? "Loading departments..." : "Type to search departments..."}
-            className="w-full h-11 rounded-xl border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-900 pl-10 pr-10 text-sm text-gray-900 dark:text-gray-100 placeholder:text-gray-400 dark:placeholder:text-gray-500 transition-all focus:border-[#02773b] focus:ring-2 focus:ring-[#02773b]/20 outline-none"
-          />
-          {selectedDept ? (
-            <button
-              type="button"
-              onClick={handleClearDept}
-              className="absolute right-3 top-1/2 -translate-y-1/2 text-gray-400 hover:text-gray-600 dark:hover:text-gray-300 transition-colors"
-            >
-              <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" strokeWidth={2} stroke="currentColor">
-                <path strokeLinecap="round" strokeLinejoin="round" d="M6 18 18 6M6 6l12 12" />
-              </svg>
-            </button>
-          ) : (
-            <div className="pointer-events-none absolute right-3.5 top-1/2 -translate-y-1/2 text-gray-400">
-              <svg
-                className="w-4 h-4"
-                fill="none"
-                viewBox="0 0 24 24"
-                strokeWidth={1.5}
-                stroke="currentColor"
-              >
-                <path strokeLinecap="round" strokeLinejoin="round" d="m19.5 8.25-7.5 7.5-7.5-7.5" />
-              </svg>
-            </div>
-          )}
-        </div>
-
-        {/* Department dropdown */}
-        {isDeptOpen && (
-          <div className="absolute z-50 mt-1.5 w-full max-h-60 overflow-y-auto rounded-xl border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-900 shadow-xl">
-            {filteredDepts.length > 0 ? (
-              filteredDepts.map((dept) => (
-                <button
-                  key={dept.name}
-                  type="button"
-                  onClick={() => handleSelectDept(dept)}
-                  className={`w-full text-left flex items-center justify-between px-4 py-2.5 transition-colors first:rounded-t-xl last:rounded-b-xl ${
-                    dept.name === selectedDept
-                      ? "bg-[#02773b]/5 dark:bg-[#02773b]/10"
-                      : "hover:bg-gray-50 dark:hover:bg-gray-800"
-                  }`}
-                >
-                  <div className="flex items-center gap-3 min-w-0">
-                    <div className="w-8 h-8 rounded-lg bg-[#02773b]/10 dark:bg-[#02773b]/20 flex items-center justify-center flex-shrink-0">
-                      <svg
-                        className="w-4 h-4 text-[#02773b] dark:text-emerald-400"
-                        fill="none"
-                        viewBox="0 0 24 24"
-                        strokeWidth={1.5}
-                        stroke="currentColor"
-                      >
-                        <path
-                          strokeLinecap="round"
-                          strokeLinejoin="round"
-                          d="M3.75 21h16.5M4.5 3h15M5.25 3v18m13.5-18v18M9 6.75h1.5m-1.5 3h1.5m-1.5 3h1.5m3-6H15m-1.5 3H15m-1.5 3H15M9 21v-3.375c0-.621.504-1.125 1.125-1.125h3.75c.621 0 1.125.504 1.125 1.125V21"
-                        />
-                      </svg>
-                    </div>
-                    <span className="text-sm font-medium text-gray-900 dark:text-gray-100 truncate">
-                      {dept.name}
-                    </span>
-                  </div>
-                  <span className="text-xs text-gray-400 dark:text-gray-500 flex-shrink-0 ml-2">
-                    {dept.userCount} {dept.userCount === 1 ? "user" : "users"}
-                  </span>
-                </button>
-              ))
-            ) : (
-              <div className="px-4 py-3 text-center">
-                <p className="text-sm text-gray-500 dark:text-gray-400">
-                  No departments match &ldquo;{deptQuery}&rdquo;
-                </p>
-              </div>
-            )}
-          </div>
-        )}
-      </div>
-
-      {/* User list for selected department */}
-      {selectedDept && !isDeptOpen && (
-        <div className="rounded-xl border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-900 overflow-hidden">
-          {/* Filter within department */}
-          {deptUsers.length > 3 && (
-            <div className="px-3 pt-3 pb-1">
-              <div className="relative">
-                <div className="pointer-events-none absolute left-3 top-1/2 -translate-y-1/2 text-gray-400">
-                  <svg className="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" strokeWidth={1.5} stroke="currentColor">
-                    <path strokeLinecap="round" strokeLinejoin="round" d="m21 21-5.197-5.197m0 0A7.5 7.5 0 1 0 5.196 5.196a7.5 7.5 0 0 0 10.607 10.607Z" />
-                  </svg>
-                </div>
-                <input
-                  type="text"
-                  value={userFilter}
-                  onChange={(e) => setUserFilter(e.target.value)}
-                  placeholder="Filter by name or title..."
-                  className="w-full h-9 rounded-lg border border-gray-200 dark:border-gray-700 bg-gray-50 dark:bg-gray-800 pl-9 pr-3 text-xs text-gray-900 dark:text-gray-100 placeholder:text-gray-400 dark:placeholder:text-gray-500 outline-none focus:border-[#02773b] focus:ring-1 focus:ring-[#02773b]/20"
-                />
-              </div>
-            </div>
-          )}
-
-          {isLoadingUsers ? (
-            <div className="flex items-center justify-center py-6">
-              <div className="w-5 h-5 border-2 border-[#02773b] border-t-transparent rounded-full animate-spin" />
-              <span className="ml-2 text-sm text-gray-500 dark:text-gray-400">
-                Loading users...
-              </span>
-            </div>
-          ) : deptUsers.length === 0 ? (
-            <div className="py-6 text-center">
-              <p className="text-sm text-gray-500 dark:text-gray-400">
-                No users in this department
-              </p>
-            </div>
-          ) : filteredUsers.length === 0 ? (
-            <div className="py-6 text-center">
-              <p className="text-sm text-gray-500 dark:text-gray-400">
-                No users match &ldquo;{userFilter}&rdquo;
-              </p>
-            </div>
-          ) : (
-            <div className="max-h-48 overflow-y-auto">
-              {filteredUsers.map((user) => (
-                <button
-                  key={user.id}
-                  type="button"
-                  onClick={() => onSelect(user)}
-                  className="w-full text-left flex items-center gap-3 px-4 py-2.5 hover:bg-[#02773b]/5 dark:hover:bg-[#02773b]/10 transition-colors border-b border-gray-100 dark:border-gray-800 last:border-b-0"
-                >
-                  <div className="w-8 h-8 rounded-full bg-[#02773b]/10 dark:bg-[#02773b]/20 flex items-center justify-center text-[#02773b] dark:text-emerald-400 text-xs font-semibold flex-shrink-0">
-                    {getInitials(user.displayName)}
-                  </div>
-                  <div className="flex-1 min-w-0">
-                    <p className="text-sm font-medium text-gray-900 dark:text-gray-100 truncate">
-                      {user.displayName}
-                    </p>
-                    <p className="text-xs text-gray-500 dark:text-gray-400 truncate">
-                      {user.jobTitle || user.email}
-                    </p>
-                  </div>
-                  <svg
-                    className="w-4 h-4 text-gray-300 dark:text-gray-600 flex-shrink-0"
-                    fill="none"
-                    viewBox="0 0 24 24"
-                    strokeWidth={1.5}
-                    stroke="currentColor"
-                  >
-                    <path
-                      strokeLinecap="round"
-                      strokeLinejoin="round"
-                      d="m8.25 4.5 7.5 7.5-7.5 7.5"
-                    />
-                  </svg>
-                </button>
-              ))}
-            </div>
-          )}
-        </div>
-      )}
-    </div>
-  );
-}
-
-/* ========================================================================== */
-/*  DepartmentUserPicker — pick dept then user, resets after selection         */
-/*  (used for adding CC, recommenders — no persistent selected card)           */
-/* ========================================================================== */
-
-function DepartmentUserPicker({
-  placeholder,
-  onSelect,
-  excludeIds,
-}: {
-  placeholder?: string;
-  onSelect: (user: UserOption) => void;
-  excludeIds: string[];
-}) {
-  const [departments, setDepartments] = useState<DepartmentInfo[]>([]);
-  const [selectedDept, setSelectedDept] = useState("");
-  const [deptQuery, setDeptQuery] = useState("");
-  const [isDeptOpen, setIsDeptOpen] = useState(false);
-  const [deptUsers, setDeptUsers] = useState<UserOption[]>([]);
-  const [isLoadingDepts, setIsLoadingDepts] = useState(false);
-  const [isLoadingUsers, setIsLoadingUsers] = useState(false);
-  const [userFilter, setUserFilter] = useState("");
-  const wrapperRef = useRef<HTMLDivElement>(null);
-
-  useEffect(() => {
-    function handleClickOutside(e: MouseEvent) {
-      if (wrapperRef.current && !wrapperRef.current.contains(e.target as Node)) {
-        setIsDeptOpen(false);
-        if (selectedDept) setDeptQuery(selectedDept);
-        else setDeptQuery("");
-      }
-    }
-    document.addEventListener("mousedown", handleClickOutside);
-    return () => document.removeEventListener("mousedown", handleClickOutside);
-  }, [selectedDept]);
-
-  useEffect(() => {
-    setIsLoadingDepts(true);
-    fetch("/api/users/search?departments=true")
-      .then((r) => r.json())
-      .then((data) => setDepartments(data.departments ?? []))
-      .catch(() => {})
-      .finally(() => setIsLoadingDepts(false));
-  }, []);
-
-  useEffect(() => {
-    if (!selectedDept) {
-      setDeptUsers([]);
-      return;
-    }
-    setIsLoadingUsers(true);
-    const excludeParam = excludeIds.length
-      ? `&exclude=${excludeIds.join(",")}`
-      : "";
-    fetch(
-      `/api/users/search?department=${encodeURIComponent(selectedDept)}&limit=50${excludeParam}`
-    )
-      .then((r) => r.json())
-      .then((data) => setDeptUsers(data.users ?? []))
-      .catch(() => {})
-      .finally(() => setIsLoadingUsers(false));
-  }, [selectedDept, excludeIds]);
-
-  function getInitials(name: string) {
-    return name
-      .split(" ")
-      .map((n) => n[0])
-      .join("")
-      .toUpperCase()
-      .slice(0, 2);
-  }
-
-  function handleSelectDept(dept: DepartmentInfo) {
-    setSelectedDept(dept.name);
-    setDeptQuery(dept.name);
-    setIsDeptOpen(false);
-    setUserFilter("");
-  }
-
-  function handlePickUser(user: UserOption) {
-    onSelect(user);
-    // Reset to allow picking another
-    setSelectedDept("");
-    setDeptQuery("");
-    setDeptUsers([]);
-    setUserFilter("");
-  }
-
-  const filteredDepts = deptQuery && deptQuery !== selectedDept
-    ? departments.filter((d) =>
-        d.name.toLowerCase().includes(deptQuery.toLowerCase())
-      )
-    : departments;
-
-  const filteredUsers = userFilter
-    ? deptUsers.filter((u) =>
-        u.displayName.toLowerCase().includes(userFilter.toLowerCase()) ||
-        (u.jobTitle?.toLowerCase().includes(userFilter.toLowerCase()) ?? false)
-      )
-    : deptUsers;
-
-  return (
-    <div className="space-y-3">
-      <div ref={wrapperRef} className="relative">
-        <div className="relative">
-          <div className="pointer-events-none absolute left-3.5 top-1/2 -translate-y-1/2 text-gray-400">
-            <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" strokeWidth={1.5} stroke="currentColor">
-              <path strokeLinecap="round" strokeLinejoin="round" d="M3.75 21h16.5M4.5 3h15M5.25 3v18m13.5-18v18M9 6.75h1.5m-1.5 3h1.5m-1.5 3h1.5m3-6H15m-1.5 3H15m-1.5 3H15M9 21v-3.375c0-.621.504-1.125 1.125-1.125h3.75c.621 0 1.125.504 1.125 1.125V21" />
-            </svg>
-          </div>
-          <input
-            type="text"
-            value={deptQuery}
-            onChange={(e) => {
-              setDeptQuery(e.target.value);
-              setIsDeptOpen(true);
-              if (!e.target.value.trim()) {
-                setSelectedDept("");
-                setDeptUsers([]);
-              }
-            }}
-            onFocus={() => setIsDeptOpen(true)}
-            placeholder={placeholder ?? (isLoadingDepts ? "Loading departments..." : "Type to search departments...")}
-            className="w-full h-11 rounded-xl border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-900 pl-10 pr-10 text-sm text-gray-900 dark:text-gray-100 placeholder:text-gray-400 dark:placeholder:text-gray-500 transition-all focus:border-[#02773b] focus:ring-2 focus:ring-[#02773b]/20 outline-none"
-          />
-          {selectedDept ? (
-            <button
-              type="button"
-              onClick={() => {
-                setSelectedDept("");
-                setDeptQuery("");
-                setDeptUsers([]);
-                setUserFilter("");
-              }}
-              className="absolute right-3 top-1/2 -translate-y-1/2 text-gray-400 hover:text-gray-600 dark:hover:text-gray-300 transition-colors"
-            >
-              <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" strokeWidth={2} stroke="currentColor">
-                <path strokeLinecap="round" strokeLinejoin="round" d="M6 18 18 6M6 6l12 12" />
-              </svg>
-            </button>
-          ) : (
-            <div className="pointer-events-none absolute right-3.5 top-1/2 -translate-y-1/2 text-gray-400">
-              <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" strokeWidth={1.5} stroke="currentColor">
-                <path strokeLinecap="round" strokeLinejoin="round" d="m19.5 8.25-7.5 7.5-7.5-7.5" />
-              </svg>
-            </div>
-          )}
-        </div>
-
-        {isDeptOpen && (
-          <div className="absolute z-50 mt-1.5 w-full max-h-60 overflow-y-auto rounded-xl border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-900 shadow-xl">
-            {filteredDepts.length > 0 ? (
-              filteredDepts.map((dept) => (
-                <button
-                  key={dept.name}
-                  type="button"
-                  onClick={() => handleSelectDept(dept)}
-                  className={`w-full text-left flex items-center justify-between px-4 py-2.5 transition-colors first:rounded-t-xl last:rounded-b-xl ${
-                    dept.name === selectedDept
-                      ? "bg-[#02773b]/5 dark:bg-[#02773b]/10"
-                      : "hover:bg-gray-50 dark:hover:bg-gray-800"
-                  }`}
-                >
-                  <div className="flex items-center gap-3 min-w-0">
-                    <div className="w-8 h-8 rounded-lg bg-[#02773b]/10 dark:bg-[#02773b]/20 flex items-center justify-center flex-shrink-0">
-                      <svg className="w-4 h-4 text-[#02773b] dark:text-emerald-400" fill="none" viewBox="0 0 24 24" strokeWidth={1.5} stroke="currentColor">
-                        <path strokeLinecap="round" strokeLinejoin="round" d="M3.75 21h16.5M4.5 3h15M5.25 3v18m13.5-18v18M9 6.75h1.5m-1.5 3h1.5m-1.5 3h1.5m3-6H15m-1.5 3H15m-1.5 3H15M9 21v-3.375c0-.621.504-1.125 1.125-1.125h3.75c.621 0 1.125.504 1.125 1.125V21" />
-                      </svg>
-                    </div>
-                    <span className="text-sm font-medium text-gray-900 dark:text-gray-100 truncate">
-                      {dept.name}
-                    </span>
-                  </div>
-                  <span className="text-xs text-gray-400 dark:text-gray-500 flex-shrink-0 ml-2">
-                    {dept.userCount} {dept.userCount === 1 ? "user" : "users"}
-                  </span>
-                </button>
-              ))
-            ) : (
-              <div className="px-4 py-3 text-center">
-                <p className="text-sm text-gray-500 dark:text-gray-400">
-                  No departments match &ldquo;{deptQuery}&rdquo;
-                </p>
-              </div>
-            )}
-          </div>
-        )}
-      </div>
-
-      {selectedDept && !isDeptOpen && (
-        <div className="rounded-xl border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-900 overflow-hidden">
-          {deptUsers.length > 3 && (
-            <div className="px-3 pt-3 pb-1">
-              <div className="relative">
-                <div className="pointer-events-none absolute left-3 top-1/2 -translate-y-1/2 text-gray-400">
-                  <svg className="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" strokeWidth={1.5} stroke="currentColor">
-                    <path strokeLinecap="round" strokeLinejoin="round" d="m21 21-5.197-5.197m0 0A7.5 7.5 0 1 0 5.196 5.196a7.5 7.5 0 0 0 10.607 10.607Z" />
-                  </svg>
-                </div>
-                <input
-                  type="text"
-                  value={userFilter}
-                  onChange={(e) => setUserFilter(e.target.value)}
-                  placeholder="Filter by name or title..."
-                  className="w-full h-9 rounded-lg border border-gray-200 dark:border-gray-700 bg-gray-50 dark:bg-gray-800 pl-9 pr-3 text-xs text-gray-900 dark:text-gray-100 placeholder:text-gray-400 dark:placeholder:text-gray-500 outline-none focus:border-[#02773b] focus:ring-1 focus:ring-[#02773b]/20"
-                />
-              </div>
-            </div>
-          )}
-
-          {isLoadingUsers ? (
-            <div className="flex items-center justify-center py-6">
-              <div className="w-5 h-5 border-2 border-[#02773b] border-t-transparent rounded-full animate-spin" />
-              <span className="ml-2 text-sm text-gray-500 dark:text-gray-400">Loading users...</span>
-            </div>
-          ) : deptUsers.length === 0 ? (
-            <div className="py-6 text-center">
-              <p className="text-sm text-gray-500 dark:text-gray-400">No users in this department</p>
-            </div>
-          ) : filteredUsers.length === 0 ? (
-            <div className="py-6 text-center">
-              <p className="text-sm text-gray-500 dark:text-gray-400">No users match &ldquo;{userFilter}&rdquo;</p>
-            </div>
-          ) : (
-            <div className="max-h-48 overflow-y-auto">
-              {filteredUsers.map((user) => (
-                <button
-                  key={user.id}
-                  type="button"
-                  onClick={() => handlePickUser(user)}
-                  className="w-full text-left flex items-center gap-3 px-4 py-2.5 hover:bg-[#02773b]/5 dark:hover:bg-[#02773b]/10 transition-colors border-b border-gray-100 dark:border-gray-800 last:border-b-0"
-                >
-                  <div className="w-8 h-8 rounded-full bg-[#02773b]/10 dark:bg-[#02773b]/20 flex items-center justify-center text-[#02773b] dark:text-emerald-400 text-xs font-semibold flex-shrink-0">
-                    {getInitials(user.displayName)}
-                  </div>
-                  <div className="flex-1 min-w-0">
-                    <p className="text-sm font-medium text-gray-900 dark:text-gray-100 truncate">{user.displayName}</p>
-                    <p className="text-xs text-gray-500 dark:text-gray-400 truncate">{user.jobTitle || user.email}</p>
-                  </div>
-                  <svg className="w-4 h-4 text-gray-300 dark:text-gray-600 flex-shrink-0" fill="none" viewBox="0 0 24 24" strokeWidth={1.5} stroke="currentColor">
-                    <path strokeLinecap="round" strokeLinejoin="round" d="m8.25 4.5 7.5 7.5-7.5 7.5" />
-                  </svg>
-                </button>
-              ))}
-            </div>
-          )}
-        </div>
-      )}
-    </div>
-  );
-}
-
-/* ========================================================================== */
-/*  Multi-user tag input (for Copy to)                                        */
-/* ========================================================================== */
-
-function MultiUserInput({
-  label,
-  sublabel,
-  users,
-  onAdd,
-  onRemove,
-  excludeIds,
-  tagColor,
-}: {
-  label: string;
-  sublabel?: string;
-  users: UserOption[];
-  onAdd: (user: UserOption) => void;
-  onRemove: (id: string) => void;
-  excludeIds: string[];
-  tagColor: "blue" | "gray";
-}) {
-  const colorMap = {
-    blue: "bg-blue-50 dark:bg-blue-900/20 text-blue-700 dark:text-blue-300",
-    gray: "bg-gray-100 dark:bg-gray-800 text-gray-600 dark:text-gray-400",
-  };
-  const tagClass = colorMap[tagColor];
-
-  return (
-    <div>
-      <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">
-        {label}
-        {sublabel && (
-          <span className="ml-1 text-xs font-normal text-gray-400">
-            {sublabel}
-          </span>
-        )}
-      </label>
-
-      {/* Tags */}
-      {users.length > 0 && (
-        <div className="flex flex-wrap gap-2 mb-2">
-          {users.map((user) => (
-            <span
-              key={user.id}
-              className={`inline-flex items-center gap-1.5 rounded-full px-3 py-1 text-xs font-medium ${tagClass}`}
-            >
-              {user.displayName}
-              <button
-                type="button"
-                onClick={() => onRemove(user.id)}
-                className="opacity-60 hover:opacity-100 transition-opacity"
-              >
-                <svg
-                  className="w-3.5 h-3.5"
-                  fill="none"
-                  viewBox="0 0 24 24"
-                  strokeWidth={2}
-                  stroke="currentColor"
-                >
-                  <path
-                    strokeLinecap="round"
-                    strokeLinejoin="round"
-                    d="M6 18 18 6M6 6l12 12"
-                  />
-                </svg>
-              </button>
-            </span>
-          ))}
-        </div>
-      )}
-
-      {/* Department-based picker to add */}
-      <DepartmentUserPicker
-        placeholder={`Search department to add ${label.toLowerCase()} recipient...`}
-        onSelect={(user) => {
-          if (!users.some((u) => u.id === user.id)) onAdd(user);
-        }}
-        excludeIds={excludeIds}
-      />
-    </div>
-  );
-}
+/* Components DepartmentUserSelect, DepartmentUserPicker, MultiUserInput
+   are imported from @/components/shared/ above */
 
 /* ========================================================================== */
 /*  Main component                                                            */
 /* ========================================================================== */
 
 export default function NewMemoPage() {
-  const { data: session } = useSession();
+  const { data: session, status } = useSession();
   const router = useRouter();
   const printRef = useRef<HTMLDivElement>(null);
 
+  useEffect(() => {
+    if (status === "loading") return;
+    const perms = session?.user?.permissions ?? [];
+    if (!perms.includes("admin:manage") && !perms.includes("memos:create")) {
+      router.replace("/memos");
+    }
+  }, [session, status, router]);
+
+  const [memoType, setMemoType] = useState<"administrative" | "communicating">("administrative");
+  const [memoCategory, setMemoCategory] = useState<"personal" | "departmental">("departmental");
   const [step, setStep] = useState(1);
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
+
+  const STEPS = memoType === "communicating" ? COMMUNICATING_STEPS : ADMIN_STEPS;
 
   // Step 1: Compose
   const [toMode, setToMode] = useState<"search" | "manual">("search");
   const [recipient, setRecipient] = useState<UserOption | null>(null);
   const [manualTo, setManualTo] = useState("");
   const [ccUsers, setCcUsers] = useState<UserOption[]>([]);
+  const [ccDepts, setCcDepts] = useState<string[]>([]);
+  const [bccUsers, setBccUsers] = useState<UserOption[]>([]);
+  const [bccDepts, setBccDepts] = useState<string[]>([]);
   const [department, setDepartment] = useState("");
   const [departmentOffice, setDepartmentOffice] = useState("");
   const [designation, setDesignation] = useState("");
   const [referenceNumber, setReferenceNumber] = useState("");
   const [subject, setSubject] = useState("");
   const [memoBody, setMemoBody] = useState("");
+  const [attachments, setAttachments] = useState<File[]>([]);
+  const [attachmentNames, setAttachmentNames] = useState<Record<number, string>>({});
+  const [renamingIdx, setRenamingIdx] = useState<number | null>(null);
+  const [previewFile, setPreviewFile] = useState<{ url: string; name: string; type: string } | null>(null);
 
   // Step 2: Review & Generate
   const [memoGenerated, setMemoGenerated] = useState(false);
@@ -777,20 +87,48 @@ export default function NewMemoPage() {
   const [approverSameAsRecipient, setApproverSameAsRecipient] = useState(true);
   const [approver, setApprover] = useState<UserOption | null>(null);
 
+  // HOD endorsement (preview step)
+  const [forwardToHod, setForwardToHod] = useState(false);
+  const [myHod, setMyHod] = useState<{ id: string; displayName: string; department: string | null } | null>(null);
+  const userRoles = (session?.user?.roles as string[] | undefined) ?? [];
+  const userIsHod = userRoles.includes("HOD");
+  const showHodToggle =
+    memoCategory === "departmental" &&
+    memoType === "administrative" &&
+    !userIsHod &&
+    !!myHod;
+
+  useEffect(() => {
+    let cancelled = false;
+    if (memoCategory === "departmental" && memoType === "administrative" && !userIsHod) {
+      fetch("/api/users/my-hod")
+        .then((r) => (r.ok ? r.json() : null))
+        .then((data) => { if (!cancelled) setMyHod(data?.hod ?? null); })
+        .catch(() => { if (!cancelled) setMyHod(null); });
+    } else {
+      setMyHod(null);
+    }
+    return () => { cancelled = true; };
+  }, [memoCategory, memoType, userIsHod]);
+
   const finalApprover =
     approverSameAsRecipient && toMode === "search" ? recipient : approver;
+
+  /** Determine if sender outranks recipient for FROM/TO ordering */
+  const senderIsSuperior =
+    toMode === "manual"
+      ? true // Manual "To" (e.g., "All Students") — sender is always superior
+      : isSenderMoreSenior(
+          session?.user?.roles ?? [],
+          recipient?.roles ?? []
+        );
 
   /* ---------- auto-fill department & designation from session ---------- */
   useEffect(() => {
     if (session?.user?.department && !department) {
       const dept = session.user.department;
       setDepartment(dept);
-      const mapped = DEPARTMENT_MAP[dept];
-      if (mapped) {
-        setDepartmentOffice(mapped.office);
-      } else {
-        setDepartmentOffice(`OFFICE OF THE ${dept.toUpperCase()}`);
-      }
+      setDepartmentOffice(getDepartmentOffice(dept));
     }
     if (session?.user?.jobTitle && !designation) {
       setDesignation(session.user.jobTitle);
@@ -873,19 +211,20 @@ export default function NewMemoPage() {
 
   function handleDepartmentChange(dept: string) {
     setDepartment(dept);
-    const mapped = DEPARTMENT_MAP[dept];
-    if (mapped) {
-      setDepartmentOffice(mapped.office);
-    } else {
-      setDepartmentOffice(`OFFICE OF THE ${dept.toUpperCase()}`);
-    }
+    setDepartmentOffice(getDepartmentOffice(dept));
   }
+
+  /** Preview of the auto-generated reference number */
+  const refPreview = memoCategory === "personal"
+    ? `KarU/PF.${(session?.user?.employeeId || "0000").replace(/\//g, ".")}/N`
+    : `KarU/${getDepartmentMemoCode(department || "GEN")}/N`;
 
   const excludeIds = [
     session?.user?.id ?? "",
     recipient?.id ?? "",
     ...recommenders.map((r) => r.id),
     ...ccUsers.map((u) => u.id),
+    ...bccUsers.map((u) => u.id),
   ].filter(Boolean);
 
   /* ---------- memo preview props ---------- */
@@ -896,7 +235,7 @@ export default function NewMemoPage() {
     designation: designation || "",
     phone: "+254 0716135171/0723683150",
     poBox: "P.O Box 1957-10101,KARATINA",
-    from: session?.user?.name ?? "",
+    from: designation || (session?.user?.department ?? ""),
     date: formatDate(),
     to: getToDisplay(),
     refNumber: referenceNumber || "---",
@@ -904,6 +243,7 @@ export default function NewMemoPage() {
     bodyHtml: memoBody,
     senderName: session?.user?.name ?? "",
     senderTitle: designation || (session?.user?.department ?? ""),
+    senderIsSuperior,
     copyTo: ccUsers.map((u) => u.displayName),
     recommenders: recommenders.map((r) => ({
       name: r.displayName,
@@ -926,7 +266,8 @@ export default function NewMemoPage() {
     const hasTo =
       toMode === "search" ? !!recipient : !!manualTo.trim();
     if (!hasTo || !subject.trim() || !memoBody.trim()) return;
-    if (toMode === "search" && !approverSameAsRecipient && !approver) return;
+    // Approval validation only for administrative memos
+    if (memoType === "administrative" && toMode === "search" && !approverSameAsRecipient && !approver) return;
 
     setIsSubmitting(true);
     setError(null);
@@ -940,13 +281,19 @@ export default function NewMemoPage() {
           toIsManual: toMode === "manual",
           subject: subject.trim(),
           memoBody: memoBody.trim(),
-          recommenders: recommenders.map((r) => r.id),
-          approver: finalApprover?.id,
+          memoType,
+          memoCategory,
+          recommenders: memoType === "communicating" ? [] : recommenders.map((r) => r.id),
+          approver: memoType === "communicating" ? undefined : finalApprover?.id,
           cc: ccUsers.map((u) => u.id),
+          ccDepartments: ccDepts,
+          bcc: bccUsers.map((u) => u.id),
+          bccDepartments: bccDepts,
           department: department.trim(),
           departmentOffice: departmentOffice.trim(),
           designation: designation.trim(),
           referenceNumber: referenceNumber.trim() || undefined,
+          forwardToHod: forwardToHod && showHodToggle,
         }),
       });
 
@@ -956,6 +303,25 @@ export default function NewMemoPage() {
       }
 
       const data = await res.json();
+
+      // Upload attachments to the linked document (if any)
+      if (attachments.length > 0 && data.documentId) {
+        for (let i = 0; i < attachments.length; i++) {
+          const file = attachments[i];
+          const customName = attachmentNames[i];
+          const fileToUpload = customName
+            ? new File([file], customName, { type: file.type })
+            : file;
+          const fileForm = new FormData();
+          fileForm.append("file", fileToUpload);
+          fileForm.append("documentId", data.documentId);
+          await fetch("/api/files", {
+            method: "POST",
+            body: fileForm,
+          }).catch(() => {}); // best effort — don't block memo creation
+        }
+      }
+
       router.push(`/memos/${data.id}`);
     } catch (err) {
       setError(err instanceof Error ? err.message : "An error occurred");
@@ -1108,6 +474,78 @@ export default function NewMemoPage() {
               Compose Memo
             </h2>
 
+            {/* Memo Type Toggle */}
+            <div>
+              <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-2">
+                Memo Type
+              </label>
+              <div className="inline-flex rounded-xl border border-gray-200 dark:border-gray-700 overflow-hidden">
+                <button
+                  type="button"
+                  onClick={() => setMemoType("administrative")}
+                  className={`px-4 py-2 text-sm font-medium transition-colors ${
+                    memoType === "administrative"
+                      ? "bg-[#02773b] text-white"
+                      : "bg-white dark:bg-gray-900 text-gray-600 dark:text-gray-400 hover:bg-gray-50 dark:hover:bg-gray-800"
+                  }`}
+                >
+                  Administrative
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setMemoType("communicating")}
+                  className={`px-4 py-2 text-sm font-medium border-l border-gray-200 dark:border-gray-700 transition-colors ${
+                    memoType === "communicating"
+                      ? "bg-[#02773b] text-white"
+                      : "bg-white dark:bg-gray-900 text-gray-600 dark:text-gray-400 hover:bg-gray-50 dark:hover:bg-gray-800"
+                  }`}
+                >
+                  Communicating
+                </button>
+              </div>
+              <p className="text-xs text-gray-400 dark:text-gray-500 mt-1.5">
+                {memoType === "administrative"
+                  ? "Requires recommenders and approval before circulation."
+                  : "Sent directly — no approval chain needed."}
+              </p>
+            </div>
+
+            {/* Memo Category Toggle */}
+            <div>
+              <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-2">
+                Category
+              </label>
+              <div className="inline-flex rounded-xl border border-gray-200 dark:border-gray-700 overflow-hidden">
+                <button
+                  type="button"
+                  onClick={() => setMemoCategory("departmental")}
+                  className={`px-4 py-2 text-sm font-medium transition-colors ${
+                    memoCategory === "departmental"
+                      ? "bg-[#02773b] text-white"
+                      : "bg-white dark:bg-gray-900 text-gray-600 dark:text-gray-400 hover:bg-gray-50 dark:hover:bg-gray-800"
+                  }`}
+                >
+                  Departmental
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setMemoCategory("personal")}
+                  className={`px-4 py-2 text-sm font-medium border-l border-gray-200 dark:border-gray-700 transition-colors ${
+                    memoCategory === "personal"
+                      ? "bg-[#02773b] text-white"
+                      : "bg-white dark:bg-gray-900 text-gray-600 dark:text-gray-400 hover:bg-gray-50 dark:hover:bg-gray-800"
+                  }`}
+                >
+                  Personal
+                </button>
+              </div>
+              <p className="text-xs text-gray-400 dark:text-gray-500 mt-1.5">
+                {memoCategory === "departmental"
+                  ? "Department-level memo — reference uses department code."
+                  : `Personal memo — reference uses your PF number (${session?.user?.employeeId || "---"}).`}
+              </p>
+            </div>
+
             {/* Row 1: Department, Office Title, Designation (all read-only) */}
             <div className="grid grid-cols-1 sm:grid-cols-3 gap-5">
               <div>
@@ -1218,28 +656,47 @@ export default function NewMemoPage() {
                   type="text"
                   value={referenceNumber}
                   onChange={(e) => setReferenceNumber(e.target.value)}
-                  placeholder="e.g., KarU/Rg.AA/1/Vol.11"
+                  placeholder={`e.g., ${refPreview.replace("/N", "/1")}`}
                   className="w-full h-11 rounded-xl border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-900 px-4 text-sm text-gray-900 dark:text-gray-100 placeholder:text-gray-400 dark:placeholder:text-gray-500 font-mono transition-all focus:border-[#02773b] focus:ring-2 focus:ring-[#02773b]/20 outline-none"
                 />
                 <p className="text-xs text-gray-400 dark:text-gray-500 mt-1.5">
-                  If left blank, one will be auto-generated.
+                  {referenceNumber
+                    ? "Custom reference number will be used."
+                    : `Auto-generated as ${refPreview}`}
                 </p>
               </div>
             </div>
 
-            {/* Row 3: Copy to */}
-            <div>
-              <MultiUserInput
-                label="Copy to"
-                sublabel="(receives a copy for information)"
-                users={ccUsers}
-                onAdd={(user) => setCcUsers([...ccUsers, user])}
-                onRemove={(id) =>
-                  setCcUsers(ccUsers.filter((u) => u.id !== id))
-                }
-                excludeIds={excludeIds}
-                tagColor="blue"
-              />
+            {/* Row 3: CC and BCC */}
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-5">
+              <div>
+                <MultiUserInput
+                  label="CC"
+                  sublabel="(receives a copy for information)"
+                  users={ccUsers}
+                  departments={ccDepts}
+                  onAdd={(user) => setCcUsers([...ccUsers, user])}
+                  onRemove={(id) => setCcUsers(ccUsers.filter((u) => u.id !== id))}
+                  onAddDepartment={(dept) => !ccDepts.includes(dept) && setCcDepts([...ccDepts, dept])}
+                  onRemoveDepartment={(dept) => setCcDepts(ccDepts.filter((d) => d !== dept))}
+                  excludeIds={excludeIds}
+                  tagColor="blue"
+                />
+              </div>
+              <div>
+                <MultiUserInput
+                  label="BCC"
+                  sublabel="(hidden copy — not visible to others)"
+                  users={bccUsers}
+                  departments={bccDepts}
+                  onAdd={(user) => setBccUsers([...bccUsers, user])}
+                  onRemove={(id) => setBccUsers(bccUsers.filter((u) => u.id !== id))}
+                  onAddDepartment={(dept) => !bccDepts.includes(dept) && setBccDepts([...bccDepts, dept])}
+                  onRemoveDepartment={(dept) => setBccDepts(bccDepts.filter((d) => d !== dept))}
+                  excludeIds={excludeIds}
+                  tagColor="gray"
+                />
+              </div>
             </div>
 
             {/* Row 4: Subject (full width) */}
@@ -1268,6 +725,129 @@ export default function NewMemoPage() {
                   placeholder="Type your memo content here..."
                 />
               </div>
+            </div>
+
+            {/* Row 6: Attachments */}
+            <div>
+              <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1.5">
+                Attachments
+              </label>
+              <div className="border-2 border-dashed border-gray-200 dark:border-gray-700 rounded-xl p-4 transition-colors hover:border-[#02773b]/40">
+                <input
+                  type="file"
+                  multiple
+                  onChange={(e) => {
+                    if (e.target.files) {
+                      setAttachments((prev) => [...prev, ...Array.from(e.target.files!)]);
+                    }
+                  }}
+                  className="block w-full text-sm text-gray-500 dark:text-gray-400
+                    file:mr-4 file:py-2 file:px-4 file:rounded-lg file:border-0
+                    file:text-sm file:font-medium file:bg-[#02773b]/10 file:text-[#02773b]
+                    hover:file:bg-[#02773b]/20 file:cursor-pointer file:transition-colors"
+                />
+                <p className="text-xs text-gray-400 dark:text-gray-500 mt-2">
+                  PDF, DOCX, XLSX, JPG, PNG — max 2GB per file
+                </p>
+              </div>
+
+              {/* Attached files list */}
+              {attachments.length > 0 && (
+                <div className="mt-3 space-y-2">
+                  {attachments.map((file, idx) => {
+                    const displayName = attachmentNames[idx] || file.name;
+                    const isRenaming = renamingIdx === idx;
+
+                    return (
+                      <div
+                        key={`${file.name}-${idx}`}
+                        className="flex items-center justify-between bg-gray-50 dark:bg-gray-800 rounded-lg px-3 py-2 group"
+                      >
+                        <div className="flex items-center gap-2 min-w-0 flex-1">
+                          <svg className="w-4 h-4 text-gray-400 flex-shrink-0" fill="none" viewBox="0 0 24 24" strokeWidth={1.5} stroke="currentColor">
+                            <path strokeLinecap="round" strokeLinejoin="round" d="m18.375 12.739-7.693 7.693a4.5 4.5 0 0 1-6.364-6.364l10.94-10.94A3 3 0 1 1 19.5 7.372L8.552 18.32m.009-.01-.01.01m5.699-9.941-7.81 7.81a1.5 1.5 0 0 0 2.112 2.13" />
+                          </svg>
+                          {isRenaming ? (
+                            <input
+                              type="text"
+                              defaultValue={displayName}
+                              autoFocus
+                              onBlur={(e) => {
+                                const newName = e.target.value.trim();
+                                if (newName) {
+                                  setAttachmentNames((prev) => ({ ...prev, [idx]: newName }));
+                                }
+                                setRenamingIdx(null);
+                              }}
+                              onKeyDown={(e) => {
+                                if (e.key === "Enter") {
+                                  const newName = (e.target as HTMLInputElement).value.trim();
+                                  if (newName) {
+                                    setAttachmentNames((prev) => ({ ...prev, [idx]: newName }));
+                                  }
+                                  setRenamingIdx(null);
+                                }
+                                if (e.key === "Escape") setRenamingIdx(null);
+                              }}
+                              className="flex-1 h-7 rounded border border-[#02773b] bg-white dark:bg-gray-900 px-2 text-sm text-gray-900 dark:text-gray-100 outline-none"
+                            />
+                          ) : (
+                            <span className="text-sm text-gray-700 dark:text-gray-300 truncate">{displayName}</span>
+                          )}
+                          <span className="text-xs text-gray-400 flex-shrink-0">
+                            {file.size >= 1024 * 1024
+                              ? `${(file.size / (1024 * 1024)).toFixed(1)} MB`
+                              : `${(file.size / 1024).toFixed(0)} KB`}
+                          </span>
+                        </div>
+                        <div className="flex items-center gap-1.5 flex-shrink-0 ml-2">
+                          {/* View */}
+                          <button
+                            onClick={() => {
+                              const url = URL.createObjectURL(file);
+                              setPreviewFile({ url, name: attachmentNames[idx] || file.name, type: file.type });
+                            }}
+                            className="inline-flex items-center gap-1 px-2 py-1 rounded-md text-xs font-medium text-[#02773b] hover:bg-[#02773b]/10 transition-colors"
+                          >
+                            <svg className="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" strokeWidth={1.5} stroke="currentColor">
+                              <path strokeLinecap="round" strokeLinejoin="round" d="M2.036 12.322a1.012 1.012 0 0 1 0-.639C3.423 7.51 7.36 4.5 12 4.5c4.638 0 8.573 3.007 9.963 7.178.07.207.07.431 0 .639C20.577 16.49 16.64 19.5 12 19.5c-4.638 0-8.573-3.007-9.963-7.178Z" />
+                              <path strokeLinecap="round" strokeLinejoin="round" d="M15 12a3 3 0 1 1-6 0 3 3 0 0 1 6 0Z" />
+                            </svg>
+                            <span className="hidden sm:inline">View</span>
+                          </button>
+                          {/* Rename */}
+                          <button
+                            onClick={() => setRenamingIdx(idx)}
+                            className="inline-flex items-center gap-1 px-2 py-1 rounded-md text-xs font-medium text-blue-600 hover:bg-blue-50 dark:hover:bg-blue-950/30 transition-colors"
+                          >
+                            <svg className="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" strokeWidth={1.5} stroke="currentColor">
+                              <path strokeLinecap="round" strokeLinejoin="round" d="m16.862 4.487 1.687-1.688a1.875 1.875 0 1 1 2.652 2.652L6.832 19.82a4.5 4.5 0 0 1-1.897 1.13l-2.685.8.8-2.685a4.5 4.5 0 0 1 1.13-1.897L16.863 4.487Zm0 0L19.5 7.125" />
+                            </svg>
+                            <span className="hidden sm:inline">Rename</span>
+                          </button>
+                          {/* Delete */}
+                          <button
+                            onClick={() => {
+                              setAttachments((prev) => prev.filter((_, i) => i !== idx));
+                              setAttachmentNames((prev) => {
+                                const next = { ...prev };
+                                delete next[idx];
+                                return next;
+                              });
+                            }}
+                            className="inline-flex items-center gap-1 px-2 py-1 rounded-md text-xs font-medium text-red-600 hover:bg-red-50 dark:hover:bg-red-950/30 transition-colors"
+                          >
+                            <svg className="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" strokeWidth={1.5} stroke="currentColor">
+                              <path strokeLinecap="round" strokeLinejoin="round" d="m14.74 9-.346 9m-4.788 0L9.26 9m9.968-3.21c.342.052.682.107 1.022.166m-1.022-.165L18.16 19.673a2.25 2.25 0 0 1-2.244 2.077H8.084a2.25 2.25 0 0 1-2.244-2.077L4.772 5.79m14.456 0a48.108 48.108 0 0 0-3.478-.397m-12 .562c.34-.059.68-.114 1.022-.165m0 0a48.11 48.11 0 0 1 3.478-.397m7.5 0v-.916c0-1.18-.91-2.164-2.09-2.201a51.964 51.964 0 0 0-3.32 0c-1.18.037-2.09 1.022-2.09 2.201v.916m7.5 0a48.667 48.667 0 0 0-7.5 0" />
+                            </svg>
+                            <span className="hidden sm:inline">Delete</span>
+                          </button>
+                        </div>
+                      </div>
+                    );
+                  })}
+                </div>
+              )}
             </div>
           </div>
 
@@ -1533,10 +1113,10 @@ export default function NewMemoPage() {
               Back: Compose
             </button>
             <button
-              onClick={() => setStep(3)}
+              onClick={() => setStep(memoType === "communicating" ? 3 : 3)}
               className="inline-flex items-center gap-2 h-11 px-6 rounded-xl bg-[#02773b] text-white font-medium text-sm transition-all hover:bg-[#014d28] shadow-md shadow-[#02773b]/20 hover:shadow-lg hover:shadow-[#02773b]/30 focus:ring-2 focus:ring-[#02773b]/30 focus:ring-offset-2"
             >
-              Next: Recommenders & Approver
+              {memoType === "communicating" ? "Next: Submit" : "Next: Recommenders & Approver"}
               <svg
                 className="w-4 h-4"
                 fill="none"
@@ -1556,9 +1136,9 @@ export default function NewMemoPage() {
       )}
 
       {/* ================================================================== */}
-      {/*  STEP 3: Recommenders & Approver                                    */}
+      {/*  STEP 3: Recommenders & Approver (administrative only)              */}
       {/* ================================================================== */}
-      {step === 3 && (
+      {step === 3 && memoType === "administrative" && (
         <div className="no-print space-y-6 animate-slide-up">
           {/* Recommenders card */}
           <div className="bg-white dark:bg-gray-900 rounded-2xl border border-gray-200 dark:border-gray-800 p-5 sm:p-6 space-y-5 shadow-sm">
@@ -1868,9 +1448,10 @@ export default function NewMemoPage() {
       )}
 
       {/* ================================================================== */}
-      {/*  STEP 4: Submit                                                     */}
+      {/*  STEP: Submit (step 4 for administrative, step 3 for communicating) */}
       {/* ================================================================== */}
-      {step === 4 && (
+      {((memoType === "administrative" && step === 4) ||
+        (memoType === "communicating" && step === 3)) && (
         <div className="no-print space-y-6 animate-slide-up">
           {/* Summary card */}
           <div className="bg-white dark:bg-gray-900 rounded-2xl border border-gray-200 dark:border-gray-800 overflow-hidden shadow-sm">
@@ -1898,139 +1479,220 @@ export default function NewMemoPage() {
 
             <div className="p-5 sm:p-6 space-y-4">
               {/* Summary rows */}
+              <SummaryRow
+                label="Type"
+                value={`${memoType === "communicating" ? "Communicating" : "Administrative"} / ${memoCategory === "personal" ? "Personal" : "Departmental"}`}
+              />
               <SummaryRow label="Department" value={department || "---"} />
               <SummaryRow label="To" value={getToDisplay() || "---"} />
-              {ccUsers.length > 0 && (
+              {(ccUsers.length > 0 || ccDepts.length > 0) && (
                 <SummaryRow
-                  label="Copy to"
-                  value={ccUsers.map((u) => u.displayName).join(", ")}
+                  label="CC"
+                  value={[...ccDepts.map((d) => `[${d}]`), ...ccUsers.map((u) => u.displayName)].join(", ")}
+                />
+              )}
+              {(bccUsers.length > 0 || bccDepts.length > 0) && (
+                <SummaryRow
+                  label="BCC"
+                  value={[...bccDepts.map((d) => `[${d}]`), ...bccUsers.map((u) => u.displayName)].join(", ")}
                 />
               )}
               <SummaryRow label="Subject" value={subject} bold />
               <SummaryRow
                 label="Reference"
-                value={referenceNumber || "Auto-generated"}
-                mono={!!referenceNumber}
+                value={referenceNumber || `Auto: ${refPreview}`}
+                mono
               />
+              {attachments.length > 0 && (
+                <SummaryRow
+                  label="Attachments"
+                  value={`${attachments.length} file${attachments.length !== 1 ? "s" : ""} (${attachments.map((f) => f.name).join(", ")})`}
+                />
+              )}
 
-              {/* Divider */}
-              <hr className="border-gray-100 dark:border-gray-800" />
+              {memoType === "administrative" && (
+                <>
+                  {/* Divider */}
+                  <hr className="border-gray-100 dark:border-gray-800" />
 
-              {/* Recommenders */}
-              {recommenders.length > 0 && (
-                <div>
-                  <span className="text-xs font-semibold uppercase tracking-wider text-gray-400 dark:text-gray-500">
-                    Recommenders
-                  </span>
-                  <div className="mt-2 space-y-1.5">
-                    {recommenders.map((rec, index) => (
-                      <div
-                        key={rec.id}
-                        className="flex items-center gap-2 text-sm"
-                      >
-                        <span className="w-5 h-5 rounded-full bg-[#dd9f42]/10 text-[#dd9f42] flex items-center justify-center text-xs font-bold flex-shrink-0">
-                          {index + 1}
-                        </span>
-                        <span className="text-gray-900 dark:text-gray-100">
-                          {rec.displayName}
-                        </span>
-                        <span className="text-xs text-gray-400">
-                          {rec.jobTitle}
-                        </span>
+                  {/* Recommenders */}
+                  {recommenders.length > 0 && (
+                    <div>
+                      <span className="text-xs font-semibold uppercase tracking-wider text-gray-400 dark:text-gray-500">
+                        Recommenders
+                      </span>
+                      <div className="mt-2 space-y-1.5">
+                        {recommenders.map((rec, index) => (
+                          <div
+                            key={rec.id}
+                            className="flex items-center gap-2 text-sm"
+                          >
+                            <span className="w-5 h-5 rounded-full bg-[#dd9f42]/10 text-[#dd9f42] flex items-center justify-center text-xs font-bold flex-shrink-0">
+                              {index + 1}
+                            </span>
+                            <span className="text-gray-900 dark:text-gray-100">
+                              {rec.displayName}
+                            </span>
+                            <span className="text-xs text-gray-400">
+                              {rec.jobTitle}
+                            </span>
+                          </div>
+                        ))}
                       </div>
-                    ))}
+                    </div>
+                  )}
+
+                  {recommenders.length === 0 && (
+                    <SummaryRow label="Recommenders" value="None" muted />
+                  )}
+
+                  {/* Approver */}
+                  <div>
+                    <span className="text-xs font-semibold uppercase tracking-wider text-gray-400 dark:text-gray-500">
+                      Final Approver
+                    </span>
+                    <div className="mt-2 flex items-center gap-2 text-sm">
+                      <span className="w-5 h-5 rounded-full bg-blue-100 dark:bg-blue-900/30 text-blue-600 dark:text-blue-400 flex items-center justify-center flex-shrink-0">
+                        <svg
+                          className="w-3 h-3"
+                          fill="none"
+                          viewBox="0 0 24 24"
+                          strokeWidth={2.5}
+                          stroke="currentColor"
+                        >
+                          <path
+                            strokeLinecap="round"
+                            strokeLinejoin="round"
+                            d="m4.5 12.75 6 6 9-13.5"
+                          />
+                        </svg>
+                      </span>
+                      <span className="text-gray-900 dark:text-gray-100">
+                        {finalApprover?.displayName ?? "Not set"}
+                      </span>
+                      <span className="text-xs text-gray-400">
+                        {finalApprover?.jobTitle}
+                      </span>
+                    </div>
                   </div>
-                </div>
+                </>
               )}
+            </div>
+          </div>
 
-              {recommenders.length === 0 && (
-                <SummaryRow label="Recommenders" value="None" muted />
-              )}
-
-              {/* Approver */}
-              <div>
-                <span className="text-xs font-semibold uppercase tracking-wider text-gray-400 dark:text-gray-500">
-                  Final Approver
-                </span>
-                <div className="mt-2 flex items-center gap-2 text-sm">
-                  <span className="w-5 h-5 rounded-full bg-blue-100 dark:bg-blue-900/30 text-blue-600 dark:text-blue-400 flex items-center justify-center flex-shrink-0">
+          {/* HOD endorsement toggle (administrative + departmental only) */}
+          {showHodToggle && myHod && (
+            <div className="bg-white dark:bg-gray-900 rounded-2xl border border-[#02773b]/30 dark:border-[#02773b]/40 p-5 sm:p-6 shadow-sm">
+              <div className="flex items-start justify-between gap-4">
+                <div className="flex items-start gap-3 min-w-0 flex-1">
+                  <span className="w-8 h-8 rounded-full bg-[#02773b]/10 text-[#02773b] flex items-center justify-center flex-shrink-0 mt-0.5">
                     <svg
-                      className="w-3 h-3"
+                      className="w-4 h-4"
                       fill="none"
                       viewBox="0 0 24 24"
-                      strokeWidth={2.5}
+                      strokeWidth={2}
                       stroke="currentColor"
                     >
                       <path
                         strokeLinecap="round"
                         strokeLinejoin="round"
-                        d="m4.5 12.75 6 6 9-13.5"
+                        d="M9 12.75 11.25 15 15 9.75M21 12a9 9 0 1 1-18 0 9 9 0 0 1 18 0Z"
                       />
                     </svg>
                   </span>
-                  <span className="text-gray-900 dark:text-gray-100">
-                    {finalApprover?.displayName ?? "Not set"}
-                  </span>
-                  <span className="text-xs text-gray-400">
-                    {finalApprover?.jobTitle}
-                  </span>
+                  <div className="min-w-0">
+                    <p className="text-sm font-semibold text-gray-900 dark:text-gray-100">
+                      Forward to {myHod.displayName}
+                      {myHod.department ? ` (HOD, ${myHod.department})` : " (HOD)"}
+                      {" "}for endorsement
+                    </p>
+                    <p className="text-xs text-gray-500 dark:text-gray-400 mt-1">
+                      Your Head of Department will endorse the memo first. Once endorsed, the memo will bear the HOD's name before going to recommenders.
+                    </p>
+                  </div>
                 </div>
+                <button
+                  type="button"
+                  role="switch"
+                  aria-checked={forwardToHod}
+                  onClick={() => setForwardToHod((v) => !v)}
+                  className={`relative inline-flex h-6 w-11 flex-shrink-0 items-center rounded-full transition-colors focus:outline-none focus:ring-2 focus:ring-[#02773b]/30 focus:ring-offset-2 ${
+                    forwardToHod ? "bg-[#02773b]" : "bg-gray-200 dark:bg-gray-700"
+                  }`}
+                >
+                  <span
+                    className={`inline-block h-5 w-5 transform rounded-full bg-white shadow transition-transform ${
+                      forwardToHod ? "translate-x-5" : "translate-x-0.5"
+                    }`}
+                  />
+                </button>
               </div>
             </div>
-          </div>
+          )}
 
-          {/* Approval chain (compact) */}
-          <div className="bg-white dark:bg-gray-900 rounded-2xl border border-gray-200 dark:border-gray-800 p-5 sm:p-6 shadow-sm">
-            <h3 className="text-sm font-semibold text-gray-700 dark:text-gray-300 mb-3">
-              Routing Path
-            </h3>
-            <div className="flex flex-wrap items-center gap-2 text-sm">
-              <span className="px-3 py-1.5 rounded-full bg-[#02773b]/10 text-[#02773b] dark:text-emerald-400 font-medium border border-[#02773b]/20">
-                You
-              </span>
-              {recommenders.map((rec) => (
-                <span key={rec.id} className="contents">
-                  <svg
-                    className="w-4 h-4 text-gray-400 flex-shrink-0"
-                    fill="none"
-                    viewBox="0 0 24 24"
-                    strokeWidth={2}
-                    stroke="currentColor"
-                  >
-                    <path
-                      strokeLinecap="round"
-                      strokeLinejoin="round"
-                      d="m8.25 4.5 7.5 7.5-7.5 7.5"
-                    />
-                  </svg>
-                  <span className="px-3 py-1.5 rounded-full bg-[#dd9f42]/10 text-[#dd9f42] font-medium border border-[#dd9f42]/20">
-                    {rec.displayName}
-                  </span>
+          {/* Routing path (administrative) / Delivery info (communicating) */}
+          {memoType === "administrative" ? (
+            <div className="bg-white dark:bg-gray-900 rounded-2xl border border-gray-200 dark:border-gray-800 p-5 sm:p-6 shadow-sm">
+              <h3 className="text-sm font-semibold text-gray-700 dark:text-gray-300 mb-3">
+                Routing Path
+              </h3>
+              <div className="flex flex-wrap items-center gap-2 text-sm">
+                <span className="px-3 py-1.5 rounded-full bg-[#02773b]/10 text-[#02773b] dark:text-emerald-400 font-medium border border-[#02773b]/20">
+                  You
                 </span>
-              ))}
-              <svg
-                className="w-4 h-4 text-gray-400 flex-shrink-0"
-                fill="none"
-                viewBox="0 0 24 24"
-                strokeWidth={2}
-                stroke="currentColor"
-              >
-                <path
-                  strokeLinecap="round"
-                  strokeLinejoin="round"
-                  d="m8.25 4.5 7.5 7.5-7.5 7.5"
-                />
-              </svg>
-              <span className="px-3 py-1.5 rounded-full bg-blue-50 dark:bg-blue-950/30 text-blue-700 dark:text-blue-400 font-medium border border-blue-200 dark:border-blue-800">
-                {finalApprover?.displayName ?? "Approver"}
-              </span>
+                {recommenders.map((rec) => (
+                  <span key={rec.id} className="contents">
+                    <svg
+                      className="w-4 h-4 text-gray-400 flex-shrink-0"
+                      fill="none"
+                      viewBox="0 0 24 24"
+                      strokeWidth={2}
+                      stroke="currentColor"
+                    >
+                      <path
+                        strokeLinecap="round"
+                        strokeLinejoin="round"
+                        d="m8.25 4.5 7.5 7.5-7.5 7.5"
+                      />
+                    </svg>
+                    <span className="px-3 py-1.5 rounded-full bg-[#dd9f42]/10 text-[#dd9f42] font-medium border border-[#dd9f42]/20">
+                      {rec.displayName}
+                    </span>
+                  </span>
+                ))}
+                <svg
+                  className="w-4 h-4 text-gray-400 flex-shrink-0"
+                  fill="none"
+                  viewBox="0 0 24 24"
+                  strokeWidth={2}
+                  stroke="currentColor"
+                >
+                  <path
+                    strokeLinecap="round"
+                    strokeLinejoin="round"
+                    d="m8.25 4.5 7.5 7.5-7.5 7.5"
+                  />
+                </svg>
+                <span className="px-3 py-1.5 rounded-full bg-blue-50 dark:bg-blue-950/30 text-blue-700 dark:text-blue-400 font-medium border border-blue-200 dark:border-blue-800">
+                  {finalApprover?.displayName ?? "Approver"}
+                </span>
+              </div>
             </div>
-          </div>
+          ) : (
+            <div className="bg-white dark:bg-gray-900 rounded-2xl border border-gray-200 dark:border-gray-800 p-5 sm:p-6 shadow-sm">
+              <h3 className="text-sm font-semibold text-gray-700 dark:text-gray-300 mb-3">
+                Delivery
+              </h3>
+              <p className="text-sm text-gray-500 dark:text-gray-400">
+                This memo will be sent directly to the recipient{ccUsers.length > 0 ? " and CC recipients" : ""} without an approval chain.
+              </p>
+            </div>
+          )}
 
           {/* Navigation */}
           <div className="flex justify-between">
             <button
-              onClick={() => setStep(3)}
+              onClick={() => setStep(memoType === "communicating" ? 2 : 3)}
               className="inline-flex items-center gap-2 h-11 px-5 rounded-xl border border-gray-200 dark:border-gray-700 text-gray-700 dark:text-gray-300 font-medium text-sm transition-colors hover:bg-gray-50 dark:hover:bg-gray-800"
             >
               <svg
@@ -2077,6 +1739,51 @@ export default function NewMemoPage() {
                 </>
               )}
             </button>
+          </div>
+        </div>
+      )}
+
+      {/* ================================================================ */}
+      {/*  Attachment Preview Modal                                         */}
+      {/* ================================================================ */}
+      {previewFile && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-4">
+          <div className="absolute inset-0 bg-black/60 backdrop-blur-sm" onClick={() => { URL.revokeObjectURL(previewFile.url); setPreviewFile(null); }} />
+          <div className="relative bg-white dark:bg-gray-900 rounded-2xl border border-gray-200 dark:border-gray-800 shadow-2xl w-full max-w-4xl max-h-[90vh] flex flex-col overflow-hidden">
+            {/* Header */}
+            <div className="flex items-center justify-between px-5 py-3 border-b border-gray-200 dark:border-gray-800 bg-gray-50 dark:bg-gray-800/50">
+              <div className="flex items-center gap-2 min-w-0">
+                <svg className="w-4 h-4 text-gray-400 flex-shrink-0" fill="none" viewBox="0 0 24 24" strokeWidth={1.5} stroke="currentColor">
+                  <path strokeLinecap="round" strokeLinejoin="round" d="m18.375 12.739-7.693 7.693a4.5 4.5 0 0 1-6.364-6.364l10.94-10.94A3 3 0 1 1 19.5 7.372L8.552 18.32m.009-.01-.01.01m5.699-9.941-7.81 7.81a1.5 1.5 0 0 0 2.112 2.13" />
+                </svg>
+                <span className="text-sm font-medium text-gray-900 dark:text-gray-100 truncate">{previewFile.name}</span>
+              </div>
+              <button
+                onClick={() => { URL.revokeObjectURL(previewFile.url); setPreviewFile(null); }}
+                className="p-1.5 rounded-lg text-gray-400 hover:text-gray-600 hover:bg-gray-100 dark:hover:bg-gray-700 transition-colors"
+              >
+                <svg className="w-5 h-5" fill="none" viewBox="0 0 24 24" strokeWidth={2} stroke="currentColor">
+                  <path strokeLinecap="round" strokeLinejoin="round" d="M6 18 18 6M6 6l12 12" />
+                </svg>
+              </button>
+            </div>
+            {/* Content */}
+            <div className="flex-1 overflow-auto p-1 bg-gray-100 dark:bg-gray-800">
+              {previewFile.type.startsWith("image/") ? (
+                // eslint-disable-next-line @next/next/no-img-element
+                <img src={previewFile.url} alt={previewFile.name} className="max-w-full max-h-[75vh] mx-auto object-contain rounded" />
+              ) : previewFile.type === "application/pdf" ? (
+                <iframe src={previewFile.url} title={previewFile.name} className="w-full h-[75vh] rounded" />
+              ) : (
+                <div className="flex flex-col items-center justify-center h-64 text-gray-400">
+                  <svg className="w-12 h-12 mb-3" fill="none" viewBox="0 0 24 24" strokeWidth={1} stroke="currentColor">
+                    <path strokeLinecap="round" strokeLinejoin="round" d="M19.5 14.25v-2.625a3.375 3.375 0 0 0-3.375-3.375h-1.5A1.125 1.125 0 0 1 13.5 7.125v-1.5a3.375 3.375 0 0 0-3.375-3.375H8.25m2.25 0H5.625c-.621 0-1.125.504-1.125 1.125v17.25c0 .621.504 1.125 1.125 1.125h12.75c.621 0 1.125-.504 1.125-1.125V11.25a9 9 0 0 0-9-9Z" />
+                  </svg>
+                  <p className="text-sm">Preview not available for this file type.</p>
+                  <a href={previewFile.url} download={previewFile.name} className="mt-2 text-sm text-[#02773b] hover:underline">Download instead</a>
+                </div>
+              )}
+            </div>
           </div>
         </div>
       )}

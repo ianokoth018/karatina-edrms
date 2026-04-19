@@ -1,9 +1,20 @@
 "use client";
 
-import { useState } from "react";
+import { useState, useEffect } from "react";
+import { useSession } from "next-auth/react";
+import { useRouter } from "next/navigation";
 
 export default function AdminSettingsPage() {
   const [saved, setSaved] = useState(false);
+  const { data: session, status } = useSession();
+  const router = useRouter();
+
+  useEffect(() => {
+    if (status === "loading") return;
+    if (!session?.user?.permissions?.includes("admin:manage")) {
+      router.replace("/dashboard");
+    }
+  }, [session, status, router]);
 
   function handleSave() {
     setSaved(true);

@@ -3,6 +3,8 @@
 import { useState, useEffect, useCallback } from "react";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
+import { useSession } from "next-auth/react";
+import { Can } from "@/components/auth/can";
 
 /* ------------------------------------------------------------------ */
 /*  Types                                                              */
@@ -148,6 +150,7 @@ function LoadingSkeleton() {
 
 export default function CasefoldersPage() {
   const router = useRouter();
+  const { data: session } = useSession();
 
   const [casefolders, setCasefolders] = useState<Casefolder[]>([]);
   const [loading, setLoading] = useState(true);
@@ -228,13 +231,15 @@ export default function CasefoldersPage() {
             Document categories and filing schemes
           </p>
         </div>
-        <Link
-          href="/forms/designer"
-          className="inline-flex items-center gap-2 px-5 py-2.5 rounded-xl text-sm font-semibold text-white bg-[#02773b] hover:bg-[#025f2f] shadow-sm transition-colors"
-        >
-          <IconPlus className="w-4 h-4" />
-          Create New Casefolder
-        </Link>
+        <Can permission="forms:manage">
+          <Link
+            href="/forms/designer"
+            className="inline-flex items-center gap-2 px-5 py-2.5 rounded-xl text-sm font-semibold text-white bg-[#02773b] hover:bg-[#025f2f] shadow-sm transition-colors"
+          >
+            <IconPlus className="w-4 h-4" />
+            Create New Casefolder
+          </Link>
+        </Can>
       </div>
 
       {/* ---- Error banner ---- */}
@@ -339,13 +344,15 @@ export default function CasefoldersPage() {
             Create one using the Form Designer. Each form template defines a
             casefolder category with its metadata fields and filing scheme.
           </p>
-          <Link
-            href="/forms/designer"
-            className="inline-flex items-center gap-2 mt-6 px-5 py-2.5 rounded-xl text-sm font-semibold text-white bg-[#02773b] hover:bg-[#025f2f] shadow-sm transition-colors"
-          >
-            <IconPlus className="w-4 h-4" />
-            Open Form Designer
-          </Link>
+          <Can permission="forms:manage">
+            <Link
+              href="/forms/designer"
+              className="inline-flex items-center gap-2 mt-6 px-5 py-2.5 rounded-xl text-sm font-semibold text-white bg-[#02773b] hover:bg-[#025f2f] shadow-sm transition-colors"
+            >
+              <IconPlus className="w-4 h-4" />
+              Open Form Designer
+            </Link>
+          </Can>
         </div>
       ) : filtered.length === 0 && casefolders.length > 0 ? (
         /* No search results */

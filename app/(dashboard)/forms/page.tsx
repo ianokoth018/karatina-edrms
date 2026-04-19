@@ -2,6 +2,9 @@
 
 import { useState, useEffect, useCallback } from "react";
 import Link from "next/link";
+import { useSession } from "next-auth/react";
+import { useRouter } from "next/navigation";
+import { Can } from "@/components/auth/can";
 
 /* ------------------------------------------------------------------ */
 /*  Types                                                              */
@@ -213,6 +216,17 @@ function ConfirmModal({
 type StatusFilter = "all" | "active" | "inactive";
 
 export default function FormsPage() {
+  const router = useRouter();
+  const { data: session, status } = useSession();
+
+  useEffect(() => {
+    if (status === "loading") return;
+    const perms = session?.user?.permissions ?? [];
+    if (!perms.includes("admin:manage") && !perms.includes("forms:read")) {
+      router.replace("/dashboard");
+    }
+  }, [session, status, router]);
+
   const [forms, setForms] = useState<FormTemplate[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
@@ -346,13 +360,15 @@ export default function FormsPage() {
             Design and manage electronic forms
           </p>
         </div>
-        <Link
-          href="/forms/designer"
-          className="inline-flex items-center gap-2 px-5 py-2.5 rounded-xl text-sm font-semibold text-white bg-[#02773b] hover:bg-[#025f2f] shadow-sm transition-colors"
-        >
-          <IconPlus className="w-4 h-4" />
-          Create New Form
-        </Link>
+        <Can permission="forms:manage">
+          <Link
+            href="/forms/designer"
+            className="inline-flex items-center gap-2 px-5 py-2.5 rounded-xl text-sm font-semibold text-white bg-[#02773b] hover:bg-[#025f2f] shadow-sm transition-colors"
+          >
+            <IconPlus className="w-4 h-4" />
+            Create New Form
+          </Link>
+        </Can>
       </div>
 
       {/* ---- Error banner ---- */}

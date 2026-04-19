@@ -3,6 +3,7 @@
 import { use, useState, useEffect, useCallback, lazy, Suspense } from "react";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
+import { useSession } from "next-auth/react";
 
 const ACLPanel = lazy(() => import("@/components/casefolder/acl-panel"));
 
@@ -241,6 +242,11 @@ export default function CasefolderDetailPage({
 }) {
   const { id } = use(params);
   const router = useRouter();
+  const { data: session } = useSession();
+  const isAdmin = session?.user?.permissions?.includes("admin:manage") ?? false;
+  const canManageCasefolder =
+    isAdmin ||
+    (session?.user?.permissions?.includes("records_casefolders:manage") ?? false);
 
   const [activeTab, setActiveTab] = useState<"documents" | "acl">("documents");
   const [casefolder, setCasefolder] = useState<Casefolder | null>(null);
@@ -440,7 +446,7 @@ export default function CasefolderDetailPage({
 
       {/* ---- Tab bar ---- */}
       <div className="flex items-center gap-1 border-b border-gray-200 dark:border-gray-800">
-        {(["documents", "acl"] as const).map((tab) => (
+        {(["documents", ...(canManageCasefolder ? ["acl"] : [])] as const).map((tab) => (
           <button
             key={tab}
             onClick={() => setActiveTab(tab)}
@@ -470,12 +476,12 @@ export default function CasefolderDetailPage({
       </div>
 
       {/* ---- ACL Tab ---- */}
-      {activeTab === "acl" && casefolder && (
+      {activeTab === "acl" && casefolder && canManageCasefolder && (
         <Suspense fallback={<div className="py-12 text-center text-gray-400">Loading access controls...</div>}>
           <ACLPanel
             casefolderName={casefolder.name}
             formTemplateId={id}
-            userPermissions={{ canView: true, canCreate: true, canEdit: true, canDelete: true, canShare: true, canDownload: true, canManageACL: true }}
+            userPermissions={{ canView: true, canCreate: true, canEdit: true, canDelete: true, canShare: true, canDownload: true, canPrint: true, canManageACL: canManageCasefolder }}
           />
         </Suspense>
       )}

@@ -272,7 +272,15 @@ const taskTypeColors: Record<string, { dot: string; label: string }> = {
 
 export default function StartWorkflowPage() {
   const router = useRouter();
-  const { data: session } = useSession();
+  const { data: session, status } = useSession();
+
+  useEffect(() => {
+    if (status === "loading") return;
+    const perms = session?.user?.permissions ?? [];
+    if (!perms.includes("admin:manage") && !perms.includes("workflows:create")) {
+      router.replace("/workflows");
+    }
+  }, [session, status, router]);
 
   // Wizard state
   const [currentStep, setCurrentStep] = useState<WizardStep>(1);
@@ -602,7 +610,7 @@ export default function StartWorkflowPage() {
   /* ---------------------------------------------------------------- */
 
   return (
-    <div className="p-6 space-y-6 max-w-5xl mx-auto">
+    <div className="p-6 space-y-6">
       {/* Header */}
       <div className="flex items-center justify-between">
         <div>

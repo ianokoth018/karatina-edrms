@@ -3170,7 +3170,39 @@ async function main() {
   // 6a. Internal Memo Approval (existing)
   await db.workflowTemplate.upsert({
     where: { name: "Internal Memo Approval" },
-    update: {},
+    update: {
+      definition: {
+        type: "MEMO_APPROVAL",
+        description:
+          "Optional HOD endorsement when the creator is not an HOD, followed by recommenders and final approval.",
+        steps: [
+          {
+            name: "Self-Review",
+            autoComplete: true,
+            description: "Memo created by initiator.",
+          },
+          {
+            name: "HOD Endorsement",
+            optional: true,
+            condition:
+              "memoCategory == 'departmental' && !initiatorIsHod && forwardToHod",
+            assigneeResolver: "initiatorDepartmentHod",
+            description:
+              "Endorsed by the HOD of the initiator's department. On endorsement, the memo is reassigned to bear the HOD's name.",
+          },
+          {
+            name: "Recommendation",
+            repeatable: true,
+            description: "One step per selected recommender (max 5).",
+          },
+          {
+            name: "Final Approval",
+            description: "Final approver — usually the 'To' recipient.",
+          },
+        ],
+        returnOnReject: "initiator",
+      },
+    },
     create: {
       name: "Internal Memo Approval",
       description:
@@ -3179,20 +3211,35 @@ async function main() {
       isActive: true,
       version: 1,
       definition: {
+        type: "MEMO_APPROVAL",
+        description:
+          "Optional HOD endorsement when the creator is not an HOD, followed by recommenders and final approval.",
         steps: [
           {
-            index: 0,
-            name: "Department Head Review",
-            type: "approval",
-            description: "Review and approve the internal memo",
+            name: "Self-Review",
+            autoComplete: true,
+            description: "Memo created by initiator.",
           },
           {
-            index: 1,
+            name: "HOD Endorsement",
+            optional: true,
+            condition:
+              "memoCategory == 'departmental' && !initiatorIsHod && forwardToHod",
+            assigneeResolver: "initiatorDepartmentHod",
+            description:
+              "Endorsed by the HOD of the initiator's department. On endorsement, the memo is reassigned to bear the HOD's name.",
+          },
+          {
+            name: "Recommendation",
+            repeatable: true,
+            description: "One step per selected recommender (max 5).",
+          },
+          {
             name: "Final Approval",
-            type: "approval",
-            description: "Final sign-off before distribution",
+            description: "Final approver — usually the 'To' recipient.",
           },
         ],
+        returnOnReject: "initiator",
       },
     },
   });
@@ -3443,8 +3490,238 @@ async function main() {
     },
   });
 
+  // 6g. Correspondence Management (full graph-based workflow with decision nodes)
+  await db.workflowTemplate.upsert({
+    where: { name: "Correspondence Management" },
+    update: {},
+    create: {
+      name: "Correspondence Management",
+      description:
+        "Case-based workflow for incoming & outgoing correspondence lifecycle. Includes conditional routing for high-priority items requiring Director approval.",
+      createdById: adminUser.id,
+      isActive: true,
+      version: 1,
+      definition: {
+        // ── Visual graph: nodes + edges (ReactFlow format) ──
+        nodes: [
+          { id: "start", type: "start", position: { x: 400, y: 0 }, data: { label: "Start" } },
+          {
+            id: "capture", type: "task", position: { x: 400, y: 100 },
+            data: {
+              label: "Capture Correspondence",
+              assigneeRule: "role_based", assigneeValue: "CLERK",
+              sla: { hours: 4 },
+              formFields: [
+                { name: "channel", label: "Channel", type: "select", options: ["LETTER", "EMAIL", "SCAN", "SYSTEM_UPLOAD"] },
+                { name: "subject", label: "Subject", type: "text", required: true },
+                { name: "fromEntity", label: "From", type: "text", required: true },
+                { name: "toEntity", label: "To", type: "text", required: true },
+              ],
+              actions: ["SUBMIT"],
+            },
+          },
+          {
+            id: "register", type: "system", position: { x: 400, y: 200 },
+            data: {
+              label: "Register & Index",
+              description: "Auto-generate tracking number, store in EDRMS, create casefolder",
+              autoExecute: true,
+            },
+          },
+          {
+            id: "assign", type: "task", position: { x: 400, y: 300 },
+            data: {
+              label: "Assign to Department",
+              assigneeRule: "role_based", assigneeValue: "RECORDS_OFFICER",
+              sla: { hours: 8 },
+              formFields: [
+                { name: "department", label: "Department", type: "department_select", required: true },
+                { name: "assignee", label: "Assign To", type: "user_select" },
+              ],
+              actions: ["ASSIGN"],
+            },
+          },
+          {
+            id: "review", type: "task", position: { x: 400, y: 400 },
+            data: {
+              label: "Review & Action",
+              assigneeRule: "department", assigneeValue: "${department}",
+              sla: { hours: 48 },
+              formFields: [
+                { name: "comment", label: "Review Comments", type: "textarea" },
+              ],
+              actions: ["APPROVE", "FORWARD", "ADD_COMMENT"],
+            },
+          },
+          {
+            id: "priority_check", type: "decision", position: { x: 400, y: 500 },
+            data: {
+              label: "Priority Check",
+              description: "Route to Director if HIGH/URGENT priority",
+              conditions: [
+                { field: "priority", operator: "in_list", value: "HIGH,URGENT", handleId: "high" },
+              ],
+              defaultHandle: "normal",
+            },
+          },
+          {
+            id: "approval_mgr", type: "task", position: { x: 250, y: 600 },
+            data: {
+              label: "Manager Approval",
+              assigneeRule: "initiator_manager", assigneeValue: "",
+              sla: { hours: 24 },
+              formFields: [
+                { name: "comment", label: "Approval Comments", type: "textarea" },
+              ],
+              actions: ["APPROVE", "REJECT"],
+            },
+          },
+          {
+            id: "approval_dir", type: "task", position: { x: 550, y: 600 },
+            data: {
+              label: "Director Approval",
+              assigneeRule: "role_based", assigneeValue: "DIRECTOR",
+              sla: { hours: 24 },
+              formFields: [
+                { name: "comment", label: "Director Comments", type: "textarea" },
+              ],
+              actions: ["APPROVE", "REJECT"],
+            },
+          },
+          {
+            id: "dispatch", type: "task", position: { x: 400, y: 750 },
+            data: {
+              label: "Dispatch Response",
+              assigneeRule: "role_based", assigneeValue: "RECORDS_OFFICER",
+              sla: { hours: 24 },
+              formFields: [
+                { name: "dispatchMethod", label: "Method", type: "select", options: ["POST", "COURIER", "EMAIL", "HAND_DELIVERY"] },
+                { name: "trackingNumber", label: "Tracking Number", type: "text" },
+              ],
+              actions: ["DISPATCH"],
+            },
+          },
+          {
+            id: "archive", type: "system", position: { x: 400, y: 850 },
+            data: {
+              label: "Archive & Close",
+              description: "Apply retention policy, lock case, mark as closed",
+              autoExecute: true,
+            },
+          },
+          { id: "end", type: "end", position: { x: 400, y: 950 }, data: { label: "End" } },
+        ],
+        edges: [
+          { id: "e-start-capture", source: "start", target: "capture" },
+          { id: "e-capture-register", source: "capture", target: "register" },
+          { id: "e-register-assign", source: "register", target: "assign" },
+          { id: "e-assign-review", source: "assign", target: "review" },
+          { id: "e-review-check", source: "review", target: "priority_check" },
+          // Decision outputs
+          { id: "e-check-mgr", source: "priority_check", target: "approval_mgr", sourceHandle: "normal" },
+          { id: "e-check-dir", source: "priority_check", target: "approval_dir", sourceHandle: "high" },
+          // Both approval paths converge to dispatch
+          { id: "e-mgr-dispatch", source: "approval_mgr", target: "dispatch" },
+          { id: "e-dir-dispatch", source: "approval_dir", target: "dispatch" },
+          { id: "e-dispatch-archive", source: "dispatch", target: "archive" },
+          { id: "e-archive-end", source: "archive", target: "end" },
+        ],
+        // ── Step configurations (SLA, queues, business rules) ──
+        stepConfig: {
+          capture: { queue: "Q_CAPTURE", role: "CLERK", slaDays: 0.5 },
+          assign: { queue: "Q_ASSIGN", role: "RECORDS_OFFICER", slaDays: 1 },
+          review: { queue: "Q_REVIEW", role: "DEPARTMENT_OFFICER", slaDays: 2 },
+          approval_mgr: { queue: "Q_APPROVAL_MGR", role: "HOD", slaDays: 1 },
+          approval_dir: { queue: "Q_APPROVAL_DIR", role: "DIRECTOR", slaDays: 1 },
+          dispatch: { queue: "Q_DISPATCH", role: "RECORDS_OFFICER", slaDays: 1 },
+        },
+        // ── Business rules (configurable, not hardcoded) ──
+        businessRules: [
+          {
+            name: "High Priority Director Approval",
+            trigger: "after_step",
+            step: "review",
+            condition: { field: "priority", operator: "in_list", value: "HIGH,URGENT" },
+            action: { type: "route_to", target: "approval_dir" },
+          },
+          {
+            name: "SLA Escalation",
+            trigger: "sla_breach",
+            condition: { field: "_elapsed_hours", operator: "greater_than", value: "48" },
+            action: { type: "escalate_to", target: "initiator_manager" },
+          },
+          {
+            name: "Confidential Restriction",
+            trigger: "on_create",
+            condition: { field: "isConfidential", operator: "equals", value: "true" },
+            action: { type: "restrict_access", target: "assignee_only" },
+          },
+        ],
+        // ── Casefolder template name ──
+        casefolderTemplate: "Correspondence Management",
+      },
+    },
+  });
+
+  // 6h. Also create the Correspondence Management casefolder template
+  await db.formTemplate.upsert({
+    where: { name: "Correspondence Management" },
+    update: {},
+    create: {
+      name: "Correspondence Management",
+      description: "Case-based correspondence tracking — incoming & outgoing mail lifecycle",
+      createdById: adminUser.id,
+      isActive: true,
+      fields: [
+        { name: "reference_number", label: "Reference Number", type: "text", required: true },
+        { name: "corr_type", label: "Type", type: "select", options: ["INCOMING", "OUTGOING"], required: true },
+        { name: "subject", label: "Subject", type: "text", required: true },
+        { name: "from_entity", label: "From", type: "text", required: true },
+        { name: "to_entity", label: "To", type: "text", required: true },
+        { name: "channel", label: "Channel", type: "select", options: ["LETTER", "EMAIL", "SCAN", "SYSTEM_UPLOAD"] },
+        { name: "priority", label: "Priority", type: "select", options: ["LOW", "NORMAL", "HIGH", "URGENT"] },
+        { name: "department", label: "Department", type: "text" },
+        { name: "description", label: "Description", type: "textarea" },
+        { name: "dispatch_method", label: "Dispatch Method", type: "select", options: ["POST", "COURIER", "EMAIL", "HAND_DELIVERY"] },
+        { name: "tracking_number", label: "Tracking Number", type: "text" },
+        { name: "due_date", label: "Due Date", type: "date" },
+        { name: "is_confidential", label: "Confidential", type: "checkbox" },
+      ],
+    },
+  });
+
+  // 6i. Internal Memo casefolder template
+  await db.formTemplate.upsert({
+    where: { name: "Internal Memo" },
+    update: {},
+    create: {
+      name: "Internal Memo",
+      description:
+        "Casefolder for approved internal memoranda — stores finalised memos for future reference under Records.",
+      createdById: adminUser.id,
+      isActive: true,
+      fields: [
+        { name: "memo_reference", label: "Reference Number", type: "text", required: true },
+        { name: "subject", label: "Subject", type: "text", required: true },
+        { name: "from_name", label: "From", type: "text", required: true },
+        { name: "to_name", label: "To", type: "text", required: true },
+        { name: "department", label: "Department", type: "text", required: true },
+        { name: "department_office", label: "Department Office", type: "text" },
+        { name: "designation_value", label: "Designation", type: "text" },
+        { name: "memo_body", label: "Body", type: "textarea" },
+        { name: "copy_to", label: "CC", type: "text" },
+        { name: "recommenders", label: "Recommenders", type: "json" },
+        { name: "memo_type", label: "Memo Type", type: "select", options: ["INTERNAL", "COMMUNICATING"] },
+        { name: "memo_category", label: "Memo Category", type: "select", options: ["departmental", "personal"] },
+        { name: "forwarded_to_hod", label: "Forwarded to HOD", type: "boolean" },
+        { name: "hod_name", label: "Endorsing HOD", type: "text" },
+      ],
+      version: 1,
+    },
+  });
+
   console.log(
-    "  Workflow templates: Internal Memo Approval, Document Review, Leave Application, Imprest Requisition & Surrender, E-File Requisition, User & Domain Rights Request"
+    "  Workflow templates: Internal Memo Approval, Document Review, Leave Application, Imprest Requisition & Surrender, E-File Requisition, User & Domain Rights Request, Correspondence Management, Internal Memo"
   );
 
   // ===================================================================

@@ -3,6 +3,18 @@
 import { forwardRef } from "react";
 import type { MemoPreviewProps } from "./memo-preview";
 
+/**
+ * Split a department office string into main title + optional sub-department.
+ * e.g., "OFFICE OF THE REGISTRAR (ACADEMIC AFFAIRS)" → ["OFFICE OF THE REGISTRAR", "(ACADEMIC AFFAIRS)"]
+ */
+function splitOfficeTitle(office: string): { main: string; sub?: string } {
+  const match = office.match(/^(.+?)\s*(\([^)]+\))$/);
+  if (match) {
+    return { main: match[1].trim(), sub: match[2] };
+  }
+  return { main: office };
+}
+
 /* ========================================================================== */
 /*  Printable / downloadable memo document                                    */
 /*                                                                            */
@@ -15,7 +27,6 @@ const MemoDocument = forwardRef<HTMLDivElement, MemoPreviewProps>(
     {
       universityName = "KARATINA UNIVERSITY",
       departmentOffice = "OFFICE OF THE REGISTRAR",
-      designation,
       phone = "+254 0716135171/0723683150",
       poBox = "P.O Box 1957-10101,KARATINA",
       from,
@@ -28,6 +39,7 @@ const MemoDocument = forwardRef<HTMLDivElement, MemoPreviewProps>(
       senderTitle,
       copyTo,
       isDraft = true,
+      senderIsSuperior = true,
       recommenders,
       approver: _approver,
     },
@@ -37,10 +49,7 @@ const MemoDocument = forwardRef<HTMLDivElement, MemoPreviewProps>(
     // on the memo document itself (it is used by the workflow system)
     void _approver;
 
-    /** Build the FROM display: "Name, Designation" if designation provided */
-    const fromDisplay = designation
-      ? `${from}, ${designation}`
-      : from;
+    const { main: officeMain, sub: officeSub } = splitOfficeTitle(departmentOffice);
 
     return (
       <div
@@ -113,43 +122,38 @@ const MemoDocument = forwardRef<HTMLDivElement, MemoPreviewProps>(
             padding: "10mm 18mm",
           }}
         >
-          {/* ---- University Header with crest ---- */}
+          {/* ---- University Header (text only, no crest) ---- */}
           <div style={{ textAlign: "center", marginBottom: "1mm" }}>
-            <table style={{ margin: "0 auto", borderCollapse: "collapse" }}>
-              <tbody>
-                <tr>
-                  <td style={{ padding: "0 3mm 0 0", verticalAlign: "middle" }}>
-                    {/* eslint-disable-next-line @next/next/no-img-element */}
-                    <img
-                      src="/karu-crest.png"
-                      alt="KarU Crest"
-                      style={{ height: "14mm", width: "14mm", objectFit: "contain" }}
-                    />
-                  </td>
-                  <td style={{ verticalAlign: "middle" }}>
-                    <div
-                      style={{
-                        fontWeight: "bold",
-                        fontSize: "16pt",
-                        letterSpacing: "0.5px",
-                        textTransform: "uppercase",
-                      }}
-                    >
-                      {universityName}
-                    </div>
-                    <div
-                      style={{
-                        fontWeight: "bold",
-                        fontSize: "12pt",
-                        marginTop: "1mm",
-                      }}
-                    >
-                      {departmentOffice}
-                    </div>
-                  </td>
-                </tr>
-              </tbody>
-            </table>
+            <div
+              style={{
+                fontWeight: "bold",
+                fontSize: "16pt",
+                letterSpacing: "0.5px",
+                textTransform: "uppercase",
+              }}
+            >
+              {universityName}
+            </div>
+            <div
+              style={{
+                fontWeight: "bold",
+                fontSize: "12pt",
+                marginTop: "1mm",
+              }}
+            >
+              {officeMain}
+            </div>
+            {officeSub && (
+              <div
+                style={{
+                  fontWeight: "bold",
+                  fontSize: "12pt",
+                  marginTop: "0.5mm",
+                }}
+              >
+                {officeSub}
+              </div>
+            )}
           </div>
 
           {/* ---- TEL / P.O. Box line ---- */}
@@ -181,84 +185,73 @@ const MemoDocument = forwardRef<HTMLDivElement, MemoPreviewProps>(
             }}
           />
 
-          {/* ---- Internal Memo (centered, bold, underlined) ---- */}
+          {/* ---- INTERNAL MEMO (centered, bold) ---- */}
           <div
             style={{
               textAlign: "center",
               fontWeight: "bold",
               fontSize: "13pt",
               marginBottom: "3mm",
-              textDecoration: "underline",
             }}
           >
-            Internal Memo
+            INTERNAL MEMO
           </div>
 
-          {/* ---- FROM / DATE row ---- */}
-          <table
-            style={{
-              width: "100%",
-              borderCollapse: "collapse",
-              marginBottom: "1.5mm",
-            }}
-          >
-            <tbody>
-              <tr>
-                <td style={{ fontSize: "12pt", padding: 0 }}>
-                  <strong>FROM:</strong>
-                  <span style={{ marginLeft: "6px" }}>
-                    {fromDisplay || "---"}
-                  </span>
-                </td>
-                <td
-                  style={{
-                    fontSize: "12pt",
-                    textAlign: "right",
-                    padding: 0,
-                    minWidth: "40%",
-                  }}
-                >
-                  <strong>DATE:</strong>
-                  <span style={{ marginLeft: "4px" }}>
-                    {date || "---"}
-                  </span>
-                </td>
-              </tr>
-            </tbody>
-          </table>
-
-          {/* ---- TO / REF row ---- */}
-          <table
-            style={{
-              width: "100%",
-              borderCollapse: "collapse",
-              marginBottom: "4mm",
-            }}
-          >
-            <tbody>
-              <tr>
-                <td style={{ fontSize: "12pt", padding: 0 }}>
-                  <strong>TO:</strong>
-                  <span style={{ marginLeft: "24px" }}>
-                    {to || "---"}
-                  </span>
-                </td>
-                <td
-                  style={{
-                    fontSize: "12pt",
-                    textAlign: "right",
-                    padding: 0,
-                    minWidth: "40%",
-                  }}
-                >
-                  <strong>REF:</strong>
-                  <span style={{ marginLeft: "6px" }}>
-                    {refNumber || "---"}
-                  </span>
-                </td>
-              </tr>
-            </tbody>
-          </table>
+          {/* ---- Row 1 & 2: FROM/TO order depends on seniority ---- */}
+          {(senderIsSuperior
+            ? [
+                { label: "FROM:", value: from, spacing: "6px" },
+                { label: "TO:", value: to, spacing: "24px" },
+              ]
+            : [
+                { label: "TO:", value: to, spacing: "24px" },
+                { label: "FROM:", value: from, spacing: "6px" },
+              ]
+          ).map((row, idx) => (
+            <table
+              key={row.label}
+              style={{
+                width: "100%",
+                borderCollapse: "collapse",
+                marginBottom: "5mm",
+              }}
+            >
+              <tbody>
+                <tr>
+                  <td style={{ fontSize: "12pt", padding: 0 }}>
+                    <strong>{row.label}</strong>
+                    <span style={{ marginLeft: row.spacing }}>
+                      {row.value || "---"}
+                    </span>
+                  </td>
+                  <td
+                    style={{
+                      fontSize: "12pt",
+                      textAlign: "right",
+                      padding: 0,
+                      minWidth: "40%",
+                    }}
+                  >
+                    {idx === 0 ? (
+                      <>
+                        <strong>DATE:</strong>
+                        <span style={{ marginLeft: "4px" }}>
+                          {date || "---"}
+                        </span>
+                      </>
+                    ) : (
+                      <>
+                        <strong>REF:</strong>
+                        <span style={{ marginLeft: "6px" }}>
+                          {refNumber || "---"}
+                        </span>
+                      </>
+                    )}
+                  </td>
+                </tr>
+              </tbody>
+            </table>
+          ))}
 
           {/* ---- RE: subject line (bold, underlined) ---- */}
           <div style={{ marginBottom: "5mm", fontSize: "12pt" }}>
@@ -305,6 +298,7 @@ const MemoDocument = forwardRef<HTMLDivElement, MemoPreviewProps>(
                     fontWeight: "bold",
                     fontSize: "12pt",
                     textTransform: "uppercase",
+                    textDecoration: "underline",
                   }}
                 >
                   {senderTitle}
@@ -313,138 +307,33 @@ const MemoDocument = forwardRef<HTMLDivElement, MemoPreviewProps>(
             </div>
           )}
 
-          {/* ---- Recommenders ---- */}
-          {recommenders && recommenders.length > 0 && (
-            <div style={{ marginBottom: "4mm" }}>
-              <div
-                style={{
-                  fontWeight: "bold",
-                  fontSize: "12pt",
-                  marginBottom: "4mm",
-                  textDecoration: "underline",
-                }}
-              >
-                RECOMMENDED BY:
-              </div>
-              {recommenders.map((rec, index) => (
-                <table
-                  key={index}
-                  style={{
-                    width: "100%",
-                    borderCollapse: "collapse",
-                    marginBottom: "6mm",
-                    fontSize: "12pt",
-                  }}
-                >
-                  <tbody>
-                    <tr>
-                      <td
-                        style={{
-                          width: "8mm",
-                          fontWeight: 600,
-                          verticalAlign: "top",
-                          padding: 0,
-                        }}
-                      >
-                        {index + 1}.
-                      </td>
-                      <td style={{ verticalAlign: "top", padding: 0 }}>
-                        {rec.signed ? (
-                          <div
-                            style={{
-                              color: "#02773b",
-                              fontStyle: "italic",
-                              marginBottom: "1mm",
-                            }}
-                          >
-                            Signed{rec.date ? ` on ${rec.date}` : ""}
-                          </div>
-                        ) : (
-                          <div
-                            style={{
-                              borderBottom: "1px dashed #999",
-                              minWidth: "50mm",
-                              height: "7mm",
-                              marginBottom: "1mm",
-                            }}
-                          />
-                        )}
-                        <div style={{ fontWeight: "bold" }}>
-                          {rec.name}
-                        </div>
-                        {rec.title && (
-                          <div
-                            style={{
-                              fontWeight: "bold",
-                              textTransform: "uppercase",
-                            }}
-                          >
-                            {rec.title}
-                          </div>
-                        )}
-                      </td>
-                      <td
-                        style={{
-                          textAlign: "right",
-                          fontSize: "11pt",
-                          color: "#444",
-                          minWidth: "30mm",
-                          verticalAlign: "top",
-                          padding: 0,
-                        }}
-                      >
-                        Date:{" "}
-                        {rec.signed && rec.date
-                          ? rec.date
-                          : "___________"}
-                      </td>
-                    </tr>
-                  </tbody>
-                </table>
-              ))}
-            </div>
-          )}
-
-          {/* ---- Copy to: (two-column table) ---- */}
+          {/* ---- Copy to: (single-column indented list) ---- */}
           {copyTo && copyTo.length > 0 && (
             <div style={{ marginTop: "8mm" }}>
-              <div
-                style={{
-                  fontWeight: "bold",
-                  fontSize: "12pt",
-                  marginBottom: "2mm",
-                }}
-              >
-                Copy to:
-              </div>
               <table
                 style={{
                   borderCollapse: "collapse",
-                  marginLeft: "16mm",
                   fontSize: "12pt",
                 }}
               >
                 <tbody>
-                  {Array.from({
-                    length: Math.ceil(copyTo.length / 2),
-                  }).map((_, rowIdx) => (
-                    <tr key={rowIdx}>
-                      <td
-                        style={{
-                          paddingRight: "16mm",
-                          paddingBottom: "1mm",
-                          verticalAlign: "top",
-                        }}
-                      >
-                        {copyTo[rowIdx * 2] || ""}
-                      </td>
-                      <td
-                        style={{
-                          paddingBottom: "1mm",
-                          verticalAlign: "top",
-                        }}
-                      >
-                        {copyTo[rowIdx * 2 + 1] || ""}
+                  {copyTo.map((name, index) => (
+                    <tr key={index}>
+                      {index === 0 && (
+                        <td
+                          style={{
+                            fontWeight: "bold",
+                            verticalAlign: "top",
+                            padding: "0 12px 0 0",
+                            whiteSpace: "nowrap",
+                          }}
+                          rowSpan={copyTo.length}
+                        >
+                          Copy to:
+                        </td>
+                      )}
+                      <td style={{ padding: "0 0 1px 0", verticalAlign: "top" }}>
+                        {name}
                       </td>
                     </tr>
                   ))}

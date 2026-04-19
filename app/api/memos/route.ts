@@ -2,7 +2,10 @@ import { NextRequest, NextResponse } from "next/server";
 import { auth } from "@/lib/auth";
 import { db } from "@/lib/db";
 import { writeAudit } from "@/lib/audit";
-import { generateReference } from "@/lib/reference";
+import { generateMemoReference, generatePersonalMemoReference } from "@/lib/reference";
+import { getDepartmentMemoCode } from "@/lib/departments";
+import { isSenderMoreSenior } from "@/lib/role-hierarchy";
+import { findHodForDepartment, userIsHod } from "@/lib/hod";
 import { logger } from "@/lib/logger";
 
 // ---------------------------------------------------------------------------
@@ -20,36 +23,62 @@ export async function GET(req: NextRequest) {
     const limit = Math.min(100, Math.max(1, parseInt(searchParams.get("limit") ?? "20", 10)));
     const tab = searchParams.get("tab") ?? "all"; // all | drafts | pending | approved | rejected
     const search = searchParams.get("search");
+    const initiatedByMe = searchParams.get("initiatedByMe") === "true";
+    // scope=involved forces the user-scoped filter even for elevated roles.
+    // Used by surfaces like the dashboard that should only show memos the
+    // current user has personally taken part in.
+    const involvedOnly = searchParams.get("scope") === "involved";
 
     const userId = session.user.id;
+    const userRoles = (session.user.roles as string[] | undefined) ?? [];
 
-    // Build where clause: memos the user initiated, is a recommender on, or is addressed to
+    // -------------------------------------------------------------------------
+    // Elevated roles bypass the "only memos at your desk" access filter.
+    // VC / DVC see institution-wide; Director / Dean / Registrar PA / Admin see
+    // directorate-wide. Trace-My-Memos and scope=involved always narrow to the
+    // current user.
+    // -------------------------------------------------------------------------
+    const INSTITUTION_ROLES = new Set(["VICE_CHANCELLOR", "DVC_PFA", "DVC_ARSA"]);
+    const ELEVATED_ROLES = new Set(["ADMIN", "DIRECTOR", "DEAN", "REGISTRAR_PA"]);
+    const hasElevatedAccess =
+      !initiatedByMe &&
+      !involvedOnly &&
+      userRoles.some((r) => INSTITUTION_ROLES.has(r) || ELEVATED_ROLES.has(r));
+
+    // -------------------------------------------------------------------------
+    // Access rule (standard users): may see a memo only if they are:
+    //   1. The initiator
+    //   2. Have already acted (COMPLETED task)
+    //   3. Are the current active assignee (lowest pending stepIndex)
+    // -------------------------------------------------------------------------
+
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    const where: any = {
-      document: { documentType: "MEMO" },
-    };
+    const where: any = { document: { documentType: "MEMO" } };
 
-    // User involvement filter -- user must be initiator, or have a task assigned
-    where.OR = [
-      { initiatedById: userId },
-      { tasks: { some: { assigneeId: userId } } },
-    ];
+    if (!hasElevatedAccess) {
+      where.OR = [
+        { initiatedById: userId },
+        { tasks: { some: { assigneeId: userId } } },
+      ];
+    }
 
-    // Tab filters
+    // Trace-My-Memos filter: narrow to memos this user initiated
+    if (initiatedByMe) {
+      where.initiatedById = userId;
+      delete where.OR;
+    }
+
+    // Tab pre-filters (narrow the fetch before application-level access filter)
     switch (tab) {
       case "drafts":
-        where.status = "PENDING";
+        where.status = "IN_PROGRESS";
         where.currentStepIndex = 0;
         where.initiatedById = userId;
+        delete where.OR;
         break;
       case "pending":
-        where.tasks = {
-          some: {
-            assigneeId: userId,
-            status: "PENDING",
-          },
-        };
-        // Merge with existing OR
+        // Only memos where this user has an active pending task
+        where.tasks = { some: { assigneeId: userId, status: "PENDING" } };
         delete where.OR;
         break;
       case "approved":
@@ -58,7 +87,6 @@ export async function GET(req: NextRequest) {
       case "rejected":
         where.status = "REJECTED";
         break;
-      // "all" -- no extra filter
     }
 
     if (search) {
@@ -72,42 +100,58 @@ export async function GET(req: NextRequest) {
       ];
     }
 
-    const [memos, total] = await Promise.all([
-      db.workflowInstance.findMany({
-        where,
-        include: {
-          tasks: {
-            orderBy: { stepIndex: "asc" },
-            include: {
-              assignee: {
-                select: { id: true, name: true, displayName: true, department: true, jobTitle: true },
-              },
+    // Fetch all matching memos (no DB-level pagination yet — we filter first)
+    const allMemos = await db.workflowInstance.findMany({
+      where,
+      include: {
+        tasks: {
+          orderBy: { stepIndex: "asc" },
+          include: {
+            assignee: {
+              select: { id: true, name: true, displayName: true, department: true, jobTitle: true },
             },
           },
-          events: {
-            orderBy: { occurredAt: "desc" },
-            take: 1,
-          },
-          document: {
-            select: { id: true, referenceNumber: true, title: true, status: true },
-          },
         },
-        orderBy: { startedAt: "desc" },
-        skip: (page - 1) * limit,
-        take: limit,
-      }),
-      db.workflowInstance.count({ where }),
-    ]);
+        events: {
+          orderBy: { occurredAt: "desc" },
+        },
+        document: {
+          select: { id: true, referenceNumber: true, title: true, status: true },
+        },
+      },
+      orderBy: { startedAt: "desc" },
+    });
+
+    // Application-level access filter (skipped for elevated roles)
+    const accessible = hasElevatedAccess
+      ? allMemos
+      : allMemos.filter((memo) => {
+          if (memo.initiatedById === userId) return true;
+          const tasks = memo.tasks;
+          if (tasks.some((t) => t.assigneeId === userId && t.status === "COMPLETED")) return true;
+          const pendingTasks = tasks.filter((t) => t.status === "PENDING");
+          if (pendingTasks.length === 0) return false;
+          const lowestPending = Math.min(...pendingTasks.map((t) => t.stepIndex));
+          return pendingTasks.some((t) => t.assigneeId === userId && t.stepIndex === lowestPending);
+        });
+
+    const total = accessible.length;
+    const memos = accessible.slice((page - 1) * limit, page * limit);
 
     // Enrich each memo with computed fields
     const enriched = memos.map((memo) => {
       const formData = memo.formData as Record<string, unknown>;
+      const isCommunicating = formData?.memoType === "communicating";
       const toUser = memo.tasks.find((t) => t.stepName === "Final Approval")?.assignee;
-      const fromUser = memo.tasks.find((t) => t.stepName === "Self-Review")?.assignee;
+      const fromUser = memo.tasks.find((t) =>
+        t.stepName === "Self-Review" || t.stepName === "Sent"
+      )?.assignee;
 
       // Determine memo-specific status
       let memoStatus = "DRAFT";
-      if (memo.status === "COMPLETED") {
+      if (isCommunicating && memo.status === "COMPLETED") {
+        memoStatus = "SENT";
+      } else if (memo.status === "COMPLETED") {
         memoStatus = "APPROVED";
       } else if (memo.status === "REJECTED") {
         memoStatus = "REJECTED";
@@ -135,11 +179,57 @@ export async function GET(req: NextRequest) {
         }
       }
 
+      const pendingTasksList = memo.tasks.filter((t) => t.status === "PENDING");
+      const lowestPendingIdx =
+        pendingTasksList.length > 0
+          ? Math.min(...pendingTasksList.map((t) => t.stepIndex))
+          : null;
+      let currentAssignee =
+        lowestPendingIdx !== null
+          ? (pendingTasksList.find((t) => t.stepIndex === lowestPendingIdx)?.assignee ?? null)
+          : null;
+
+      // If there's an outstanding clarification request, the memo is effectively
+      // "with" the clarification target until they respond.
+      const provided = new Set(
+        memo.events
+          .filter((e) => e.eventType === "MEMO_CLARIFICATION_PROVIDED")
+          .map((e) => String((e.data as Record<string, unknown>)?.requestEventId ?? ""))
+          .filter(Boolean)
+      );
+      const outstandingClarification = memo.events.find(
+        (e) =>
+          e.eventType === "MEMO_CLARIFICATION_REQUESTED" && !provided.has(e.id)
+      );
+      let awaitingClarification = false;
+      if (outstandingClarification) {
+        awaitingClarification = true;
+        const d = outstandingClarification.data as Record<string, unknown>;
+        if (d.targetUserId) {
+          currentAssignee = {
+            id: String(d.targetUserId),
+            name: String(d.targetUserName ?? ""),
+            displayName: String(d.targetUserName ?? ""),
+            department: null,
+            jobTitle: "Clarification requested",
+          };
+        } else if (d.targetDepartment) {
+          currentAssignee = {
+            id: `dept:${d.targetDepartment}`,
+            name: String(d.targetDepartment),
+            displayName: `${d.targetDepartment} dept.`,
+            department: String(d.targetDepartment),
+            jobTitle: "Clarification requested",
+          };
+        }
+      }
+
       return {
         id: memo.id,
         referenceNumber: memo.referenceNumber,
         subject: memo.subject,
         status: memoStatus,
+        memoType: isCommunicating ? "communicating" : "administrative",
         workflowStatus: memo.status,
         from: fromUser ?? { id: "", name: "", displayName: formData?.fromName ?? "Unknown", department: "", jobTitle: "" },
         to: toUser ?? { id: "", name: "", displayName: formData?.toName ?? "Unknown", department: "", jobTitle: "" },
@@ -147,6 +237,19 @@ export async function GET(req: NextRequest) {
         startedAt: memo.startedAt,
         completedAt: memo.completedAt,
         currentStepIndex: memo.currentStepIndex,
+        currentAssignee,
+        awaitingClarification,
+        trail: memo.tasks.map((t) => ({
+          id: t.id,
+          stepName: t.stepName,
+          stepIndex: t.stepIndex,
+          status: t.status,
+          action: t.action,
+          comment: t.comment,
+          assignee: t.assignee,
+          assignedAt: t.assignedAt,
+          completedAt: t.completedAt,
+        })),
         tasks: memo.tasks,
         documentId: memo.documentId,
         initiatedById: memo.initiatedById,
@@ -188,10 +291,14 @@ export async function POST(req: NextRequest) {
       documentId,
       approver: approverId,
       cc,
+      bcc,
       department: memoDepartment,
       departmentOffice,
       designation,
       referenceNumber: customRef,
+      memoType: memoTypeRaw,
+      memoCategory: memoCategoryRaw,
+      forwardToHod: forwardToHodRaw,
     } = body as {
       to: string;
       toIsManual?: boolean;
@@ -201,11 +308,19 @@ export async function POST(req: NextRequest) {
       documentId?: string;
       approver?: string;
       cc?: string[];
+      bcc?: string[];
       department?: string;
       departmentOffice?: string;
       designation?: string;
       referenceNumber?: string;
+      memoType?: "administrative" | "communicating";
+      memoCategory?: "personal" | "departmental";
+      forwardToHod?: boolean;
     };
+
+    const memoType = memoTypeRaw ?? "administrative";
+    const memoCategory = memoCategoryRaw ?? "departmental";
+    const forwardToHodRequested = !!forwardToHodRaw;
 
     // Validate required fields
     if (!to?.trim()) {
@@ -217,7 +332,7 @@ export async function POST(req: NextRequest) {
     if (!memoBody?.trim()) {
       return NextResponse.json({ error: "Memo body is required" }, { status: 400 });
     }
-    if (recommenders && recommenders.length > 5) {
+    if (memoType === "administrative" && recommenders && recommenders.length > 5) {
       return NextResponse.json({ error: "Maximum 5 recommenders allowed" }, { status: 400 });
     }
 
@@ -275,14 +390,50 @@ export async function POST(req: NextRequest) {
     // Fetch initiator details
     const initiator = await db.user.findUnique({
       where: { id: session.user.id },
-      select: { id: true, name: true, displayName: true, department: true, jobTitle: true },
+      select: {
+        id: true, name: true, displayName: true, department: true, jobTitle: true,
+        roles: { select: { role: { select: { name: true } } } },
+      },
     });
     if (!initiator) {
       return NextResponse.json({ error: "Initiator not found" }, { status: 404 });
     }
 
+    // Determine seniority for FROM/TO ordering
+    let recipientRoles: string[] = [];
+    if (recipient) {
+      const recipientWithRoles = await db.user.findUnique({
+        where: { id: recipient.id },
+        select: { roles: { select: { role: { select: { name: true } } } } },
+      });
+      recipientRoles = recipientWithRoles?.roles.map((r) => r.role.name) ?? [];
+    }
+    const senderRoles = initiator.roles.map((r) => r.role.name);
+    const senderIsSuperior = manualToText
+      ? true // Manual "To" (e.g., "All Students") — sender is always superior
+      : isSenderMoreSenior(senderRoles, recipientRoles);
+
+    // Resolve HOD-forwarding context.  We only apply it to approval memos that
+    // are departmental, whose author is not themselves an HOD, and where the
+    // caller explicitly opted in by setting `forwardToHod: true`.  The HOD is
+    // looked up by the initiator's own department (not the memo department
+    // field, which may be overridden) so endorsement stays tied to the author.
+    const shouldForwardToHod =
+      forwardToHodRequested &&
+      memoType === "administrative" &&
+      memoCategory === "departmental" &&
+      !userIsHod(senderRoles);
+
+    const hod = shouldForwardToHod
+      ? await findHodForDepartment(initiator.department)
+      : null;
+
+    // Guard against forwarding the memo to the author themselves.
+    const applyHodStep = !!hod && hod.id !== initiator.id;
+
     const department = memoDepartment || session.user.department || "GEN";
-    const deptAbbr = department.replace(/[^A-Z0-9]/gi, "").slice(0, 6).toUpperCase() || "GEN";
+    const deptMemoCode = getDepartmentMemoCode(department);
+    const pfNumber = session.user.employeeId || "0000";
 
     // Use custom reference number or auto-generate
     let memoReference: string;
@@ -295,24 +446,37 @@ export async function POST(req: NextRequest) {
         return NextResponse.json({ error: "Reference number already exists" }, { status: 409 });
       }
       memoReference = customRef.trim();
+    } else if (memoCategory === "personal") {
+      memoReference = await generatePersonalMemoReference(pfNumber);
     } else {
-      memoReference = await generateReference("MEMO", deptAbbr);
+      memoReference = await generateMemoReference(deptMemoCode);
     }
 
-    // Get or create the Internal Memo Approval workflow template
+    // Get or create the workflow template based on memo type
+    const templateName =
+      memoType === "communicating"
+        ? "Communicating Memo"
+        : "Internal Memo Approval";
+
     let template = await db.workflowTemplate.findFirst({
-      where: { name: "Internal Memo Approval" },
+      where: { name: templateName },
     });
     if (!template) {
       template = await db.workflowTemplate.create({
         data: {
-          name: "Internal Memo Approval",
-          description: "Sequential approval workflow for internal university memoranda",
+          name: templateName,
+          description:
+            memoType === "communicating"
+              ? "Direct memo circulation without approval chain"
+              : "Sequential approval workflow for internal university memoranda",
           createdById: session.user.id,
-          definition: {
-            type: "MEMO_APPROVAL",
-            steps: ["Self-Review", "Recommendation(s)", "Final Approval"],
-          },
+          definition:
+            memoType === "communicating"
+              ? { type: "MEMO_COMMUNICATING", steps: ["Sent"] }
+              : {
+                  type: "MEMO_APPROVAL",
+                  steps: ["Self-Review", "Recommendation(s)", "Final Approval"],
+                },
           isActive: true,
         },
       });
@@ -338,10 +502,10 @@ export async function POST(req: NextRequest) {
           documentType: memoCasefolder ? "Internal Memo" : "MEMO",
           department,
           createdById: session.user.id,
-          status: "DRAFT",
+          status: memoType === "communicating" ? "ARCHIVED" : "DRAFT",
           metadata: {
             formTemplateId: memoCasefolder?.id ?? null,
-            memoType: "INTERNAL",
+            memoType: memoType === "communicating" ? "COMMUNICATING" : "INTERNAL",
             to: toDisplayName,
             toId: recipient?.id ?? null,
             toIsManual: !!manualToText,
@@ -368,6 +532,7 @@ export async function POST(req: NextRequest) {
               jobTitle: r.jobTitle,
             })),
             cc: cc ?? [],
+            bcc: bcc ?? [],
             bodyHtml: memoBody.trim(),
           },
           ...(documentId
@@ -395,10 +560,14 @@ export async function POST(req: NextRequest) {
           documentId: document.id,
           initiatedById: session.user.id,
           subject: subject.trim(),
-          status: "IN_PROGRESS",
-          currentStepIndex: 1, // Skip self-review (auto-completed)
+          status: memoType === "communicating" ? "COMPLETED" : "IN_PROGRESS",
+          currentStepIndex: memoType === "communicating" ? 0 : 1,
+          completedAt: memoType === "communicating" ? new Date() : undefined,
           formData: {
             body: memoBody.trim(),
+            memoType,
+            memoCategory,
+            senderIsSuperior,
             toId: recipient?.id ?? null,
             toName: toDisplayName,
             toIsManual: !!manualToText,
@@ -414,6 +583,11 @@ export async function POST(req: NextRequest) {
             memoReference,
             documentId: document.id,
             cc: cc ?? [],
+            bcc: bcc ?? [],
+            forwardToHod: applyHodStep,
+            hodId: applyHodStep ? hod!.id : null,
+            hodName: applyHodStep ? hod!.displayName : null,
+            hodDepartment: applyHodStep ? hod!.department : null,
           },
         },
       });
@@ -421,63 +595,99 @@ export async function POST(req: NextRequest) {
       // 4. Create WorkflowTasks
       const tasks = [];
 
-      // Step 0: Self-Review (auto-completed)
-      tasks.push(
-        await tx.workflowTask.create({
-          data: {
-            instanceId: workflowInstance.id,
-            stepName: "Self-Review",
-            stepIndex: 0,
-            assigneeId: session.user.id,
-            status: "COMPLETED",
-            action: "APPROVED",
-            comment: "Memo sent by initiator",
-            completedAt: new Date(),
-          },
-        })
-      );
-
-      // Steps 1-N: Recommenders
-      for (let i = 0; i < recommenderUsers.length; i++) {
+      if (memoType === "communicating") {
+        // Communicating memo: single auto-completed "Sent" step
         tasks.push(
           await tx.workflowTask.create({
             data: {
               instanceId: workflowInstance.id,
-              stepName: `Recommendation ${i + 1}`,
-              stepIndex: i + 1,
-              assigneeId: recommenderUsers[i].id,
-              status: "PENDING",
+              stepName: "Sent",
+              stepIndex: 0,
+              assigneeId: session.user.id,
+              status: "COMPLETED",
+              action: "APPROVED",
+              comment: "Communicating memo sent",
+              completedAt: new Date(),
             },
           })
         );
-      }
-
-      // Final Step: Approver (can be the "To" person or a separate approver)
-      // For manual "To", an explicit approver must be provided
-      const finalApproverId = approverId || recipient?.id;
-      if (finalApproverId) {
-        const finalStepIndex = recommenderUsers.length + 1;
+      } else {
+        // Approval memo: Self-Review → [HOD Endorsement?] → Recommenders → Final Approval
+        // Step 0: Self-Review (auto-completed)
         tasks.push(
           await tx.workflowTask.create({
             data: {
               instanceId: workflowInstance.id,
-              stepName: "Final Approval",
-              stepIndex: finalStepIndex,
-              assigneeId: finalApproverId,
-              status: "PENDING",
+              stepName: "Self-Review",
+              stepIndex: 0,
+              assigneeId: session.user.id,
+              status: "COMPLETED",
+              action: "APPROVED",
+              comment: "Memo sent by initiator",
+              completedAt: new Date(),
             },
           })
         );
+
+        // Optional HOD endorsement step (inserted when creator opted in)
+        const hodStepOffset = applyHodStep ? 1 : 0;
+        if (applyHodStep && hod) {
+          tasks.push(
+            await tx.workflowTask.create({
+              data: {
+                instanceId: workflowInstance.id,
+                stepName: "HOD Endorsement",
+                stepIndex: 1,
+                assigneeId: hod.id,
+                status: "PENDING",
+              },
+            })
+          );
+        }
+
+        // Recommenders
+        for (let i = 0; i < recommenderUsers.length; i++) {
+          tasks.push(
+            await tx.workflowTask.create({
+              data: {
+                instanceId: workflowInstance.id,
+                stepName: `Recommendation ${i + 1}`,
+                stepIndex: 1 + hodStepOffset + i,
+                assigneeId: recommenderUsers[i].id,
+                status: "PENDING",
+              },
+            })
+          );
+        }
+
+        // Final Step: Approver (can be the "To" person or a separate approver)
+        // For manual "To", an explicit approver must be provided
+        const finalApproverId = approverId || recipient?.id;
+        if (finalApproverId) {
+          const finalStepIndex = 1 + hodStepOffset + recommenderUsers.length;
+          tasks.push(
+            await tx.workflowTask.create({
+              data: {
+                instanceId: workflowInstance.id,
+                stepName: "Final Approval",
+                stepIndex: finalStepIndex,
+                assigneeId: finalApproverId,
+                status: "PENDING",
+              },
+            })
+          );
+        }
       }
 
       // 5. Create initial workflow event
       await tx.workflowEvent.create({
         data: {
           instanceId: workflowInstance.id,
-          eventType: "MEMO_CREATED",
+          eventType: memoType === "communicating" ? "MEMO_SENT" : "MEMO_CREATED",
           actorId: session.user.id,
           data: {
             memoReference,
+            memoType,
             subject: subject.trim(),
             to: toDisplayName,
             recommenderCount: recommenderUsers.length,
@@ -485,30 +695,62 @@ export async function POST(req: NextRequest) {
         },
       });
 
-      // 6. Notify the first person in the chain
-      const firstPendingUserId =
-        recommenderUsers.length > 0
-          ? recommenderUsers[0].id
-          : finalApproverId;
-      const firstPendingName =
-        recommenderUsers.length > 0
-          ? recommenderUsers[0].displayName
-          : toDisplayName;
+      // 6. Notify recipients
+      if (memoType === "communicating") {
+        // Notify the "To" person and CC recipients that a memo was shared
+        const notifyIds = [
+          ...(recipient ? [recipient.id] : []),
+          ...(cc ?? []),
+          ...(bcc ?? []),
+        ].filter((id) => id !== session.user.id);
 
-      if (firstPendingUserId) {
-        await tx.notification.create({
-          data: {
-            userId: firstPendingUserId,
-            type: "MEMO_ACTION_REQUIRED",
-            title: "New Memo Requires Your Action",
-            body: `${initiator.displayName} has sent a memo "${subject.trim()}" that requires your ${
-              recommenderUsers.length > 0 && firstPendingUserId !== (recipient?.id ?? "")
-                ? "recommendation"
-                : "approval"
-            }.`,
-            linkUrl: `/memos/${workflowInstance.id}`,
-          },
-        });
+        for (const userId of notifyIds) {
+          await tx.notification.create({
+            data: {
+              userId,
+              type: "MEMO_RECEIVED",
+              title: "New Memo",
+              body: `${initiator.displayName} has sent you a memo: "${subject.trim()}"`,
+              linkUrl: `/memos/${workflowInstance.id}`,
+            },
+          });
+        }
+      } else {
+        // Approval memo: notify first person in the chain
+        const finalApproverId = approverId || recipient?.id;
+
+        if (applyHodStep && hod) {
+          await tx.notification.create({
+            data: {
+              userId: hod.id,
+              type: "MEMO_ACTION_REQUIRED",
+              title: "Memo Awaits Your Endorsement",
+              body: `${initiator.displayName} has drafted a memo "${subject.trim()}" and requested your endorsement as HOD before it proceeds.`,
+              linkUrl: `/memos/${workflowInstance.id}`,
+            },
+          });
+        } else {
+          const firstPendingUserId =
+            recommenderUsers.length > 0
+              ? recommenderUsers[0].id
+              : finalApproverId;
+
+          if (firstPendingUserId) {
+            await tx.notification.create({
+              data: {
+                userId: firstPendingUserId,
+                type: "MEMO_ACTION_REQUIRED",
+                title: "New Memo Requires Your Action",
+                body: `${initiator.displayName} has sent a memo "${subject.trim()}" that requires your ${
+                  recommenderUsers.length > 0 && firstPendingUserId !== (recipient?.id ?? "")
+                    ? "recommendation"
+                    : "approval"
+                }.`,
+                linkUrl: `/memos/${workflowInstance.id}`,
+              },
+            });
+          }
+        }
       }
 
       return { workflowInstance, document, tasks };

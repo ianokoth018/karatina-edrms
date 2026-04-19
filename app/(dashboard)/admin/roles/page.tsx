@@ -1,7 +1,7 @@
 "use client";
 
 import { useState, useEffect, useCallback } from "react";
-import { useSession } from "next-auth/react";
+import { usePermissions } from "@/lib/use-permissions";
 
 interface Permission {
   id: string;
@@ -19,17 +19,44 @@ interface Role {
 }
 
 const RESOURCES = [
+  "memos",
+  "correspondence",
   "documents",
   "workflows",
-  "admin",
   "records",
+  "records_casefolders",
+  "records_classification",
+  "records_retention",
+  "records_physical",
+  "records_disposition",
+  "records_capture",
   "forms",
   "reports",
+  "admin",
 ];
+
+// Resources that are sub-modules of a parent — indented in the UI
+const SUB_RESOURCES: Record<string, string> = {
+  records_casefolders:   "records",
+  records_classification:"records",
+  records_retention:     "records",
+  records_physical:      "records",
+  records_disposition:   "records",
+  records_capture:       "records",
+};
+
+const RESOURCE_LABELS: Record<string, string> = {
+  records_casefolders:    "↳ Casefolders",
+  records_classification: "↳ Classification",
+  records_retention:      "↳ Retention",
+  records_physical:       "↳ Physical Records",
+  records_disposition:    "↳ Disposition",
+  records_capture:        "↳ Auto Capture",
+};
 const ACTIONS = ["create", "read", "update", "delete", "approve", "manage"];
 
 export default function RolesPage() {
-  const { data: session } = useSession();
+  const { can } = usePermissions();
   const [roles, setRoles] = useState<Role[]>([]);
   const [loading, setLoading] = useState(true);
   const [showModal, setShowModal] = useState(false);
@@ -194,7 +221,7 @@ export default function RolesPage() {
     }
   }
 
-  const hasPermission = session?.user?.permissions?.includes("admin:manage");
+  const hasPermission = can("admin:manage");
 
   if (!hasPermission) {
     return (
@@ -273,7 +300,7 @@ export default function RolesPage() {
                       </span>
                     )}
                   </div>
-                  {!role.isSystem && (
+                  {role.name !== "ADMIN" && (
                     <div className="flex gap-1">
                       <button
                         onClick={() => openEditModal(role)}
@@ -458,24 +485,26 @@ export default function RolesPage() {
                         const allChecked = ACTIONS.every((a) =>
                           formPermissions.has(`${resource}:${a}`)
                         );
+                        const isSub = resource in SUB_RESOURCES;
+                        const label = RESOURCE_LABELS[resource] ?? resource;
                         return (
                           <tr
                             key={resource}
-                            className="hover:bg-gray-50 dark:hover:bg-gray-800/30"
+                            className={`hover:bg-gray-50 dark:hover:bg-gray-800/30 ${isSub ? "bg-gray-50/50 dark:bg-gray-800/20" : ""}`}
                           >
-                            <td className="px-4 py-2.5">
+                            <td className={`py-2.5 ${isSub ? "pl-8 pr-4" : "px-4"}`}>
                               <button
                                 type="button"
                                 onClick={() =>
                                   toggleAllForResource(resource)
                                 }
-                                className={`text-sm font-medium capitalize transition-colors ${
-                                  allChecked
-                                    ? "text-karu-green"
-                                    : "text-gray-700 dark:text-gray-300"
-                                }`}
+                                className={`text-sm transition-colors ${
+                                  isSub
+                                    ? "font-normal text-gray-500 dark:text-gray-400"
+                                    : "font-medium capitalize"
+                                } ${allChecked ? "text-karu-green" : isSub ? "text-gray-500 dark:text-gray-400" : "text-gray-700 dark:text-gray-300"}`}
                               >
-                                {resource}
+                                {label}
                               </button>
                             </td>
                             {ACTIONS.map((action) => (

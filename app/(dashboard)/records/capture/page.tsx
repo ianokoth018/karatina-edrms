@@ -1,6 +1,9 @@
 "use client";
 
 import { useState, useEffect, useCallback, useRef, useMemo } from "react";
+import { useSession } from "next-auth/react";
+import { useRouter } from "next/navigation";
+import { Can } from "@/components/auth/can";
 
 /* ================================================================
    Types
@@ -452,6 +455,13 @@ function CasefolderSelect({
    ================================================================ */
 
 export default function CaptureProfilesPage() {
+  const { data: session, status } = useSession();
+  const router = useRouter();
+  useEffect(() => {
+    if (status === "loading") return;
+    const p = session?.user?.permissions ?? [];
+    if (!p.includes("admin:manage") && !p.includes("records_capture:read")) router.replace("/records/casefolders");
+  }, [session, status, router]);
   /* -------- data state -------- */
   const [profiles, setProfiles] = useState<CaptureProfile[]>([]);
   const [forms, setForms] = useState<FormTemplate[]>([]);
@@ -751,21 +761,25 @@ export default function CaptureProfilesPage() {
           </p>
         </div>
         <div className="flex items-center gap-3">
-          <button
-            onClick={handleScanAll}
-            disabled={scanningAll}
-            className="inline-flex items-center gap-2 h-10 px-5 rounded-xl bg-[#dd9f42] text-white font-medium text-sm transition-all hover:bg-[#c98d35] focus:ring-2 focus:ring-[#dd9f42]/30 focus:ring-offset-2 disabled:opacity-60 disabled:cursor-not-allowed whitespace-nowrap"
-          >
-            {scanningAll ? <IconSpinner className="w-4 h-4" /> : <IconBolt className="w-4 h-4" />}
-            {scanningAll ? "Scanning..." : "Scan All Now"}
-          </button>
-          <button
-            onClick={openCreate}
-            className="inline-flex items-center gap-2 h-10 px-5 rounded-xl bg-karu-green text-white font-medium text-sm transition-all hover:bg-karu-green-dark focus:ring-2 focus:ring-karu-green/20 focus:ring-offset-2 whitespace-nowrap"
-          >
-            <IconPlus />
-            New Capture Profile
-          </button>
+          <Can anyOf={["records:manage", "admin:manage"]}>
+            <button
+              onClick={handleScanAll}
+              disabled={scanningAll}
+              className="inline-flex items-center gap-2 h-10 px-5 rounded-xl bg-[#dd9f42] text-white font-medium text-sm transition-all hover:bg-[#c98d35] focus:ring-2 focus:ring-[#dd9f42]/30 focus:ring-offset-2 disabled:opacity-60 disabled:cursor-not-allowed whitespace-nowrap"
+            >
+              {scanningAll ? <IconSpinner className="w-4 h-4" /> : <IconBolt className="w-4 h-4" />}
+              {scanningAll ? "Scanning..." : "Scan All Now"}
+            </button>
+          </Can>
+          <Can anyOf={["records:create", "records:manage"]}>
+            <button
+              onClick={openCreate}
+              className="inline-flex items-center gap-2 h-10 px-5 rounded-xl bg-karu-green text-white font-medium text-sm transition-all hover:bg-karu-green-dark focus:ring-2 focus:ring-karu-green/20 focus:ring-offset-2 whitespace-nowrap"
+            >
+              <IconPlus />
+              New Capture Profile
+            </button>
+          </Can>
         </div>
       </div>
 
@@ -887,13 +901,15 @@ export default function CaptureProfilesPage() {
           <p className="text-sm text-gray-500 dark:text-gray-400 mb-6 max-w-sm">
             Create a capture profile to automatically ingest documents from watched folders.
           </p>
-          <button
-            onClick={openCreate}
-            className="inline-flex items-center gap-2 h-10 px-5 rounded-xl bg-karu-green text-white font-medium text-sm transition-all hover:bg-karu-green-dark"
-          >
-            <IconPlus />
-            New Capture Profile
-          </button>
+          <Can anyOf={["records:create", "records:manage"]}>
+            <button
+              onClick={openCreate}
+              className="inline-flex items-center gap-2 h-10 px-5 rounded-xl bg-karu-green text-white font-medium text-sm transition-all hover:bg-karu-green-dark"
+            >
+              <IconPlus />
+              New Capture Profile
+            </button>
+          </Can>
         </div>
       )}
 
@@ -922,21 +938,23 @@ export default function CaptureProfilesPage() {
                     )}
                   </div>
                   {/* Active toggle */}
-                  <button
-                    onClick={() => toggleActive(profile)}
-                    className={`relative flex-shrink-0 w-11 h-6 rounded-full transition-colors ${
-                      profile.isActive
-                        ? "bg-emerald-500"
-                        : "bg-gray-300 dark:bg-gray-600"
-                    }`}
-                    title={profile.isActive ? "Active -- click to deactivate" : "Inactive -- click to activate"}
-                  >
-                    <span
-                      className={`absolute top-0.5 left-0.5 w-5 h-5 bg-white rounded-full shadow transition-transform ${
-                        profile.isActive ? "translate-x-5" : "translate-x-0"
+                  <Can anyOf={["records:update", "records:manage"]}>
+                    <button
+                      onClick={() => toggleActive(profile)}
+                      className={`relative flex-shrink-0 w-11 h-6 rounded-full transition-colors ${
+                        profile.isActive
+                          ? "bg-emerald-500"
+                          : "bg-gray-300 dark:bg-gray-600"
                       }`}
-                    />
-                  </button>
+                      title={profile.isActive ? "Active -- click to deactivate" : "Inactive -- click to activate"}
+                    >
+                      <span
+                        className={`absolute top-0.5 left-0.5 w-5 h-5 bg-white rounded-full shadow transition-transform ${
+                          profile.isActive ? "translate-x-5" : "translate-x-0"
+                        }`}
+                      />
+                    </button>
+                  </Can>
                 </div>
 
                 {/* Folder path */}
@@ -989,25 +1007,29 @@ export default function CaptureProfilesPage() {
 
                 {/* Actions */}
                 <div className="flex items-center gap-2 pt-3 border-t border-gray-100 dark:border-gray-800">
-                  <button
-                    onClick={() => openEdit(profile)}
-                    className="inline-flex items-center gap-1.5 h-8 px-3 rounded-lg text-xs font-medium text-gray-700 dark:text-gray-300 bg-gray-50 dark:bg-gray-800 hover:bg-gray-100 dark:hover:bg-gray-700 transition-colors"
-                  >
-                    <IconEdit className="w-3.5 h-3.5" />
-                    Edit
-                  </button>
-                  <button
-                    onClick={() => handleScanProfile(profile.id)}
-                    disabled={isScanningThis || scanningAll}
-                    className="inline-flex items-center gap-1.5 h-8 px-3 rounded-lg text-xs font-medium text-[#dd9f42] bg-[#dd9f42]/10 hover:bg-[#dd9f42]/20 dark:bg-[#dd9f42]/10 dark:hover:bg-[#dd9f42]/20 transition-colors disabled:opacity-50"
-                  >
-                    {isScanningThis ? (
-                      <IconSpinner className="w-3.5 h-3.5" />
-                    ) : (
-                      <IconScan className="w-3.5 h-3.5" />
-                    )}
-                    {isScanningThis ? "Scanning..." : "Scan Now"}
-                  </button>
+                  <Can anyOf={["records:update", "records:manage"]}>
+                    <button
+                      onClick={() => openEdit(profile)}
+                      className="inline-flex items-center gap-1.5 h-8 px-3 rounded-lg text-xs font-medium text-gray-700 dark:text-gray-300 bg-gray-50 dark:bg-gray-800 hover:bg-gray-100 dark:hover:bg-gray-700 transition-colors"
+                    >
+                      <IconEdit className="w-3.5 h-3.5" />
+                      Edit
+                    </button>
+                  </Can>
+                  <Can anyOf={["records:manage", "admin:manage"]}>
+                    <button
+                      onClick={() => handleScanProfile(profile.id)}
+                      disabled={isScanningThis || scanningAll}
+                      className="inline-flex items-center gap-1.5 h-8 px-3 rounded-lg text-xs font-medium text-[#dd9f42] bg-[#dd9f42]/10 hover:bg-[#dd9f42]/20 dark:bg-[#dd9f42]/10 dark:hover:bg-[#dd9f42]/20 transition-colors disabled:opacity-50"
+                    >
+                      {isScanningThis ? (
+                        <IconSpinner className="w-3.5 h-3.5" />
+                      ) : (
+                        <IconScan className="w-3.5 h-3.5" />
+                      )}
+                      {isScanningThis ? "Scanning..." : "Scan Now"}
+                    </button>
+                  </Can>
                   <a
                     href={`/records/capture/activity?profile=${profile.id}`}
                     className="inline-flex items-center gap-1.5 h-8 px-3 rounded-lg text-xs font-medium text-blue-600 dark:text-blue-400 bg-blue-50 dark:bg-blue-950/30 hover:bg-blue-100 dark:hover:bg-blue-950/50 transition-colors"
@@ -1015,13 +1037,15 @@ export default function CaptureProfilesPage() {
                     <IconLog className="w-3.5 h-3.5" />
                     View Logs
                   </a>
-                  <button
-                    onClick={() => openDelete(profile)}
-                    className="inline-flex items-center gap-1.5 h-8 px-3 rounded-lg text-xs font-medium text-red-600 dark:text-red-400 bg-red-50 dark:bg-red-950/30 hover:bg-red-100 dark:hover:bg-red-950/50 transition-colors ml-auto"
-                  >
-                    <IconTrash className="w-3.5 h-3.5" />
-                    Delete
-                  </button>
+                  <Can anyOf={["records:delete", "records:manage"]}>
+                    <button
+                      onClick={() => openDelete(profile)}
+                      className="inline-flex items-center gap-1.5 h-8 px-3 rounded-lg text-xs font-medium text-red-600 dark:text-red-400 bg-red-50 dark:bg-red-950/30 hover:bg-red-100 dark:hover:bg-red-950/50 transition-colors ml-auto"
+                    >
+                      <IconTrash className="w-3.5 h-3.5" />
+                      Delete
+                    </button>
+                  </Can>
                 </div>
               </div>
             );

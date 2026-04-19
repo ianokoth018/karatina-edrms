@@ -2,6 +2,8 @@
 
 import { useState, useEffect, useCallback, useRef, useMemo } from "react";
 import Link from "next/link";
+import { useSession } from "next-auth/react";
+import { Can } from "@/components/auth/can";
 
 /* ------------------------------------------------------------------ */
 /*  Type definitions                                                   */
@@ -176,6 +178,10 @@ function IconClock({ className = "w-3.5 h-3.5" }: { className?: string }) {
 /* ------------------------------------------------------------------ */
 
 export default function WorkflowsPage() {
+  const { data: session } = useSession();
+  const perms = session?.user?.permissions ?? [];
+  const isAdmin = perms.includes("admin:manage");
+  const canManage = isAdmin || perms.includes("workflows:manage");
   // ---- Task list state ----
   const [tasks, setTasks] = useState<WorkflowTask[]>([]);
   const [pagination, setPagination] = useState<Pagination>({
@@ -655,15 +661,17 @@ export default function WorkflowsPage() {
             Workflow tasks assigned to you
           </p>
         </div>
-        <Link
-          href="/workflows/start"
-          className="inline-flex items-center gap-2 px-4 py-2.5 rounded-xl bg-karu-green text-white text-sm font-medium hover:bg-karu-green-dark transition-colors shadow-sm"
-        >
-          <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" strokeWidth={2} stroke="currentColor">
-            <path strokeLinecap="round" strokeLinejoin="round" d="M12 4.5v15m7.5-7.5h-15" />
-          </svg>
-          Start Workflow
-        </Link>
+        <Can permission="workflows:create">
+          <Link
+            href="/workflows/start"
+            className="inline-flex items-center gap-2 px-4 py-2.5 rounded-xl bg-karu-green text-white text-sm font-medium hover:bg-karu-green-dark transition-colors shadow-sm"
+          >
+            <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" strokeWidth={2} stroke="currentColor">
+              <path strokeLinecap="round" strokeLinejoin="round" d="M12 4.5v15m7.5-7.5h-15" />
+            </svg>
+            Start Workflow
+          </Link>
+        </Can>
       </div>
 
       {/* ---- Stats cards ---- */}

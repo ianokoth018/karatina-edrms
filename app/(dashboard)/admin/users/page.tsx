@@ -1,7 +1,7 @@
 "use client";
 
 import { useState, useEffect, useCallback } from "react";
-import { useSession } from "next-auth/react";
+import { usePermissions } from "@/lib/use-permissions";
 
 interface UserRole {
   role: { id: string; name: string };
@@ -32,7 +32,7 @@ interface Pagination {
 }
 
 export default function UsersPage() {
-  const { data: session } = useSession();
+  const { can } = usePermissions();
   const [users, setUsers] = useState<User[]>([]);
   const [roles, setRoles] = useState<Role[]>([]);
   const [pagination, setPagination] = useState<Pagination>({
@@ -204,7 +204,7 @@ export default function UsersPage() {
     );
   }
 
-  const hasPermission = session?.user?.permissions?.includes("admin:manage");
+  const hasPermission = can("admin:manage");
 
   if (!hasPermission) {
     return (

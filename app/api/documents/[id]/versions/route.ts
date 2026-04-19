@@ -17,12 +17,13 @@ const ALLOWED_MIME_TYPES = new Set([
   "image/tiff",
 ]);
 
-/** Maximum file size: 50 MB */
-const MAX_FILE_SIZE = 50 * 1024 * 1024;
+/** Maximum file size: 2 GB */
+const MAX_FILE_SIZE = 2 * 1024 * 1024 * 1024;
 
 function serialiseBigInt(data: unknown): unknown {
   if (data === null || data === undefined) return data;
   if (typeof data === "bigint") return data.toString();
+  if (data instanceof Date) return data.toISOString();
   if (Array.isArray(data)) return data.map(serialiseBigInt);
   if (typeof data === "object") {
     const out: Record<string, unknown> = {};
@@ -138,15 +139,33 @@ export async function POST(
       return ver;
     });
 
+    const ipAddress =
+      req.headers.get("x-forwarded-for") ?? req.headers.get("x-real-ip") ?? undefined;
+    const userAgent = req.headers.get("user-agent") ?? undefined;
+
     await writeAudit({
       userId: session.user.id,
       action: "document.version_created",
       resourceType: "Document",
       resourceId: id,
+      ipAddress: ipAddress ?? undefined,
+      userAgent: userAgent ?? undefined,
       metadata: {
         versionNum: nextVersionNum,
         fileName: versionedFileName,
         changeNote: changeNote.trim(),
+      },
+    });
+    await writeAudit({
+      userId: session.user.id,
+      action: "document.version_uploaded",
+      resourceType: "Document",
+      resourceId: id,
+      ipAddress: ipAddress ?? undefined,
+      userAgent: userAgent ?? undefined,
+      metadata: {
+        versionNumber: nextVersionNum,
+        fileName: versionedFileName,
       },
     });
 

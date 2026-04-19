@@ -12,7 +12,6 @@ export async function generateReference(
   department: string
 ): Promise<string> {
   const year = new Date().getFullYear();
-  const pattern = `${prefix}-${year}-${department}-%`;
 
   // Count existing records matching this prefix+year+department pattern
   // to determine the next sequence number.
@@ -26,6 +25,60 @@ export async function generateReference(
 
   const sequence = (count + 1).toString().padStart(6, "0");
   return `${prefix}-${year}-${department}-${sequence}`;
+}
+
+/**
+ * Generate a memo reference in the university format: `KarU/Rg.AA/1`
+ *
+ * Format matches the official Karatina University memo template:
+ *   KarU/{DeptMemoCode}/{SequenceNumber}
+ *
+ * @param deptMemoCode - The department memo code (e.g. "Rg.AA", "VC", "Fin")
+ * @returns A unique memo reference string
+ */
+export async function generateMemoReference(
+  deptMemoCode: string
+): Promise<string> {
+  const prefix = `KarU/${deptMemoCode}/`;
+
+  const count = await db.document.count({
+    where: {
+      referenceNumber: {
+        startsWith: prefix,
+      },
+    },
+  });
+
+  const sequence = count + 1;
+  return `${prefix}${sequence}`;
+}
+
+/**
+ * Generate a personal memo reference: `KarU/PF.KU/005/1`
+ *
+ * Used for personal memos where the reference is tied to the
+ * staff member's PF (Personnel File) number.
+ *
+ * @param pfNumber - The employee/PF number (e.g. "KU/005")
+ * @returns A unique personal memo reference string
+ */
+export async function generatePersonalMemoReference(
+  pfNumber: string
+): Promise<string> {
+  // Sanitise the PF number for use in a reference (replace / with .)
+  const sanitised = pfNumber.replace(/\//g, ".");
+  const prefix = `KarU/PF.${sanitised}/`;
+
+  const count = await db.document.count({
+    where: {
+      referenceNumber: {
+        startsWith: prefix,
+      },
+    },
+  });
+
+  const sequence = count + 1;
+  return `${prefix}${sequence}`;
 }
 
 /**
