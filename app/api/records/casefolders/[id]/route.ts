@@ -45,8 +45,15 @@ export async function GET(
       100,
       Math.max(1, parseInt(searchParams.get("limit") ?? "20", 10))
     );
-    const search = searchParams.get("search")?.trim() || null;
     const view = searchParams.get("view") || "documents"; // "documents" | "folders"
+    // Field-level filters: ?filter_fieldName=value (AND logic, case-insensitive)
+    const fieldFilters: Record<string, string> = {};
+    for (const [key, value] of searchParams.entries()) {
+      if (key.startsWith("filter_") && value.trim()) {
+        fieldFilters[key.slice(7)] = value.trim();
+      }
+    }
+    const hasFilters = Object.keys(fieldFilters).length > 0;
     const folderKey = searchParams.get("folderKey") || null; // filter to a specific folder
 
     // Fetch the form template (casefolder definition)
@@ -154,19 +161,34 @@ export async function GET(
       delete where.metadata;
     }
 
-    // Add search filter
-    if (search) {
-      const searchCondition = {
-        OR: [
-          { title: { contains: search, mode: "insensitive" } },
-          { referenceNumber: { contains: search, mode: "insensitive" } },
-          { description: { contains: search, mode: "insensitive" } },
-        ],
-      };
-      if (where.AND) {
-        where.AND.push(searchCondition);
+    // Add field-specific filters (AND logic, case-insensitive JSON metadata search)
+    if (hasFilters) {
+      const entries = Object.entries(fieldFilters);
+      // Build a single raw query that ANDs all field conditions for efficiency
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      let matchingIds: { id: string }[] = [];
+      if (entries.length === 1) {
+        const [fieldName, value] = entries[0];
+        matchingIds = await db.$queryRaw<{ id: string }[]>`
+          SELECT id FROM "documents" WHERE metadata->>${fieldName} ILIKE ${'%' + value + '%'}
+        `;
       } else {
-        Object.assign(where, searchCondition);
+        // Multiple filters — intersect IDs across each field condition
+        let intersected: string[] | null = null;
+        for (const [fieldName, value] of entries) {
+          const rows = await db.$queryRaw<{ id: string }[]>`
+            SELECT id FROM "documents" WHERE metadata->>${fieldName} ILIKE ${'%' + value + '%'}
+          `;
+          const rowIds = rows.map((r) => r.id);
+          intersected = intersected === null ? rowIds : intersected.filter((id) => rowIds.includes(id));
+        }
+        matchingIds = (intersected ?? []).map((id) => ({ id }));
+      }
+      const idList = matchingIds.map((r) => r.id);
+      if (where.AND) {
+        where.AND.push({ id: { in: idList } });
+      } else {
+        where.id = { in: idList };
       }
     }
 
@@ -276,18 +298,14 @@ export async function GET(
         }
       }
 
-      // Convert to array and apply search filter
+      // Convert to array and apply field filters (AND logic, case-insensitive)
       let folders = Array.from(folderMap.values());
-      if (search) {
-        const q = search.toLowerCase();
-        folders = folders.filter(
-          (f) =>
-            f.key.toLowerCase().includes(q) ||
-            f.label.toLowerCase().includes(q) ||
-            Object.values(f.keyParts).some((v) => v.toLowerCase().includes(q)) ||
-            Object.values(f.metadata).some(
-              (v) => String(v).toLowerCase().includes(q)
-            )
+      if (hasFilters) {
+        folders = folders.filter((f) =>
+          Object.entries(fieldFilters).every(([fieldName, value]) => {
+            const val = f.keyParts[fieldName] ?? String(f.metadata[fieldName] ?? "");
+            return val.toLowerCase().includes(value.toLowerCase());
+          })
         );
       }
 

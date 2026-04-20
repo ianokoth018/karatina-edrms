@@ -2,6 +2,7 @@
 
 import { use, useState, useEffect, useCallback, useMemo, Fragment } from "react";
 import Link from "next/link";
+import { useSearchParams, useRouter } from "next/navigation";
 
 /* ================================================================== */
 /*  Helpers                                                            */
@@ -30,6 +31,9 @@ interface CasefolderField {
   label: string;
   type: string;
   required?: boolean;
+  hidden?: boolean;
+  usedInTitle?: boolean;
+  isAggregationKey?: boolean;
   options?: string[];
   placeholder?: string;
 }
@@ -386,12 +390,33 @@ function getFileIcon(mimeType: string) {
   return <IconFile className="w-4 h-4" />;
 }
 
-/** Safely cast template fields to our known shape. */
+/** Extract a human-readable label from document metadata using usedInTitle fields. */
+function getDocLabel(
+  metadata: Record<string, unknown>,
+  allFields: unknown[],
+  fallback: string
+): string {
+  const titleFields = (allFields as CasefolderField[]).filter((f) => f.usedInTitle);
+  if (titleFields.length === 0) return fallback;
+  const parts = titleFields
+    .map((f) => {
+      let val = metadata[f.name];
+      if (val === undefined || val === null || val === "") {
+        const camel = f.name.replace(/_([a-z])/g, (_: string, c: string) => c.toUpperCase());
+        val = metadata[camel];
+      }
+      return val !== undefined && val !== null && val !== "" ? String(val) : null;
+    })
+    .filter((v): v is string => v !== null);
+  return parts.length > 0 ? parts.join(" · ") : fallback;
+}
+
+/** Safely cast template fields to our known shape, excluding fields hidden on layout. */
 function parseCasefolderFields(fields: unknown): CasefolderField[] {
   if (!Array.isArray(fields)) return [];
   return fields.filter(
     (f): f is CasefolderField =>
-      typeof f === "object" && f !== null && typeof (f as CasefolderField).name === "string"
+      typeof f === "object" && f !== null && typeof (f as CasefolderField).name === "string" && !(f as CasefolderField).hidden
   );
 }
 
@@ -802,6 +827,9 @@ export default function CasefolderDocumentViewerPage({
   params: Promise<{ id: string; docId: string }>;
 }) {
   const { id, docId } = use(params);
+  const searchParams = useSearchParams();
+  const router = useRouter();
+  const folderKey = searchParams.get("folderKey");
 
   /* ---- State ---- */
   const [data, setData] = useState<ApiResponse | null>(null);
@@ -813,6 +841,10 @@ export default function CasefolderDocumentViewerPage({
   const [saveError, setSaveError] = useState<string | null>(null);
   const [saveSuccess, setSaveSuccess] = useState(false);
   const [selectedFileIndex, setSelectedFileIndex] = useState(0);
+
+  /* ---- Sibling docs (folder navigation) ---- */
+  const [folderDocs, setFolderDocs] = useState<{ id: string; title: string; referenceNumber: string; status: string; metadata: Record<string, unknown> }[]>([]);
+  const [folderDocsLoading, setFolderDocsLoading] = useState(false);
 
   /* ---- Fetch document data ---- */
   const fetchDocument = useCallback(async () => {
@@ -836,6 +868,25 @@ export default function CasefolderDocumentViewerPage({
   useEffect(() => {
     fetchDocument();
   }, [fetchDocument]);
+
+  /* ---- Fetch sibling docs for folder navigation ---- */
+  useEffect(() => {
+    if (!folderKey) return;
+    setFolderDocsLoading(true);
+    const qs = new URLSearchParams({ folderKey, view: "documents", limit: "100" });
+    fetch(`/api/records/casefolders/${id}?${qs}`)
+      .then((r) => r.json())
+      .then((d) => setFolderDocs((d.documents ?? []).map((doc: { id: string; title: string; referenceNumber: string; status: string; metadata?: Record<string, unknown> }) => ({
+        id: doc.id,
+        title: doc.title,
+        referenceNumber: doc.referenceNumber,
+        status: doc.status,
+        metadata: doc.metadata ?? {},
+      })))
+      )
+      .catch(() => {})
+      .finally(() => setFolderDocsLoading(false));
+  }, [id, folderKey]);
 
   /* ---- Parsed fields ---- */
   const fields = useMemo(
@@ -933,8 +984,15 @@ export default function CasefolderDocumentViewerPage({
       {/* ============================================================ */}
       <aside className="w-full lg:w-[35%] lg:min-w-[340px] lg:max-w-[480px] border-b lg:border-b-0 lg:border-r border-gray-200 dark:border-gray-800 bg-white dark:bg-gray-950 flex flex-col overflow-hidden">
         <div className="flex-1 overflow-y-auto p-5 space-y-5">
-          {/* ---- Casefolder badge ---- */}
-          <div className="flex items-center gap-2">
+          {/* ---- Back + casefolder badge ---- */}
+          <div className="flex items-center gap-2 flex-wrap">
+            <Link
+              href={`/records/casefolders/${id}`}
+              className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-medium text-gray-500 dark:text-gray-400 bg-gray-100 dark:bg-gray-800 hover:bg-[#02773b]/10 hover:text-[#02773b] dark:hover:text-[#02773b] transition-colors"
+            >
+              <IconArrowLeft className="w-3.5 h-3.5" />
+              Back to Folder
+            </Link>
             <span className="inline-flex items-center gap-1.5 px-3 py-1 rounded-full text-xs font-semibold bg-[#02773b]/10 text-[#02773b] dark:bg-[#02773b]/20 dark:text-emerald-400">
               <IconFolder className="w-3.5 h-3.5" />
               {casefolder.name}
@@ -946,7 +1004,7 @@ export default function CasefolderDocumentViewerPage({
             <h1 className="text-lg font-bold text-gray-900 dark:text-gray-100 leading-snug">
               {doc.title}
             </h1>
-            {doc.description && (
+            {doc.description && !doc.description.startsWith("Auto-captured from") && (
               <p className="text-sm text-gray-500 dark:text-gray-400 mt-1 leading-relaxed">
                 {doc.description}
               </p>
@@ -1167,64 +1225,112 @@ export default function CasefolderDocumentViewerPage({
           </section>
 
           {/* ---- Divider ---- */}
-          {doc.files.length > 0 && (
+          {folderKey && (
             <Fragment>
               <div className="h-px bg-gray-200 dark:bg-gray-800" />
 
-              {/* ---- Attached files list ---- */}
+              {/* ---- Casefolder documents navigation ---- */}
+              <section className="space-y-2">
+                <h2 className="text-xs font-bold uppercase tracking-wider text-[#dd9f42] dark:text-[#dd9f42]">
+                  In This Folder
+                </h2>
+                {folderDocsLoading ? (
+                  <div className="flex justify-center py-4">
+                    <div className="w-4 h-4 border-2 border-[#02773b] border-t-transparent rounded-full animate-spin" />
+                  </div>
+                ) : folderDocs.length === 0 ? (
+                  <p className="text-xs text-gray-400 dark:text-gray-500 py-2">No other documents in this folder.</p>
+                ) : (
+                  <ul className="space-y-1">
+                    {folderDocs.map((sibling) => {
+                      const isCurrent = sibling.id === docId;
+                      const allFields = Array.isArray(data?.casefolder.fields) ? data.casefolder.fields as unknown[] : [];
+                      const label = getDocLabel(sibling.metadata, allFields, sibling.referenceNumber);
+                      return (
+                        <li key={sibling.id}>
+                          <button
+                            onClick={() => !isCurrent && router.push(`/records/casefolders/${id}/${sibling.id}?folderKey=${encodeURIComponent(folderKey)}`)}
+                            disabled={isCurrent}
+                            className={`w-full flex items-center gap-3 px-3 py-2.5 rounded-lg text-left transition-colors ${
+                              isCurrent
+                                ? "bg-[#02773b]/10 dark:bg-[#02773b]/20 border border-[#02773b]/20 dark:border-[#02773b]/30 cursor-default"
+                                : "hover:bg-gray-50 dark:hover:bg-gray-900 border border-transparent cursor-pointer"
+                            }`}
+                          >
+                            <span className={isCurrent ? "text-[#02773b] dark:text-emerald-400" : "text-gray-400 dark:text-gray-500"}>
+                              <IconDocument className="w-4 h-4" />
+                            </span>
+                            <div className="min-w-0 flex-1">
+                              <p className={`text-[10px] font-mono truncate ${isCurrent ? "text-[#02773b] dark:text-emerald-400" : "text-[#dd9f42]"}`}>
+                                {sibling.referenceNumber}
+                              </p>
+                              <p className={`text-sm font-medium truncate ${isCurrent ? "text-[#02773b] dark:text-emerald-400" : "text-gray-900 dark:text-gray-100"}`}>
+                                {label}
+                              </p>
+                            </div>
+                            {isCurrent && (
+                              <span className="shrink-0 w-1.5 h-1.5 rounded-full bg-[#02773b]" />
+                            )}
+                          </button>
+                        </li>
+                      );
+                    })}
+                  </ul>
+                )}
+              </section>
+            </Fragment>
+          )}
+
+          {/* ---- Attached files (shown only when no folder nav) ---- */}
+          {!folderKey && doc.files.length > 0 && (
+            <Fragment>
+              <div className="h-px bg-gray-200 dark:bg-gray-800" />
               <section className="space-y-2">
                 <h2 className="text-xs font-bold uppercase tracking-wider text-[#dd9f42] dark:text-[#dd9f42]">
                   Attached Files
                 </h2>
                 <ul className="space-y-1.5">
-                  {doc.files.map((file, index) => (
-                    <li key={file.id}>
-                      <button
-                        onClick={() => setSelectedFileIndex(index)}
-                        className={`w-full flex items-center gap-3 px-3 py-2.5 rounded-lg text-left transition-colors ${
-                          index === selectedFileIndex
-                            ? "bg-[#02773b]/10 dark:bg-[#02773b]/20 border border-[#02773b]/20 dark:border-[#02773b]/30"
-                            : "hover:bg-gray-50 dark:hover:bg-gray-900 border border-transparent"
-                        }`}
-                      >
-                        <span
-                          className={
+                  {doc.files.map((file, index) => {
+                    const allFields = Array.isArray(data?.casefolder.fields) ? data.casefolder.fields as unknown[] : [];
+                    const displayLabel = getDocLabel(doc.metadata ?? {}, allFields, file.fileName);
+                    const showFilename = displayLabel !== file.fileName;
+                    return (
+                      <li key={file.id}>
+                        <button
+                          onClick={() => setSelectedFileIndex(index)}
+                          className={`w-full flex items-center gap-3 px-3 py-2.5 rounded-lg text-left transition-colors ${
                             index === selectedFileIndex
-                              ? "text-[#02773b] dark:text-emerald-400"
-                              : "text-gray-400 dark:text-gray-500"
-                          }
+                              ? "bg-[#02773b]/10 dark:bg-[#02773b]/20 border border-[#02773b]/20 dark:border-[#02773b]/30"
+                              : "hover:bg-gray-50 dark:hover:bg-gray-900 border border-transparent"
+                          }`}
                         >
-                          {getFileIcon(file.mimeType)}
-                        </span>
-                        <div className="min-w-0 flex-1">
-                          <p
-                            className={`text-sm font-medium truncate ${
-                              index === selectedFileIndex
-                                ? "text-[#02773b] dark:text-emerald-400"
-                                : "text-gray-900 dark:text-gray-100"
-                            }`}
-                          >
-                            {file.fileName}
-                          </p>
-                          <p className="text-[11px] text-gray-400 dark:text-gray-500">
-                            {formatBytes(file.sizeBytes)} &middot;{" "}
-                            {formatDate(file.uploadedAt)}
-                          </p>
-                        </div>
-                        {perms.canDownload && (
-                          <a
-                            href={downloadUrl(file.storagePath)}
-                            download={file.fileName}
-                            onClick={(e) => e.stopPropagation()}
-                            className="shrink-0 p-1.5 rounded-md text-gray-400 dark:text-gray-500 hover:text-[#02773b] hover:bg-[#02773b]/10 dark:hover:text-emerald-400 dark:hover:bg-[#02773b]/20 transition-colors"
-                            title={`Download ${file.fileName}`}
-                          >
-                            <IconDownload className="w-3.5 h-3.5" />
-                          </a>
-                        )}
-                      </button>
-                    </li>
-                  ))}
+                          <span className={index === selectedFileIndex ? "text-[#02773b] dark:text-emerald-400" : "text-gray-400 dark:text-gray-500"}>
+                            {getFileIcon(file.mimeType)}
+                          </span>
+                          <div className="min-w-0 flex-1">
+                            <p className={`text-sm font-medium truncate ${index === selectedFileIndex ? "text-[#02773b] dark:text-emerald-400" : "text-gray-900 dark:text-gray-100"}`}>
+                              {displayLabel}
+                            </p>
+                            <p className="text-[11px] text-gray-400 dark:text-gray-500 truncate">
+                              {showFilename && <span className="opacity-60">{file.fileName} &middot; </span>}
+                              {formatBytes(file.sizeBytes)} &middot; {formatDate(file.uploadedAt)}
+                            </p>
+                          </div>
+                          {perms.canDownload && (
+                            <a
+                              href={downloadUrl(file.storagePath)}
+                              download={file.fileName}
+                              onClick={(e) => e.stopPropagation()}
+                              className="shrink-0 p-1.5 rounded-md text-gray-400 dark:text-gray-500 hover:text-[#02773b] hover:bg-[#02773b]/10 dark:hover:text-emerald-400 dark:hover:bg-[#02773b]/20 transition-colors"
+                              title={`Download ${file.fileName}`}
+                            >
+                              <IconDownload className="w-3.5 h-3.5" />
+                            </a>
+                          )}
+                        </button>
+                      </li>
+                    );
+                  })}
                 </ul>
               </section>
             </Fragment>
