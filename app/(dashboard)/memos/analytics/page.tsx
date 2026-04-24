@@ -20,7 +20,7 @@ import {
 
 /* --------------------------------- types ---------------------------------- */
 
-type Scope = "institution" | "all" | "department" | "personal";
+type Scope = "institutional" | "directorate" | "departmental" | "individual";
 
 interface Kpis {
   totalMemos: number;
@@ -48,7 +48,7 @@ interface DepartmentRow {
 }
 
 interface InitiatorRow {
-  userId: string;
+  key: string;
   name: string;
   count: number;
 }
@@ -73,11 +73,13 @@ interface AnalyticsPayload {
   scope: Scope;
   scopeLabel: string;
   department?: string | null;
+  directorate?: string | null;
   kpis: Kpis;
   statusBreakdown: StatusBreakdownRow[];
   memosOverTime: TimePoint[];
   byDepartment?: DepartmentRow[];
   topInitiators?: InitiatorRow[];
+  topInitiatorsGroupBy?: "directorate" | "department" | "user";
   topRecommenders?: RecommenderRow[];
   recentActivity: RecentRow[];
 }
@@ -211,19 +213,20 @@ function ChartSkeleton({ height = 300 }: { height?: number }) {
 
 function ScopeBadge({ scope }: { scope: Scope }) {
   const styles: Record<Scope, string> = {
-    institution:
+    institutional:
       "bg-amber-50 text-amber-700 dark:bg-amber-950/30 dark:text-amber-300 ring-1 ring-amber-200 dark:ring-amber-900",
-    all: "bg-karu-green-light text-karu-green dark:bg-karu-green/10 dark:text-emerald-400 ring-1 ring-karu-green/20",
-    department:
+    directorate:
+      "bg-karu-green-light text-karu-green dark:bg-karu-green/10 dark:text-emerald-400 ring-1 ring-karu-green/20",
+    departmental:
       "bg-blue-50 text-blue-700 dark:bg-blue-950/30 dark:text-blue-300 ring-1 ring-blue-200 dark:ring-blue-900",
-    personal:
+    individual:
       "bg-purple-50 text-purple-700 dark:bg-purple-950/30 dark:text-purple-300 ring-1 ring-purple-200 dark:ring-purple-900",
   };
   const labels: Record<Scope, string> = {
-    institution: "Institution-wide view",
-    all: "Directorate view",
-    department: "Department view",
-    personal: "Personal view",
+    institutional: "Institution-wide view",
+    directorate: "Directorate view",
+    departmental: "Department view",
+    individual: "Personal view",
   };
   return (
     <span
@@ -491,10 +494,10 @@ export default function MemoAnalyticsPage() {
 
   const subtitle = useMemo(() => {
     if (!data) return "Loading insights…";
-    if (data.scope === "institution")
+    if (data.scope === "institutional")
       return "Insights across the entire institution";
-    if (data.scope === "all") return "Insights across the entire directorate";
-    if (data.scope === "department")
+    if (data.scope === "directorate") return "Insights across the entire directorate";
+    if (data.scope === "departmental")
       return `Insights across ${data.department ?? "your"} department`;
     return "Your memo activity";
   }, [data]);
@@ -522,7 +525,7 @@ export default function MemoAnalyticsPage() {
   /* ------- error ------- */
   if (error) {
     return (
-      <div className="p-4 sm:p-6 max-w-[1400px] mx-auto">
+      <div className="p-4 sm:p-6">
         <div className="rounded-xl border border-red-200 bg-red-50 dark:bg-red-950/20 dark:border-red-900 p-6 text-red-700 dark:text-red-300">
           {error}
         </div>
@@ -533,7 +536,7 @@ export default function MemoAnalyticsPage() {
   /* ------- loading ------- */
   if (isLoading || !data) {
     return (
-      <div className="p-4 sm:p-6 max-w-[1400px] mx-auto space-y-6 animate-fade-in">
+      <div className="p-4 sm:p-4 sm:p-6 space-y-6 animate-fade-in">
         <div>
           <div className="h-8 w-64 bg-gray-200 dark:bg-gray-700 rounded animate-pulse" />
           <div className="h-4 w-96 bg-gray-200 dark:bg-gray-700 rounded mt-3 animate-pulse" />
@@ -561,7 +564,7 @@ export default function MemoAnalyticsPage() {
   const isEmpty = data.kpis.totalMemos === 0;
 
   return (
-    <div className="p-4 sm:p-6 max-w-[1400px] mx-auto space-y-6 animate-fade-in">
+    <div className="p-4 sm:p-4 sm:p-6 space-y-6 animate-fade-in">
       {/* Header */}
       <div className="flex flex-col sm:flex-row sm:items-start sm:justify-between gap-3">
         <div>
@@ -654,7 +657,13 @@ export default function MemoAnalyticsPage() {
           <div className="grid grid-cols-1 lg:grid-cols-3 gap-4">
             <Card
               title="Memos over time"
-              subtitle="Last 30 days, by initiation date"
+              subtitle={(() => {
+                if (data.memosOverTime.length === 0)
+                  return "Last 30 days, by initiation date";
+                const first = data.memosOverTime[0].date;
+                const last = data.memosOverTime[data.memosOverTime.length - 1].date;
+                return `${fmtShortDate(first)} – ${fmtShortDate(last)} (last 30 days, by initiation date)`;
+              })()}
               className="lg:col-span-2"
               delayMs={400}
             >
@@ -693,13 +702,19 @@ export default function MemoAnalyticsPage() {
                     <Tooltip
                       cursor={{ fill: "rgba(2,119,59,0.06)" }}
                       contentStyle={{
-                        background: "rgba(17,24,39,0.95)",
+                        background: "rgba(17,24,39,0.97)",
                         border: "none",
                         borderRadius: 8,
                         color: "#fff",
                         fontSize: 12,
+                        boxShadow: "0 8px 24px rgba(0,0,0,0.25)",
                       }}
-                      labelStyle={{ color: "#9ca3af" }}
+                      labelStyle={{ color: "#fbbf24", fontWeight: 600, marginBottom: 4 }}
+                      itemStyle={{ color: "#fff" }}
+                      labelFormatter={(_label, payload) => {
+                        const iso = (payload?.[0]?.payload as { date?: string })?.date;
+                        return iso ? fmtDate(iso) : _label;
+                      }}
                     />
                     <Bar dataKey="count" fill="url(#barFill)" radius={[6, 6, 0, 0]} />
                   </BarChart>
@@ -735,12 +750,15 @@ export default function MemoAnalyticsPage() {
                         </Pie>
                         <Tooltip
                           contentStyle={{
-                            background: "rgba(17,24,39,0.95)",
+                            background: "rgba(17,24,39,0.97)",
                             border: "none",
                             borderRadius: 8,
                             color: "#fff",
                             fontSize: 12,
+                            boxShadow: "0 8px 24px rgba(0,0,0,0.25)",
                           }}
+                          itemStyle={{ color: "#fff" }}
+                          labelStyle={{ color: "#fbbf24", fontWeight: 600, marginBottom: 4 }}
                         />
                       </PieChart>
                     </ResponsiveContainer>
@@ -773,73 +791,63 @@ export default function MemoAnalyticsPage() {
 
           {/* Scope-conditional second row */}
           <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
-            {(data.scope === "all" || data.scope === "institution") && (
-              <>
-                <Card
-                  title="Top departments"
-                  subtitle={
-                    data.scope === "institution"
-                      ? "By memo volume across the institution"
-                      : "By memo volume"
-                  }
-                  delayMs={600}
-                >
-                  <DepartmentList items={data.byDepartment ?? []} />
-                </Card>
-                <Card
-                  title="Top recommenders"
-                  subtitle="Tasks completed"
-                  delayMs={700}
-                >
-                  <RankedList
-                    items={data.topRecommenders ?? []}
-                    value={(r) => r.completed}
-                    max={Math.max(
-                      1,
-                      ...(data.topRecommenders ?? []).map((r) => r.completed),
-                    )}
-                    emptyLabel="No recommender activity yet"
-                  />
-                </Card>
-              </>
-            )}
+            {(data.scope === "institutional" ||
+              data.scope === "directorate" ||
+              data.scope === "departmental") && (() => {
+              const groupBy = data.topInitiatorsGroupBy ?? "user";
+              const initiatorsTitle =
+                groupBy === "directorate"
+                  ? "Top directorates"
+                  : groupBy === "department"
+                    ? "Top departments"
+                    : "Top initiators";
+              const initiatorsSubtitle =
+                groupBy === "directorate"
+                  ? "By memo volume across the institution"
+                  : groupBy === "department"
+                    ? `By memo volume across ${data.directorate ?? "the directorate"}`
+                    : `Memos started in ${data.department ?? "your department"}`;
+              const recommendersSubtitle =
+                data.scope === "departmental"
+                  ? "Tasks completed in your department"
+                  : "Tasks completed";
+              return (
+                <>
+                  <Card
+                    title={initiatorsTitle}
+                    subtitle={initiatorsSubtitle}
+                    delayMs={600}
+                  >
+                    <RankedList
+                      items={data.topInitiators ?? []}
+                      value={(r) => r.count}
+                      max={Math.max(
+                        1,
+                        ...(data.topInitiators ?? []).map((r) => r.count),
+                      )}
+                      emptyLabel="No initiator activity yet"
+                    />
+                  </Card>
+                  <Card
+                    title="Top recommenders"
+                    subtitle={recommendersSubtitle}
+                    delayMs={700}
+                  >
+                    <RankedList
+                      items={data.topRecommenders ?? []}
+                      value={(r) => r.completed}
+                      max={Math.max(
+                        1,
+                        ...(data.topRecommenders ?? []).map((r) => r.completed),
+                      )}
+                      emptyLabel="No recommender activity yet"
+                    />
+                  </Card>
+                </>
+              );
+            })()}
 
-            {data.scope === "department" && (
-              <>
-                <Card
-                  title="Top initiators"
-                  subtitle="Memos started in your department"
-                  delayMs={600}
-                >
-                  <RankedList
-                    items={data.topInitiators ?? []}
-                    value={(r) => r.count}
-                    max={Math.max(
-                      1,
-                      ...(data.topInitiators ?? []).map((r) => r.count),
-                    )}
-                    emptyLabel="No initiator activity yet"
-                  />
-                </Card>
-                <Card
-                  title="Top recommenders"
-                  subtitle="Tasks completed in your department"
-                  delayMs={700}
-                >
-                  <RankedList
-                    items={data.topRecommenders ?? []}
-                    value={(r) => r.completed}
-                    max={Math.max(
-                      1,
-                      ...(data.topRecommenders ?? []).map((r) => r.completed),
-                    )}
-                    emptyLabel="No recommender activity yet"
-                  />
-                </Card>
-              </>
-            )}
-
-            {data.scope === "personal" && (
+            {data.scope === "individual" && (
               <>
                 <Card
                   title="Your approval rate"

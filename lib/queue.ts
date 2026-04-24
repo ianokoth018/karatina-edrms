@@ -48,6 +48,8 @@ export async function getBoss(): Promise<PgBossType> {
   if (starting) return starting;
 
   starting = (async () => {
+    // Cast — pg-boss v10+ type defs are stricter than runtime accepts.
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
     const instance = new PgBoss({
       ...getPgConfig(),
       // Retry failed OCR jobs up to 3 times with exponential back-off
@@ -58,7 +60,7 @@ export async function getBoss(): Promise<PgBossType> {
       deleteAfterSeconds: 60 * 60 * 24 * 7,
       // Run maintenance every 30 s
       maintenanceIntervalSeconds: 30,
-    });
+    } as unknown as ConstructorParameters<typeof PgBoss>[0]);
 
     instance.on("error", (err: unknown) => {
       // Properly extract message from Error, AggregateError, or plain objects
@@ -124,10 +126,14 @@ export async function startOcrWorker(): Promise<void> {
   // pg-boss v12 requires explicit queue creation before workers can poll it
   await b.createQueue(OCR_QUEUE);
 
-  await b.work(OCR_QUEUE, { localConcurrency: 3 }, async (job) => {
-    const { fileId } = job.data as { fileId: string };
-    logger.info("Processing OCR job", { fileId, jobId: job.id });
-    await processFileOcr(fileId);
+  // pg-boss v10+ delivers jobs in batches — iterate.
+  await b.work(OCR_QUEUE, { batchSize: 3 } as never, async (jobs) => {
+    const list = Array.isArray(jobs) ? jobs : [jobs];
+    for (const job of list as Array<{ id: string; data: unknown }>) {
+      const { fileId } = job.data as { fileId: string };
+      logger.info("Processing OCR job", { fileId, jobId: job.id });
+      await processFileOcr(fileId);
+    }
   });
 
   logger.info("OCR worker started", { concurrency: 3 });

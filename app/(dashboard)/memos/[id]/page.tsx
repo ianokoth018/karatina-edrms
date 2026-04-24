@@ -372,15 +372,23 @@ export default function MemoDetailPage() {
     const pageW = 595.28;
     const pageH = 841.89;
     const imgAspect = img.height / img.width;
-    const numPages = Math.ceil((pageW * imgAspect) / pageH);
+    const imgHeight = pageW * imgAspect;
+    let numPages = Math.ceil(imgHeight / pageH);
+    // MemoDocument has minHeight: 297mm which can cause a tiny overflow into a
+    // second, otherwise-empty page. Skip a trailing page that would contain
+    // less than 10% of a page of content.
+    if (numPages > 1) {
+      const lastPageContent = imgHeight - (numPages - 1) * pageH;
+      if (lastPageContent < pageH * 0.1) numPages -= 1;
+    }
 
     for (let i = 0; i < numPages; i++) {
       const page = pdfDoc.addPage([pageW, pageH]);
       page.drawImage(img, {
         x: 0,
-        y: pageH - pageW * imgAspect + i * pageH,
+        y: pageH - imgHeight + i * pageH,
         width: pageW,
-        height: pageW * imgAspect,
+        height: imgHeight,
       });
     }
 

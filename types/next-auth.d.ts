@@ -12,6 +12,9 @@ declare module "next-auth" {
       department: string;
       employeeId: string;
       jobTitle: string;
+      designation: string;
+      profilePhoto: string;
+      mustChangePassword: boolean;
     };
     error?: string;
   }
@@ -25,6 +28,9 @@ declare module "next-auth" {
     department: string;
     employeeId: string;
     jobTitle: string;
+    designation: string;
+    profilePhoto: string;
+    mustChangePassword: boolean;
   }
 }
 
@@ -36,9 +42,14 @@ declare module "next-auth/jwt" {
     department: string;
     employeeId: string;
     jobTitle: string;
+    designation: string;
+    profilePhoto: string;
+    mustChangePassword: boolean;
     accessTokenExpires: number;
     refreshToken: string;
     refreshTokenExpires: number;
+    /** UserSession row id — used to revoke this JWT server-side. */
+    sessionId: string;
     error?: string;
   }
 }

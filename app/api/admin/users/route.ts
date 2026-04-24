@@ -53,8 +53,17 @@ export async function GET(req: NextRequest) {
           name: true,
           displayName: true,
           email: true,
+          employeeId: true,
           department: true,
+          jobTitle: true,
+          designation: true,
+          phone: true,
           isActive: true,
+          mustChangePassword: true,
+          passwordResetExpiresAt: true,
+          mfaEnabled: true,
+          lockedUntil: true,
+          failedLoginAttempts: true,
           lastLoginAt: true,
           createdAt: true,
           roles: {
@@ -104,11 +113,25 @@ export async function POST(req: NextRequest) {
     }
 
     const body = await req.json();
-    const { name, email, password, department, roleIds } = body as {
+    const {
+      name,
+      email,
+      password,
+      department,
+      jobTitle,
+      designation,
+      phone,
+      employeeId,
+      roleIds,
+    } = body as {
       name: string;
       email: string;
       password: string;
       department?: string;
+      jobTitle?: string;
+      designation?: string;
+      phone?: string;
+      employeeId?: string;
       roleIds?: string[];
     };
 
@@ -137,6 +160,11 @@ export async function POST(req: NextRequest) {
         email,
         password: hashedPassword,
         department: department ?? null,
+        jobTitle: jobTitle ?? null,
+        designation: designation ?? null,
+        phone: phone ?? null,
+        employeeId: employeeId ?? null,
+        passwordChangedAt: new Date(),
         roles: roleIds?.length
           ? {
               create: roleIds.map((roleId: string) => ({

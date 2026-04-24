@@ -1,5 +1,7 @@
 import { db } from "@/lib/db";
 import { logger } from "@/lib/logger";
+import { getDefaultCalendar, workingHoursBetween } from "@/lib/business-calendar";
+import { sendSms, buildSlaSms } from "@/lib/sms";
 
 // ---------------------------------------------------------------------------
 // Types
@@ -7,10 +9,18 @@ import { logger } from "@/lib/logger";
 
 export type SlaStatus = "on_track" | "at_risk" | "breached";
 
+interface EscalationLevel {
+  afterDays: number;
+  assigneeRule?: string; // "specific_user" | "role_based"
+  assigneeValue?: string; // userId or role name
+}
+
 interface TaskNodeConfig {
+  escalationLevels?: EscalationLevel[];
+  // Legacy single-level config (still supported)
   escalationDays?: number;
   reminderDays?: number;
-  escalateTo?: string; // userId or role name
+  escalateTo?: string;
 }
 
 interface DefinitionNode {
@@ -20,77 +30,78 @@ interface DefinitionNode {
 }
 
 // ---------------------------------------------------------------------------
-// Calculate SLA status for a single task
+// SLA status for a single task
 // ---------------------------------------------------------------------------
 
-/**
- * Determine whether a task is on track, at risk, or has breached its SLA.
- *
- * - **breached**: past the due date (or past slaHours if provided).
- * - **at_risk**: within 25 % of the remaining window before due/slaHours.
- * - **on_track**: otherwise.
- */
 export function calculateSlaStatus(task: {
   assignedAt: Date;
   dueAt: Date | null;
-  slaHours?: number;
 }): SlaStatus {
   const now = new Date();
+  const deadline = task.dueAt;
 
-  // Resolve the effective deadline
-  let deadline: Date | null = task.dueAt;
+  if (!deadline) return "on_track";
+  if (now >= deadline) return "breached";
 
-  if (task.slaHours && task.slaHours > 0) {
-    const slaDeadline = new Date(
-      task.assignedAt.getTime() + task.slaHours * 60 * 60 * 1000
-    );
-    // Use the earlier of dueAt and slaHours deadline
-    if (!deadline || slaDeadline < deadline) {
-      deadline = slaDeadline;
-    }
-  }
-
-  if (!deadline) {
-    // No deadline information -- assume on track
-    return "on_track";
-  }
-
-  if (now >= deadline) {
-    return "breached";
-  }
-
-  // At-risk threshold: 25 % of total window remaining
   const totalMs = deadline.getTime() - task.assignedAt.getTime();
   const remainingMs = deadline.getTime() - now.getTime();
 
-  if (totalMs > 0 && remainingMs / totalMs <= 0.25) {
-    return "at_risk";
-  }
-
+  if (totalMs > 0 && remainingMs / totalMs <= 0.25) return "at_risk";
   return "on_track";
+}
+
+/**
+ * Calendar-aware SLA status: uses working hours instead of wall-clock hours.
+ * Falls back to the simpler calculateSlaStatus if no calendar is configured.
+ */
+export async function calculateSlaStatusAsync(task: {
+  assignedAt: Date;
+  dueAt: Date | null;
+}): Promise<SlaStatus> {
+  if (!task.dueAt) return "on_track";
+  const now = new Date();
+  if (now >= task.dueAt) return "breached";
+
+  try {
+    const cal = await getDefaultCalendar();
+    const totalWorkingHours = workingHoursBetween(task.assignedAt, task.dueAt, cal);
+    const remainingWorkingHours = workingHoursBetween(now, task.dueAt, cal);
+
+    if (totalWorkingHours > 0 && remainingWorkingHours / totalWorkingHours <= 0.25) return "at_risk";
+    return "on_track";
+  } catch {
+    return calculateSlaStatus(task);
+  }
 }
 
 // ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
 
-/**
- * Extract task-node configuration from a workflow template definition by
- * matching on the step name. Returns escalation / reminder settings.
- */
 function getNodeConfigForStep(
   definition: Record<string, unknown>,
-  stepName: string
+  stepName: string,
+  nodeId?: string | null
 ): TaskNodeConfig {
   const nodes = definition.nodes as DefinitionNode[] | undefined;
   if (!nodes) return {};
 
-  const node = nodes.find(
-    (n) => n.type === "task" && (n.data.label as string) === stepName
-  );
+  // Prefer nodeId match, fall back to label
+  const node = nodes.find((n) => {
+    if (n.type !== "task") return false;
+    if (nodeId && n.id === nodeId) return true;
+    return (n.data.label as string) === stepName;
+  });
 
   if (!node) return {};
 
+  // Multi-level escalation config
+  const levels = node.data.escalationLevels as EscalationLevel[] | undefined;
+  if (levels?.length) {
+    return { escalationLevels: levels };
+  }
+
+  // Legacy single-level
   return {
     escalationDays: (node.data.escalationDays as number) || undefined,
     reminderDays: (node.data.reminderDays as number) || undefined,
@@ -98,11 +109,35 @@ function getNodeConfigForStep(
   };
 }
 
-/**
- * Return the number of full days elapsed since a given date.
- */
 function daysElapsed(since: Date): number {
   return (Date.now() - since.getTime()) / (1000 * 60 * 60 * 24);
+}
+
+async function resolveEscalationUser(assigneeRule?: string, assigneeValue?: string): Promise<string | null> {
+  if (!assigneeValue) return null;
+
+  if (assigneeRule === "specific_user") {
+    const user = await db.user.findUnique({ where: { id: assigneeValue }, select: { id: true } });
+    return user?.id ?? null;
+  }
+
+  // role_based or no rule — try as userId first, then role name
+  const byId = await db.user.findUnique({ where: { id: assigneeValue }, select: { id: true } });
+  if (byId) return byId.id;
+
+  const byRole = await db.userRole.findFirst({
+    where: { role: { name: assigneeValue }, user: { isActive: true } },
+    include: { user: { select: { id: true } } },
+  });
+  return byRole?.user.id ?? null;
+}
+
+async function getAdminUserId(): Promise<string | null> {
+  const adminRole = await db.userRole.findFirst({
+    where: { role: { name: "Admin" }, user: { isActive: true } },
+    include: { user: { select: { id: true } } },
+  });
+  return adminRole?.user.id ?? null;
 }
 
 // ---------------------------------------------------------------------------
@@ -118,7 +153,6 @@ export async function checkAndEscalateOverdueTasks(): Promise<{
   let escalated = 0;
   let reminded = 0;
 
-  // 1. Fetch all PENDING tasks with their instance and template
   const pendingTasks = await db.workflowTask.findMany({
     where: { status: "PENDING" },
     include: {
@@ -134,141 +168,202 @@ export async function checkAndEscalateOverdueTasks(): Promise<{
   checked = pendingTasks.length;
 
   for (const task of pendingTasks) {
-    const definition = task.instance.template.definition as Record<
-      string,
-      unknown
-    >;
-
-    // 2. Look up escalation config from the template definition
-    const config = getNodeConfigForStep(definition, task.stepName);
+    const definition = task.instance.template.definition as Record<string, unknown>;
+    const config = getNodeConfigForStep(definition, task.stepName, task.nodeId);
     const elapsed = daysElapsed(task.assignedAt);
 
     // ------------------------------------------------------------------
-    // 3. Escalation
+    // Multi-level escalation
     // ------------------------------------------------------------------
-    if (config.escalationDays && config.escalationDays > 0 && elapsed >= config.escalationDays) {
-      // Resolve the escalation target
-      let escalationUserId: string | null = null;
+    if (config.escalationLevels?.length) {
+      const levels = config.escalationLevels.sort((a, b) => a.afterDays - b.afterDays);
 
-      if (config.escalateTo) {
-        // Try as a direct userId first
-        const userById = await db.user.findUnique({
-          where: { id: config.escalateTo },
-          select: { id: true },
-        });
-        if (userById) {
-          escalationUserId = userById.id;
-        } else {
-          // Try as a role name -- pick the first active user with that role
-          const userRole = await db.userRole.findFirst({
-            where: {
-              role: { name: config.escalateTo },
-              user: { isActive: true },
-            },
-            include: { user: { select: { id: true } } },
-          });
-          if (userRole) {
-            escalationUserId = userRole.user.id;
+      // Find the highest level whose threshold has been crossed
+      const triggeredLevel = [...levels].reverse().find((l) => elapsed >= l.afterDays);
+
+      if (triggeredLevel) {
+        const levelIndex = levels.indexOf(triggeredLevel);
+
+        // Only escalate if we haven't already reached this level
+        if (task.escalationLevel <= levelIndex && !task.escalatedAt) {
+          let escalationUserId = await resolveEscalationUser(
+            triggeredLevel.assigneeRule, triggeredLevel.assigneeValue
+          );
+          if (!escalationUserId) escalationUserId = await getAdminUserId();
+          if (!escalationUserId) {
+            logger.warn("SLA multi-level escalation: no target found", { taskId: task.id });
+            continue;
           }
+
+          await db.$transaction([
+            db.workflowTask.create({
+              data: {
+                instanceId: task.instanceId,
+                nodeId: task.nodeId,
+                stepName: `[L${levelIndex + 1} ESCALATED] ${task.stepName}`,
+                stepIndex: task.stepIndex,
+                assigneeId: escalationUserId,
+                taskType: "PRIMARY",
+                status: "PENDING",
+                dueAt: task.dueAt,
+                escalationLevel: levelIndex + 1,
+              },
+            }),
+            db.workflowTask.update({
+              where: { id: task.id },
+              data: { status: "ESCALATED", escalatedAt: new Date(), escalationLevel: levelIndex + 1 },
+            }),
+            db.workflowEvent.create({
+              data: {
+                instanceId: task.instanceId,
+                eventType: "TASK_ESCALATED",
+                data: {
+                  originalTaskId: task.id,
+                  originalAssigneeId: task.assigneeId,
+                  escalatedToUserId: escalationUserId,
+                  escalationLevel: levelIndex + 1,
+                  daysOverdue: Math.floor(elapsed),
+                } as object,
+              },
+            }),
+          ]);
+
+          await db.notification.createMany({
+            data: [
+              {
+                userId: escalationUserId,
+                type: "SLA_ESCALATION",
+                title: `Task escalated to you (Level ${levelIndex + 1})`,
+                body: `Task "${task.stepName}" for "${task.instance.subject}" escalated after ${Math.floor(elapsed)} day(s).`,
+                linkUrl: "/workflows",
+              },
+              ...(task.assigneeId
+                ? [
+                    {
+                      userId: task.assigneeId,
+                      type: "SLA_ESCALATION",
+                      title: "Your task has been escalated",
+                      body: `Task "${task.stepName}" for "${task.instance.subject}" was escalated (Level ${levelIndex + 1}) after ${Math.floor(elapsed)} day(s).`,
+                      linkUrl: "/workflows",
+                    },
+                  ]
+                : []),
+            ],
+          });
+
+          // SMS escalation alerts
+          const [escUser, origUser] = await Promise.all([
+            db.user.findUnique({ where: { id: escalationUserId }, select: { phone: true, name: true, displayName: true } }),
+            task.assigneeId ? db.user.findUnique({ where: { id: task.assigneeId }, select: { phone: true, name: true, displayName: true } }) : null,
+          ]);
+          if (escUser?.phone) {
+            await sendSms({ to: escUser.phone, message: buildSlaSms({ recipientName: escUser.displayName ?? escUser.name ?? "User", stepName: task.stepName, instanceRef: task.instanceId, hoursOverdue: elapsed * 24 }) });
+          }
+          if (origUser?.phone) {
+            await sendSms({ to: origUser.phone, message: buildSlaSms({ recipientName: origUser.displayName ?? origUser.name ?? "User", stepName: task.stepName, instanceRef: task.instanceId, hoursOverdue: elapsed * 24 }) });
+          }
+
+          escalated++;
+          continue;
         }
       }
+    } else if (config.escalationDays && config.escalationDays > 0 && elapsed >= config.escalationDays) {
+      // ------------------------------------------------------------------
+      // Legacy single-level escalation — only if not already escalated
+      // ------------------------------------------------------------------
+      if (task.escalatedAt) continue;
 
-      // Fallback: find any user with the "Admin" role
+      let escalationUserId = await resolveEscalationUser(undefined, config.escalateTo);
+      if (!escalationUserId) escalationUserId = await getAdminUserId();
       if (!escalationUserId) {
-        const adminRole = await db.userRole.findFirst({
-          where: {
-            role: { name: "Admin" },
-            user: { isActive: true },
-          },
-          include: { user: { select: { id: true } } },
-        });
-        escalationUserId = adminRole?.user.id ?? null;
-      }
-
-      // If still no target, fall back to the original assignee (log a warning)
-      if (!escalationUserId) {
-        logger.warn("SLA escalation: no escalation target found, skipping", {
-          action: "SLA_ESCALATION_NO_TARGET",
-        });
+        logger.warn("SLA escalation: no target found", { taskId: task.id });
         continue;
       }
 
-      // Create a new escalation task
-      await db.workflowTask.create({
-        data: {
-          instanceId: task.instanceId,
-          stepName: `[ESCALATED] ${task.stepName}`,
-          stepIndex: task.stepIndex,
-          assigneeId: escalationUserId,
-          taskType: "PRIMARY",
-          status: "PENDING",
-          dueAt: task.dueAt,
-        },
-      });
-
-      // Mark original task as ESCALATED
-      await db.workflowTask.update({
-        where: { id: task.id },
-        data: { status: "ESCALATED" },
-      });
-
-      // Record a workflow event
-      await db.workflowEvent.create({
-        data: {
-          instanceId: task.instanceId,
-          eventType: "TASK_ESCALATED",
-          actorId: null, // system action
+      await db.$transaction([
+        db.workflowTask.create({
           data: {
-            originalTaskId: task.id,
-            originalAssigneeId: task.assigneeId,
-            escalatedToUserId: escalationUserId,
-            stepName: task.stepName,
-            daysOverdue: Math.floor(elapsed),
+            instanceId: task.instanceId,
+            nodeId: task.nodeId,
+            stepName: `[ESCALATED] ${task.stepName}`,
+            stepIndex: task.stepIndex,
+            assigneeId: escalationUserId,
+            taskType: "PRIMARY",
+            status: "PENDING",
+            dueAt: task.dueAt,
           },
-        },
+        }),
+        db.workflowTask.update({
+          where: { id: task.id },
+          data: { status: "ESCALATED", escalatedAt: new Date() },
+        }),
+        db.workflowEvent.create({
+          data: {
+            instanceId: task.instanceId,
+            eventType: "TASK_ESCALATED",
+            data: {
+              originalTaskId: task.id,
+              originalAssigneeId: task.assigneeId,
+              escalatedToUserId: escalationUserId,
+              daysOverdue: Math.floor(elapsed),
+            } as object,
+          },
+        }),
+      ]);
+
+      await db.notification.createMany({
+        data: [
+          {
+            userId: escalationUserId,
+            type: "SLA_ESCALATION",
+            title: "Task escalated to you",
+            body: `Task "${task.stepName}" for "${task.instance.subject}" escalated after ${Math.floor(elapsed)} day(s).`,
+            linkUrl: "/workflows",
+          },
+          ...(task.assigneeId
+            ? [
+                {
+                  userId: task.assigneeId,
+                  type: "SLA_ESCALATION",
+                  title: "Your task has been escalated",
+                  body: `Task "${task.stepName}" for "${task.instance.subject}" was escalated after ${Math.floor(elapsed)} day(s).`,
+                  linkUrl: "/workflows",
+                },
+              ]
+            : []),
+        ],
       });
 
-      // Notify the escalation target
-      await db.notification.create({
-        data: {
-          userId: escalationUserId,
-          type: "SLA_ESCALATION",
-          title: "Task escalated to you",
-          body: `The task "${task.stepName}" for workflow "${task.instance.subject}" has been escalated to you after ${Math.floor(elapsed)} day(s) without action.`,
-          linkUrl: `/workflows`,
-        },
-      });
-
-      // Also notify the original assignee
-      await db.notification.create({
-        data: {
-          userId: task.assigneeId,
-          type: "SLA_ESCALATION",
-          title: "Your task has been escalated",
-          body: `The task "${task.stepName}" for workflow "${task.instance.subject}" has been escalated after ${Math.floor(elapsed)} day(s) without action.`,
-          linkUrl: `/workflows`,
-        },
-      });
+      // SMS escalation alerts
+      const [escUserL, origUserL] = await Promise.all([
+        db.user.findUnique({ where: { id: escalationUserId }, select: { phone: true, name: true, displayName: true } }),
+        task.assigneeId ? db.user.findUnique({ where: { id: task.assigneeId }, select: { phone: true, name: true, displayName: true } }) : null,
+      ]);
+      if (escUserL?.phone) {
+        await sendSms({ to: escUserL.phone, message: buildSlaSms({ recipientName: escUserL.displayName ?? escUserL.name ?? "User", stepName: task.stepName, instanceRef: task.instanceId, hoursOverdue: elapsed * 24 }) });
+      }
+      if (origUserL?.phone) {
+        await sendSms({ to: origUserL.phone, message: buildSlaSms({ recipientName: origUserL.displayName ?? origUserL.name ?? "User", stepName: task.stepName, instanceRef: task.instanceId, hoursOverdue: elapsed * 24 }) });
+      }
 
       escalated++;
-      logger.info("SLA escalation triggered", {
-        action: "SLA_ESCALATED",
-      });
-
-      // Skip reminder check -- we already escalated
       continue;
     }
 
     // ------------------------------------------------------------------
-    // 4. Reminder (before escalation threshold)
+    // Reminder (only if not yet escalated)
     // ------------------------------------------------------------------
-    if (config.reminderDays && config.reminderDays > 0 && elapsed >= config.reminderDays) {
-      // Avoid spamming: only send a reminder once per day by checking
-      // for an existing SLA_REMINDER notification created today
+    if (
+      !task.escalatedAt &&
+      config.reminderDays &&
+      config.reminderDays > 0 &&
+      elapsed >= config.reminderDays &&
+      task.assigneeId
+    ) {
       const todayStart = new Date();
       todayStart.setHours(0, 0, 0, 0);
 
-      const existingReminder = await db.notification.findFirst({
+      const alreadyReminded = await db.notification.findFirst({
         where: {
           userId: task.assigneeId,
           type: "SLA_REMINDER",
@@ -277,21 +372,17 @@ export async function checkAndEscalateOverdueTasks(): Promise<{
         },
       });
 
-      if (!existingReminder) {
+      if (!alreadyReminded) {
         await db.notification.create({
           data: {
             userId: task.assigneeId,
             type: "SLA_REMINDER",
             title: "Task reminder",
-            body: `Reminder: your task "${task.stepName}" for workflow "${task.instance.subject}" has been pending for ${Math.floor(elapsed)} day(s). [${task.id}]`,
-            linkUrl: `/workflows`,
+            body: `Reminder: "${task.stepName}" for "${task.instance.subject}" has been pending for ${Math.floor(elapsed)} day(s). [${task.id}]`,
+            linkUrl: "/workflows",
           },
         });
-
         reminded++;
-        logger.info("SLA reminder sent", {
-          action: "SLA_REMINDER",
-        });
       }
     }
   }

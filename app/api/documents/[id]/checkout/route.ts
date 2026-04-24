@@ -3,6 +3,9 @@ import { auth } from "@/lib/auth";
 import { db } from "@/lib/db";
 import { writeAudit } from "@/lib/audit";
 import { logger } from "@/lib/logger";
+import crypto from "crypto";
+
+const DEFAULT_CHECKOUT_HOURS = parseInt(process.env.CHECKOUT_EXPIRY_HOURS ?? "24", 10);
 
 // ---------------------------------------------------------------------------
 // POST /api/documents/[id]/checkout — check out a document
@@ -50,12 +53,19 @@ export async function POST(
       );
     }
 
+    const body = await req.json().catch(() => ({})) as { expiryHours?: number };
+    const expiryHours = body.expiryHours ?? DEFAULT_CHECKOUT_HOURS;
+    const expiresAt = new Date(Date.now() + expiryHours * 60 * 60 * 1000);
+    const token = crypto.randomBytes(32).toString("hex");
+
     const updated = await db.document.update({
       where: { id },
       data: {
         status: "CHECKED_OUT",
         checkoutUserId: session.user.id,
         checkoutAt: new Date(),
+        checkoutExpiresAt: expiresAt,
+        checkoutToken: token,
       },
     });
 
@@ -80,6 +90,8 @@ export async function POST(
       message: "Document checked out successfully",
       checkoutUserId: updated.checkoutUserId,
       checkoutAt: updated.checkoutAt,
+      checkoutExpiresAt: updated.checkoutExpiresAt,
+      checkoutToken: token,
     });
   } catch (error) {
     logger.error("Failed to check out document", error, {
@@ -148,6 +160,8 @@ export async function DELETE(
         status: "ACTIVE",
         checkoutUserId: null,
         checkoutAt: null,
+        checkoutExpiresAt: null,
+        checkoutToken: null,
       },
     });
 

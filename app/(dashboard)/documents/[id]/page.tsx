@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useEffect, useRef, use } from "react";
+import React, { useState, useEffect, useRef, use } from "react";
 import Link from "next/link";
 import { useRouter, useSearchParams } from "next/navigation";
 import { useSession } from "next-auth/react";
@@ -19,6 +19,8 @@ interface DocumentFile {
   sizeBytes: string;
   ocrStatus: string;
   uploadedAt: string;
+  renditionPath: string | null;
+  renditionStatus: string;
 }
 
 interface DocumentVersion {
@@ -59,6 +61,16 @@ interface WorkflowRef {
   referenceNumber: string;
   status: string;
   subject: string;
+}
+
+interface RelationRow {
+  id: string;
+  relationType: string;
+  note: string | null;
+  createdAt: string;
+  createdBy: { displayName: string } | null;
+  source?: { id: string; referenceNumber: string; title: string; documentType: string; status: string };
+  target?: { id: string; referenceNumber: string; title: string; documentType: string; status: string };
 }
 
 interface CasefolderField {
@@ -260,7 +272,13 @@ export default function DocumentDetailPage({
   const [doc, setDoc] = useState<DocumentDetail | null>(null);
   const [isLoading, setIsLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
-  const [activeTab, setActiveTab] = useState<"details" | "versions" | "comments" | "signatures" | "access" | "audit">("details");
+  const [activeTab, setActiveTab] = useState<"details" | "versions" | "comments" | "signatures" | "access" | "audit" | "relations">("details");
+  const [relations, setRelations] = useState<{ outgoing: RelationRow[]; incoming: RelationRow[] } | null>(null);
+  const [relationsLoading, setRelationsLoading] = useState(false);
+  const [showAddRelation, setShowAddRelation] = useState(false);
+  const [relTarget, setRelTarget] = useState("");
+  const [relType, setRelType] = useState("RELATED_TO");
+  const [relNote, setRelNote] = useState("");
   const { data: sessionData } = useSession();
 
   /* edit mode */
@@ -464,6 +482,28 @@ export default function DocumentDetailPage({
     }
   }
 
+  async function loadRelations() {
+    setRelationsLoading(true);
+    const res = await fetch(`/api/documents/${id}/relations`);
+    if (res.ok) setRelations(await res.json());
+    setRelationsLoading(false);
+  }
+
+  async function addRelation() {
+    if (!relTarget.trim()) return;
+    const res = await fetch(`/api/documents/${id}/relations`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ targetId: relTarget.trim(), relationType: relType, note: relNote || undefined }),
+    });
+    if (res.ok) { setShowAddRelation(false); setRelTarget(""); setRelNote(""); await loadRelations(); }
+  }
+
+  async function removeRelation(relationId: string) {
+    await fetch(`/api/documents/${id}/relations/${relationId}`, { method: "DELETE" });
+    await loadRelations();
+  }
+
   /* fetch document */
   async function fetchDocument() {
     setIsLoading(true);
@@ -624,8 +664,40 @@ export default function DocumentDetailPage({
 
   if (!doc) return null;
 
-  const isPdf = doc.files[0]?.mimeType === "application/pdf";
+  const primaryFile = doc.files[0];
+  const isPdf = primaryFile?.mimeType === "application/pdf";
+  const hasRendition = primaryFile?.renditionStatus === "DONE" && !!primaryFile?.renditionPath;
+  const canPreview = isPdf || hasRendition;
+  const previewSrc = isPdf
+    ? `/api/files?path=${encodeURIComponent(primaryFile.storagePath)}`
+    : hasRendition
+    ? `/api/files?path=${encodeURIComponent(primaryFile.storagePath)}&rendition=1`
+    : null;
+  const watermarkedSrc = previewSrc ? `${previewSrc}&watermark=1` : null;
   const perms = doc.effectivePermissions ?? VIEW_ONLY_PERMISSIONS;
+
+  // Watch/subscribe state (lazy-loaded)
+  const [subscription, setSubscription] = React.useState<{ events: string[] } | null | undefined>(undefined);
+  const [watchLoading, setWatchLoading] = React.useState(false);
+
+  React.useEffect(() => {
+    fetch(`/api/documents/${id}/subscribe`)
+      .then((r) => r.ok ? r.json() : null)
+      .then(setSubscription)
+      .catch(() => setSubscription(null));
+  }, [id]);
+
+  async function toggleWatch() {
+    setWatchLoading(true);
+    if (subscription) {
+      await fetch(`/api/documents/${id}/subscribe`, { method: "DELETE" });
+      setSubscription(null);
+    } else {
+      const res = await fetch(`/api/documents/${id}/subscribe`, { method: "PUT", headers: { "Content-Type": "application/json" }, body: JSON.stringify({}) });
+      if (res.ok) setSubscription(await res.json());
+    }
+    setWatchLoading(false);
+  }
 
   return (
     <div className="p-6 space-y-6 animate-fade-in">
@@ -717,6 +789,25 @@ export default function DocumentDetailPage({
                 Start Workflow
               </Link>
 
+              {/* Watch/Subscribe button */}
+              {subscription !== undefined && (
+                <button
+                  onClick={toggleWatch}
+                  disabled={watchLoading}
+                  title={subscription ? "Unwatch document" : "Watch document"}
+                  className={`inline-flex items-center gap-1.5 h-9 px-3 rounded-lg border text-sm font-medium transition-colors ${
+                    subscription
+                      ? "border-amber-400 text-amber-600 bg-amber-50 dark:bg-amber-900/20 hover:bg-amber-100"
+                      : "border-gray-200 dark:border-gray-700 text-gray-500 hover:text-gray-700 hover:bg-gray-50 dark:hover:bg-gray-800"
+                  }`}
+                >
+                  <svg className="w-4 h-4" fill={subscription ? "currentColor" : "none"} viewBox="0 0 24 24" strokeWidth={1.5} stroke="currentColor">
+                    <path strokeLinecap="round" strokeLinejoin="round" d="M14.857 17.082a23.848 23.848 0 0 0 5.454-1.31A8.967 8.967 0 0 1 18 9.75V9A6 6 0 0 0 6 9v.75a8.967 8.967 0 0 1-2.312 6.022c1.733.64 3.56 1.085 5.455 1.31m5.714 0a24.255 24.255 0 0 1-5.714 0m5.714 0a3 3 0 1 1-5.714 0" />
+                  </svg>
+                  {subscription ? "Watching" : "Watch"}
+                </button>
+              )}
+
               {perms.canShare && (
                 <button
                   onClick={() => setShowShareDialog(true)}
@@ -792,13 +883,43 @@ export default function DocumentDetailPage({
           <div className="lg:sticky lg:top-6">
             {doc.files.length > 0 ? (
               <div className="bg-white dark:bg-gray-900 rounded-xl border border-gray-200 dark:border-gray-800 overflow-hidden animate-slide-up delay-100 flex flex-col min-h-0">
-                {isPdf ? (
+                {canPreview && previewSrc ? (
                   <div className="relative flex-1 min-h-0 bg-gray-100 dark:bg-gray-900">
                     <iframe
-                      src={`/api/files?path=${encodeURIComponent(doc.files[0].storagePath)}`}
+                      src={previewSrc}
                       className="w-full h-[calc(100vh-8rem)] lg:h-[calc(100vh-6rem)] min-h-[600px] border-0"
                       title="Document preview"
                     />
+                    {/* Viewer toolbar */}
+                    <div className="absolute bottom-3 right-3 flex gap-2">
+                      {perms.canDownload && (
+                        <a
+                          href={`/api/files?path=${encodeURIComponent(primaryFile.storagePath)}&download=1`}
+                          download
+                          className="inline-flex items-center gap-1.5 h-8 px-3 rounded-lg bg-white/90 backdrop-blur border border-gray-200 text-xs font-medium text-gray-700 shadow hover:bg-white transition-colors"
+                          title="Download original"
+                        >
+                          <svg className="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" strokeWidth={1.5} stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" d="M3 16.5v2.25A2.25 2.25 0 0 0 5.25 21h13.5A2.25 2.25 0 0 0 21 18.75V16.5M16.5 12 12 16.5m0 0L7.5 12m4.5 4.5V3" /></svg>
+                          Download
+                        </a>
+                      )}
+                      {perms.canDownload && watermarkedSrc && (
+                        <a
+                          href={`${watermarkedSrc}&download=1`}
+                          download
+                          className="inline-flex items-center gap-1.5 h-8 px-3 rounded-lg bg-amber-50/90 backdrop-blur border border-amber-200 text-xs font-medium text-amber-700 shadow hover:bg-amber-100 transition-colors"
+                          title="Download with watermark"
+                        >
+                          <svg className="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" strokeWidth={1.5} stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" d="M9.53 16.122a3 3 0 0 0-5.78 1.128 2.25 2.25 0 0 1-2.4 2.245 4.5 4.5 0 0 0 8.4-2.245c0-.399-.078-.78-.22-1.128Zm0 0a15.998 15.998 0 0 0 3.388-1.62m-5.043-.025a15.994 15.994 0 0 1 1.622-3.395m3.42 3.42a15.995 15.995 0 0 0 4.764-4.648l3.876-5.814a1.151 1.151 0 0 0-1.597-1.597L14.146 6.32a15.996 15.996 0 0 0-4.649 4.763m3.42 3.42a6.776 6.776 0 0 0-3.42-3.42" /></svg>
+                          Watermarked
+                        </a>
+                      )}
+                    </div>
+                    {hasRendition && !isPdf && (
+                      <div className="absolute top-3 left-3 bg-blue-600/90 text-white text-xs px-2 py-1 rounded-lg backdrop-blur">
+                        PDF rendition
+                      </div>
+                    )}
                   </div>
                 ) : (
                   <div className="p-6 flex items-center gap-4">
@@ -808,12 +929,18 @@ export default function DocumentDetailPage({
                       </svg>
                     </div>
                     <div className="flex-1 min-w-0">
-                      <p className="text-sm font-medium text-gray-900 dark:text-gray-100 truncate">{doc.files[0].fileName}</p>
-                      <p className="text-xs text-gray-500 dark:text-gray-400">{formatFileSize(doc.files[0].sizeBytes)}</p>
+                      <p className="text-sm font-medium text-gray-900 dark:text-gray-100 truncate">{primaryFile.fileName}</p>
+                      <p className="text-xs text-gray-500 dark:text-gray-400">{formatFileSize(primaryFile.sizeBytes)}</p>
+                      {primaryFile.renditionStatus === "PENDING" && (
+                        <p className="text-xs text-blue-500 mt-0.5">Generating preview…</p>
+                      )}
+                      {primaryFile.renditionStatus === "FAILED" && (
+                        <p className="text-xs text-orange-500 mt-0.5">Preview unavailable for this file type</p>
+                      )}
                     </div>
                     {perms.canDownload && (
                       <a
-                        href={`/api/files?path=${encodeURIComponent(doc.files[0].storagePath)}&download=1`}
+                        href={`/api/files?path=${encodeURIComponent(primaryFile.storagePath)}&download=1`}
                         download
                         className="inline-flex items-center gap-1.5 h-9 px-4 rounded-lg bg-karu-green text-white text-sm font-medium hover:bg-karu-green-dark transition-colors"
                       >
@@ -867,10 +994,13 @@ export default function DocumentDetailPage({
           {/* Tabs */}
           <div className="border-b border-gray-200 dark:border-gray-800">
             <nav className="flex gap-6">
-          {(["details", "versions", "comments", "signatures", "access", "audit"] as const).map((tab) => (
+          {(["details", "versions", "comments", "signatures", "access", "relations", "audit"] as const).map((tab) => (
             <button
               key={tab}
-              onClick={() => setActiveTab(tab)}
+              onClick={() => {
+                setActiveTab(tab);
+                if (tab === "relations" && !relations) loadRelations();
+              }}
               className={`pb-3 text-sm font-medium border-b-2 transition-colors ${
                 activeTab === tab
                   ? "border-karu-green text-karu-green"
@@ -1273,7 +1403,8 @@ export default function DocumentDetailPage({
 
             {/* Versions table */}
             <div className="bg-white dark:bg-gray-900 rounded-xl border border-gray-200 dark:border-gray-800 overflow-hidden">
-              <table className="w-full text-sm">
+              <div className="overflow-x-auto">
+              <table className="w-full text-sm min-w-[480px]">
                 <thead>
                   <tr className="border-b border-gray-200 dark:border-gray-800 bg-gray-50 dark:bg-gray-800/50">
                     {compareMode && (
@@ -1350,6 +1481,7 @@ export default function DocumentDetailPage({
                   )}
                 </tbody>
               </table>
+              </div>
             </div>
 
             {/* Comparison result panel */}
@@ -1488,7 +1620,8 @@ export default function DocumentDetailPage({
                 )}
               </div>
 
-              <table className="w-full text-sm">
+              <div className="overflow-x-auto">
+              <table className="w-full text-sm min-w-[400px]">
                 <thead>
                   <tr className="border-b border-gray-200 dark:border-gray-800 bg-gray-50 dark:bg-gray-800/50">
                     <th className="text-left px-4 py-2.5 font-medium text-gray-500 dark:text-gray-400">User / Role</th>
@@ -1550,6 +1683,7 @@ export default function DocumentDetailPage({
                   )}
                 </tbody>
               </table>
+              </div>
             </div>
 
             {/* Grant Access Modal */}
@@ -1753,6 +1887,118 @@ export default function DocumentDetailPage({
           </div>
         )}
           </div>
+          {/* Relations tab */}
+          {activeTab === "relations" && (
+            <div className="space-y-4">
+              <div className="flex items-center justify-between">
+                <h3 className="text-sm font-semibold text-gray-700 dark:text-gray-300">Document Relationships</h3>
+                <button
+                  onClick={() => setShowAddRelation((v) => !v)}
+                  className="text-xs px-3 py-1.5 rounded-lg bg-karu-green text-white hover:bg-karu-green-dark"
+                >
+                  + Add Relation
+                </button>
+              </div>
+
+              {showAddRelation && (
+                <div className="p-4 border border-gray-200 dark:border-gray-700 rounded-xl bg-gray-50 dark:bg-gray-800/50 space-y-3">
+                  <div>
+                    <label className="block text-xs font-medium text-gray-600 dark:text-gray-400 mb-1">Target Document ID</label>
+                    <input
+                      className="w-full border rounded-lg px-3 py-2 text-sm dark:bg-gray-900 dark:border-gray-700"
+                      placeholder="Paste document ID or reference number"
+                      value={relTarget}
+                      onChange={(e) => setRelTarget(e.target.value)}
+                    />
+                  </div>
+                  <div className="grid grid-cols-2 gap-3">
+                    <div>
+                      <label className="block text-xs font-medium text-gray-600 dark:text-gray-400 mb-1">Relationship type</label>
+                      <select
+                        className="w-full border rounded-lg px-3 py-2 text-sm dark:bg-gray-900 dark:border-gray-700"
+                        value={relType}
+                        onChange={(e) => setRelType(e.target.value)}
+                      >
+                        {["RELATED_TO","SUPERSEDES","REPLACES","SUPPORTS","TRANSLATES"].map((t) => (
+                          <option key={t} value={t}>{t.replace(/_/g, " ")}</option>
+                        ))}
+                      </select>
+                    </div>
+                    <div>
+                      <label className="block text-xs font-medium text-gray-600 dark:text-gray-400 mb-1">Note (optional)</label>
+                      <input
+                        className="w-full border rounded-lg px-3 py-2 text-sm dark:bg-gray-900 dark:border-gray-700"
+                        value={relNote}
+                        onChange={(e) => setRelNote(e.target.value)}
+                        placeholder="Short note"
+                      />
+                    </div>
+                  </div>
+                  <div className="flex gap-2 justify-end">
+                    <button onClick={() => setShowAddRelation(false)} className="text-xs px-3 py-1.5 border rounded-lg hover:bg-gray-100 dark:hover:bg-gray-700">Cancel</button>
+                    <button onClick={addRelation} className="text-xs px-3 py-1.5 rounded-lg bg-karu-green text-white hover:bg-karu-green-dark">Save</button>
+                  </div>
+                </div>
+              )}
+
+              {relationsLoading && <p className="text-sm text-gray-500">Loading…</p>}
+
+              {relations && (
+                <div className="space-y-4">
+                  {/* Outgoing */}
+                  <div>
+                    <p className="text-xs uppercase tracking-wide text-gray-400 mb-2">This document…</p>
+                    {relations.outgoing.length === 0 ? (
+                      <p className="text-xs text-gray-400">No outgoing relations</p>
+                    ) : (
+                      <div className="space-y-2">
+                        {relations.outgoing.map((r) => (
+                          <div key={r.id} className="flex items-start gap-3 p-3 rounded-lg border border-gray-100 dark:border-gray-800 bg-white dark:bg-gray-900">
+                            <span className="text-xs font-semibold text-blue-600 bg-blue-50 dark:bg-blue-950/40 px-2 py-0.5 rounded-full whitespace-nowrap">
+                              {r.relationType.replace(/_/g, " ")}
+                            </span>
+                            <div className="flex-1 min-w-0">
+                              <Link href={`/documents/${r.target?.id}`} className="text-sm font-medium text-gray-900 dark:text-gray-100 hover:underline truncate block">
+                                {r.target?.title ?? r.target?.id}
+                              </Link>
+                              <p className="text-xs text-gray-400">{r.target?.referenceNumber}</p>
+                              {r.note && <p className="text-xs text-gray-500 italic mt-0.5">{r.note}</p>}
+                            </div>
+                            <button onClick={() => removeRelation(r.id)} className="text-gray-300 hover:text-red-500 text-xs">✕</button>
+                          </div>
+                        ))}
+                      </div>
+                    )}
+                  </div>
+
+                  {/* Incoming */}
+                  <div>
+                    <p className="text-xs uppercase tracking-wide text-gray-400 mb-2">Referenced by…</p>
+                    {relations.incoming.length === 0 ? (
+                      <p className="text-xs text-gray-400">No incoming relations</p>
+                    ) : (
+                      <div className="space-y-2">
+                        {relations.incoming.map((r) => (
+                          <div key={r.id} className="flex items-start gap-3 p-3 rounded-lg border border-gray-100 dark:border-gray-800 bg-white dark:bg-gray-900">
+                            <span className="text-xs font-semibold text-purple-600 bg-purple-50 dark:bg-purple-950/40 px-2 py-0.5 rounded-full whitespace-nowrap">
+                              {r.relationType.replace(/_/g, " ")}
+                            </span>
+                            <div className="flex-1 min-w-0">
+                              <Link href={`/documents/${r.source?.id}`} className="text-sm font-medium text-gray-900 dark:text-gray-100 hover:underline truncate block">
+                                {r.source?.title ?? r.source?.id}
+                              </Link>
+                              <p className="text-xs text-gray-400">{r.source?.referenceNumber}</p>
+                            </div>
+                          </div>
+                        ))}
+                      </div>
+                    )}
+                  </div>
+                </div>
+              )}
+            </div>
+          )}
+
           {/* end tab content */}
         </div>
         {/* end left column */}

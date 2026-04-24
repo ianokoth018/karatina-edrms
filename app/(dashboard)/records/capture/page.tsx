@@ -36,6 +36,21 @@ interface CaptureProfile {
   metadataMapping: Record<string, string> | null;
   validationRules: ValidationRules | Record<string, unknown> | null;
   duplicateAction: "SKIP" | "VERSION" | "FLAG";
+  sourceType: "HOT_FOLDER" | "EMAIL" | "API" | "SFTP" | "SMB";
+  imapHost: string | null;
+  imapPort: number | null;
+  imapUser: string | null;
+  imapPassword: string | null;
+  imapFolder: string | null;
+  imapSenderFilter: string | null;
+  imapSubjectFilter: string | null;
+  remoteHost: string | null;
+  remotePort: number | null;
+  remoteUser: string | null;
+  remotePassword: string | null;
+  remotePath: string | null;
+  remotePollInterval: number | null;
+  remoteDeleteAfterCopy: boolean;
   lastScanAt: string | null;
   _count: { logs: number };
 }
@@ -70,6 +85,14 @@ const DUPLICATE_OPTIONS: { value: "SKIP" | "VERSION" | "FLAG"; label: string; de
   { value: "SKIP", label: "Skip", desc: "Ignore duplicates silently" },
   { value: "VERSION", label: "Create Version", desc: "Add as new document version" },
   { value: "FLAG", label: "Flag for Review", desc: "Mark for manual review" },
+];
+
+type SourceType = "HOT_FOLDER" | "EMAIL" | "API" | "SFTP" | "SMB";
+const SOURCE_TYPE_OPTIONS: { value: SourceType; label: string; desc: string }[] = [
+  { value: "HOT_FOLDER", label: "Hot Folder", desc: "Watch a local directory" },
+  { value: "EMAIL", label: "Email (IMAP)", desc: "Fetch from an IMAP mailbox" },
+  { value: "SFTP", label: "SFTP", desc: "Pull files via SSH/SFTP" },
+  { value: "SMB", label: "SMB / Network Share", desc: "Pull files from a Windows share" },
 ];
 
 /* ================================================================
@@ -201,6 +224,22 @@ function IconWarning({ className = "w-5 h-5" }: { className?: string }) {
   return (
     <svg className={className} fill="none" viewBox="0 0 24 24" strokeWidth={1.5} stroke="currentColor">
       <path strokeLinecap="round" strokeLinejoin="round" d="M12 9v3.75m-9.303 3.376c-.866 1.5.217 3.374 1.948 3.374h14.71c1.73 0 2.813-1.874 1.948-3.374L13.949 3.378c-.866-1.5-3.032-1.5-3.898 0L2.697 16.126ZM12 15.75h.007v.008H12v-.008Z" />
+    </svg>
+  );
+}
+
+function IconMail({ className = "w-4 h-4" }: { className?: string }) {
+  return (
+    <svg className={className} fill="none" viewBox="0 0 24 24" strokeWidth={1.5} stroke="currentColor">
+      <path strokeLinecap="round" strokeLinejoin="round" d="M21.75 6.75v10.5a2.25 2.25 0 0 1-2.25 2.25h-15a2.25 2.25 0 0 1-2.25-2.25V6.75m19.5 0A2.25 2.25 0 0 0 19.5 4.5h-15a2.25 2.25 0 0 0-2.25 2.25m19.5 0v.243a2.25 2.25 0 0 1-1.07 1.916l-7.5 4.615a2.25 2.25 0 0 1-2.36 0L3.32 8.91a2.25 2.25 0 0 1-1.07-1.916V6.75" />
+    </svg>
+  );
+}
+
+function IconServer({ className = "w-4 h-4" }: { className?: string }) {
+  return (
+    <svg className={className} fill="none" viewBox="0 0 24 24" strokeWidth={1.5} stroke="currentColor">
+      <path strokeLinecap="round" strokeLinejoin="round" d="M5.25 14.25h13.5m-13.5 0a3 3 0 0 1-3-3m3 3a3 3 0 1 0 0 6h13.5a3 3 0 1 0 0-6m-16.5-3a3 3 0 0 1 3-3h13.5a3 3 0 0 1 3 3m-19.5 0a3 3 0 0 0 3 3m13.5-3a3 3 0 0 0-3 3m0 0h.008v.008H12V14.25Z" />
     </svg>
   );
 }
@@ -517,6 +556,23 @@ export default function CaptureProfilesPage() {
   const [fValidationFields, setFValidationFields] = useState<FieldRule[]>([]);
   const [fDuplicateAction, setFDuplicateAction] = useState<"SKIP" | "VERSION" | "FLAG">("SKIP");
 
+  /* -------- source type + connection state -------- */
+  const [fSourceType, setFSourceType] = useState<SourceType>("HOT_FOLDER");
+  const [fImapHost, setFImapHost] = useState("");
+  const [fImapPort, setFImapPort] = useState(993);
+  const [fImapUser, setFImapUser] = useState("");
+  const [fImapPass, setFImapPass] = useState("");
+  const [fImapFolder, setFImapFolder] = useState("INBOX");
+  const [fImapSenderFilter, setFImapSenderFilter] = useState("");
+  const [fImapSubjectFilter, setFImapSubjectFilter] = useState("");
+  const [fRemoteHost, setFRemoteHost] = useState("");
+  const [fRemotePort, setFRemotePort] = useState(22);
+  const [fRemoteUser, setFRemoteUser] = useState("");
+  const [fRemotePass, setFRemotePass] = useState("");
+  const [fRemotePath, setFRemotePath] = useState("");
+  const [fRemotePollInterval, setFRemotePollInterval] = useState(60);
+  const [fRemoteDeleteAfterCopy, setFRemoteDeleteAfterCopy] = useState(false);
+
   /* -------- scan state -------- */
   const [scanningAll, setScanningAll] = useState(false);
   const [scanningProfileId, setScanningProfileId] = useState<string | null>(null);
@@ -644,6 +700,11 @@ export default function CaptureProfilesPage() {
     setFDepartment("");
     setFValidationFields([]);
     setFDuplicateAction("SKIP");
+    setFSourceType("HOT_FOLDER");
+    setFImapHost(""); setFImapPort(993); setFImapUser(""); setFImapPass(""); setFImapFolder("INBOX");
+    setFImapSenderFilter(""); setFImapSubjectFilter("");
+    setFRemoteHost(""); setFRemotePort(22); setFRemoteUser(""); setFRemotePass("");
+    setFRemotePath(""); setFRemotePollInterval(60); setFRemoteDeleteAfterCopy(false);
     setShowModal(true);
   }
 
@@ -665,6 +726,21 @@ export default function CaptureProfilesPage() {
       vr && Array.isArray(vr.fields) ? (vr.fields as FieldRule[]) : []
     );
     setFDuplicateAction(profile.duplicateAction);
+    setFSourceType(profile.sourceType ?? "HOT_FOLDER");
+    setFImapHost(profile.imapHost ?? "");
+    setFImapPort(profile.imapPort ?? 993);
+    setFImapUser(profile.imapUser ?? "");
+    setFImapPass(profile.imapPassword ?? "");
+    setFImapFolder(profile.imapFolder ?? "INBOX");
+    setFImapSenderFilter(profile.imapSenderFilter ?? "");
+    setFImapSubjectFilter(profile.imapSubjectFilter ?? "");
+    setFRemoteHost(profile.remoteHost ?? "");
+    setFRemotePort(profile.remotePort ?? 22);
+    setFRemoteUser(profile.remoteUser ?? "");
+    setFRemotePass(profile.remotePassword ?? "");
+    setFRemotePath(profile.remotePath ?? "");
+    setFRemotePollInterval(profile.remotePollInterval ?? 60);
+    setFRemoteDeleteAfterCopy(profile.remoteDeleteAfterCopy ?? false);
     setShowModal(true);
   }
 
@@ -686,6 +762,25 @@ export default function CaptureProfilesPage() {
         metadataMapping: {},
         validationRules: { fields: fValidationFields },
         duplicateAction: fDuplicateAction,
+        sourceType: fSourceType,
+        ...(fSourceType === "EMAIL" ? {
+          imapHost: fImapHost || undefined,
+          imapPort: fImapPort,
+          imapUser: fImapUser || undefined,
+          imapPassword: fImapPass || undefined,
+          imapFolder: fImapFolder || "INBOX",
+          imapSenderFilter: fImapSenderFilter || undefined,
+          imapSubjectFilter: fImapSubjectFilter || undefined,
+        } : {}),
+        ...((fSourceType === "SFTP" || fSourceType === "SMB") ? {
+          remoteHost: fRemoteHost || undefined,
+          remotePort: fRemotePort,
+          remoteUser: fRemoteUser || undefined,
+          remotePassword: fRemotePass || undefined,
+          remotePath: fRemotePath || undefined,
+          remotePollInterval: fRemotePollInterval,
+          remoteDeleteAfterCopy: fRemoteDeleteAfterCopy,
+        } : {}),
       };
 
       const isEdit = !!editingProfile;
@@ -768,7 +863,7 @@ export default function CaptureProfilesPage() {
      ================================================================ */
 
   return (
-    <div className="p-6 max-w-[1400px] mx-auto space-y-6 animate-fade-in">
+    <div className="p-4 sm:p-6 space-y-6 animate-fade-in">
       {/* Toast */}
       <ToastContainer toasts={toasts} onDismiss={dismissToast} />
 
@@ -777,7 +872,7 @@ export default function CaptureProfilesPage() {
         <div>
           <h1 className="text-2xl font-bold text-gray-900 dark:text-gray-100">Auto Capture</h1>
           <p className="text-sm text-gray-500 dark:text-gray-400 mt-1">
-            Configure automated document capture from watched folders
+            Configure automated document capture from hot folders, email, SFTP, and network shares
           </p>
         </div>
         <div className="flex items-center gap-3">
@@ -977,11 +1072,26 @@ export default function CaptureProfilesPage() {
                   </Can>
                 </div>
 
-                {/* Folder path */}
-                <div className="flex items-center gap-2 mb-3">
-                  <IconFolder className="w-3.5 h-3.5 text-gray-400 flex-shrink-0" />
+                {/* Source type + folder path */}
+                <div className="flex items-center gap-2 mb-3 flex-wrap">
+                  {profile.sourceType && profile.sourceType !== "HOT_FOLDER" ? (
+                    <span className={`inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-xs font-medium ${
+                      profile.sourceType === "EMAIL"
+                        ? "bg-blue-100 text-blue-700 dark:bg-blue-950/40 dark:text-blue-400"
+                        : "bg-violet-100 text-violet-700 dark:bg-violet-950/40 dark:text-violet-400"
+                    }`}>
+                      {profile.sourceType === "EMAIL" ? <IconMail className="w-3 h-3" /> : <IconServer className="w-3 h-3" />}
+                      {profile.sourceType === "EMAIL" ? "IMAP" : profile.sourceType}
+                    </span>
+                  ) : (
+                    <IconFolder className="w-3.5 h-3.5 text-gray-400 flex-shrink-0" />
+                  )}
                   <code className="text-xs font-mono text-gray-600 dark:text-gray-400 truncate">
-                    {profile.folderPath}
+                    {profile.sourceType === "EMAIL"
+                      ? (profile.imapHost ? `${profile.imapUser ?? ""}@${profile.imapHost}` : "—")
+                      : (profile.sourceType === "SFTP" || profile.sourceType === "SMB")
+                      ? (profile.remoteHost ?? profile.folderPath)
+                      : profile.folderPath}
                   </code>
                 </div>
 
@@ -1083,6 +1193,40 @@ export default function CaptureProfilesPage() {
         wide
       >
         <form onSubmit={handleSave} className="space-y-5">
+          {/* Source Type */}
+          <Field label="Source Type" required>
+            <div className="grid grid-cols-2 gap-2 mt-1">
+              {SOURCE_TYPE_OPTIONS.map((opt) => (
+                <label
+                  key={opt.value}
+                  className={`flex items-start gap-2.5 p-3 rounded-xl border cursor-pointer transition-colors ${
+                    fSourceType === opt.value
+                      ? "border-[#02773b] bg-[#02773b]/5 dark:border-emerald-600 dark:bg-emerald-950/20"
+                      : "border-gray-200 dark:border-gray-700 hover:border-gray-300 dark:hover:border-gray-600"
+                  }`}
+                >
+                  <input
+                    type="radio"
+                    name="sourceType"
+                    value={opt.value}
+                    checked={fSourceType === opt.value}
+                    onChange={() => setFSourceType(opt.value)}
+                    className="sr-only"
+                  />
+                  <div className={`w-4 h-4 mt-0.5 rounded-full border-2 flex items-center justify-center flex-shrink-0 ${
+                    fSourceType === opt.value ? "border-[#02773b] dark:border-emerald-400" : "border-gray-300 dark:border-gray-600"
+                  }`}>
+                    {fSourceType === opt.value && <div className="w-2 h-2 rounded-full bg-[#02773b] dark:bg-emerald-400" />}
+                  </div>
+                  <div>
+                    <p className="text-sm font-medium text-gray-900 dark:text-gray-100">{opt.label}</p>
+                    <p className="text-xs text-gray-500 dark:text-gray-400">{opt.desc}</p>
+                  </div>
+                </label>
+              ))}
+            </div>
+          </Field>
+
           {/* Row 1: Name + Department */}
           <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
             <Field label="Name" required>
@@ -1117,17 +1261,195 @@ export default function CaptureProfilesPage() {
             />
           </Field>
 
-          {/* Folder Path */}
-          <Field label="Folder Path" required hint="Absolute path to the folder to watch for incoming documents">
+          {/* Folder Path — conditionally labelled and required only for HOT_FOLDER */}
+          <Field
+            label={fSourceType === "HOT_FOLDER" ? "Folder Path" : "Staging Path"}
+            required={fSourceType === "HOT_FOLDER"}
+            hint={fSourceType === "HOT_FOLDER" ? "Absolute path to the folder to watch for incoming documents" : "Local path where downloaded files are temporarily staged before processing"}
+          >
             <input
               type="text"
               value={fFolderPath}
               onChange={(e) => setFFolderPath(e.target.value)}
-              required
-              placeholder="/mnt/scans/incoming"
+              required={fSourceType === "HOT_FOLDER"}
+              placeholder={fSourceType === "HOT_FOLDER" ? "/mnt/scans/incoming" : "/tmp/capture-staging"}
               className={monoInputClass}
             />
           </Field>
+
+          {/* IMAP Settings — only for EMAIL */}
+          {fSourceType === "EMAIL" && (
+            <div className="p-4 rounded-xl border border-blue-200 dark:border-blue-800 bg-blue-50/50 dark:bg-blue-950/20 space-y-4">
+              <div className="flex items-center gap-2 mb-1">
+                <IconMail className="w-4 h-4 text-blue-600 dark:text-blue-400" />
+                <p className="text-sm font-semibold text-blue-700 dark:text-blue-300">IMAP Connection</p>
+              </div>
+              <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
+                <div className="sm:col-span-2">
+                  <Field label="IMAP Host" required>
+                    <input
+                      type="text"
+                      value={fImapHost}
+                      onChange={(e) => setFImapHost(e.target.value)}
+                      required={fSourceType === "EMAIL"}
+                      placeholder="imap.gmail.com"
+                      className={inputClass}
+                    />
+                  </Field>
+                </div>
+                <Field label="Port">
+                  <input
+                    type="number"
+                    value={fImapPort}
+                    onChange={(e) => setFImapPort(parseInt(e.target.value) || 993)}
+                    min={1}
+                    max={65535}
+                    className={inputClass}
+                  />
+                </Field>
+              </div>
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+                <Field label="Username / Email" required>
+                  <input
+                    type="text"
+                    value={fImapUser}
+                    onChange={(e) => setFImapUser(e.target.value)}
+                    required={fSourceType === "EMAIL"}
+                    placeholder="scanner@karatina.ac.ke"
+                    className={inputClass}
+                  />
+                </Field>
+                <Field label="Password" hint="Stored encrypted at rest">
+                  <input
+                    type="password"
+                    value={fImapPass}
+                    onChange={(e) => setFImapPass(e.target.value)}
+                    placeholder="App password or IMAP password"
+                    className={inputClass}
+                    autoComplete="new-password"
+                  />
+                </Field>
+              </div>
+              <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
+                <Field label="Mailbox Folder" hint="IMAP folder to poll">
+                  <input
+                    type="text"
+                    value={fImapFolder}
+                    onChange={(e) => setFImapFolder(e.target.value)}
+                    placeholder="INBOX"
+                    className={inputClass}
+                  />
+                </Field>
+                <Field label="Sender Filter" hint="Only import from this sender">
+                  <input
+                    type="text"
+                    value={fImapSenderFilter}
+                    onChange={(e) => setFImapSenderFilter(e.target.value)}
+                    placeholder="scanner@office.com"
+                    className={inputClass}
+                  />
+                </Field>
+                <Field label="Subject Filter" hint="Only import emails matching this prefix">
+                  <input
+                    type="text"
+                    value={fImapSubjectFilter}
+                    onChange={(e) => setFImapSubjectFilter(e.target.value)}
+                    placeholder="EDRMS:"
+                    className={inputClass}
+                  />
+                </Field>
+              </div>
+            </div>
+          )}
+
+          {/* Remote Settings — SFTP / SMB */}
+          {(fSourceType === "SFTP" || fSourceType === "SMB") && (
+            <div className="p-4 rounded-xl border border-violet-200 dark:border-violet-800 bg-violet-50/50 dark:bg-violet-950/20 space-y-4">
+              <div className="flex items-center gap-2 mb-1">
+                <IconServer className="w-4 h-4 text-violet-600 dark:text-violet-400" />
+                <p className="text-sm font-semibold text-violet-700 dark:text-violet-300">
+                  {fSourceType === "SFTP" ? "SFTP Connection" : "SMB / Network Share"}
+                </p>
+              </div>
+              <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
+                <div className="sm:col-span-2">
+                  <Field label="Host / UNC Path" required>
+                    <input
+                      type="text"
+                      value={fRemoteHost}
+                      onChange={(e) => setFRemoteHost(e.target.value)}
+                      required={fSourceType === "SFTP" || fSourceType === "SMB"}
+                      placeholder={fSourceType === "SFTP" ? "sftp.karatina.ac.ke" : "\\server\share"}
+                      className={inputClass}
+                    />
+                  </Field>
+                </div>
+                {fSourceType === "SFTP" && (
+                  <Field label="Port">
+                    <input
+                      type="number"
+                      value={fRemotePort}
+                      onChange={(e) => setFRemotePort(parseInt(e.target.value) || 22)}
+                      min={1}
+                      max={65535}
+                      className={inputClass}
+                    />
+                  </Field>
+                )}
+              </div>
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+                <Field label="Username" required>
+                  <input
+                    type="text"
+                    value={fRemoteUser}
+                    onChange={(e) => setFRemoteUser(e.target.value)}
+                    required={fSourceType === "SFTP" || fSourceType === "SMB"}
+                    placeholder={fSourceType === "SMB" ? "DOMAIN\\user" : "ftpuser"}
+                    className={inputClass}
+                  />
+                </Field>
+                <Field label="Password" hint="Stored encrypted at rest">
+                  <input
+                    type="password"
+                    value={fRemotePass}
+                    onChange={(e) => setFRemotePass(e.target.value)}
+                    placeholder="Password"
+                    className={inputClass}
+                    autoComplete="new-password"
+                  />
+                </Field>
+              </div>
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+                <Field label="Remote Path" hint="Directory to scan for files">
+                  <input
+                    type="text"
+                    value={fRemotePath}
+                    onChange={(e) => setFRemotePath(e.target.value)}
+                    placeholder={fSourceType === "SFTP" ? "/upload/scans" : "scans/incoming"}
+                    className={monoInputClass}
+                  />
+                </Field>
+                <Field label="Poll Interval (s)" hint="How often to check the remote source">
+                  <input
+                    type="number"
+                    value={fRemotePollInterval}
+                    onChange={(e) => setFRemotePollInterval(Math.max(10, parseInt(e.target.value) || 60))}
+                    min={10}
+                    className={inputClass}
+                  />
+                </Field>
+              </div>
+              <label className="flex items-center gap-2.5 cursor-pointer">
+                <input
+                  type="checkbox"
+                  checked={fRemoteDeleteAfterCopy}
+                  onChange={(e) => setFRemoteDeleteAfterCopy(e.target.checked)}
+                  className="rounded border-gray-300 text-violet-600 focus:ring-violet-500"
+                />
+                <span className="text-sm text-gray-700 dark:text-gray-300">Delete files from remote after successful capture</span>
+              </label>
+            </div>
+          )}
 
           {/* Row: Processed + Error paths */}
           <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
@@ -1373,7 +1695,7 @@ export default function CaptureProfilesPage() {
             </button>
             <button
               type="submit"
-              disabled={saving || !fName.trim() || !fFolderPath.trim()}
+              disabled={saving || !fName.trim() || (fSourceType === "HOT_FOLDER" && !fFolderPath.trim()) || (fSourceType === "EMAIL" && !fImapHost.trim()) || ((fSourceType === "SFTP" || fSourceType === "SMB") && !fRemoteHost.trim())}
               className="inline-flex items-center gap-2 h-10 px-6 rounded-xl bg-karu-green text-white font-medium text-sm transition-all hover:bg-karu-green-dark focus:ring-2 focus:ring-karu-green/20 disabled:opacity-60 disabled:cursor-not-allowed"
             >
               {saving && <IconSpinner className="w-4 h-4" />}

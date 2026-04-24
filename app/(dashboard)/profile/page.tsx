@@ -1,7 +1,7 @@
 "use client";
 
 import { useSession } from "next-auth/react";
-import { useState, useMemo } from "react";
+import { useState, useMemo, useRef, useEffect } from "react";
 import Link from "next/link";
 
 const RESOURCE_META: Record<string, { label: string; icon: string; color: string }> = {
@@ -46,11 +46,96 @@ function formatRoleName(role: string): string {
 type Tab = "overview" | "permissions" | "roles" | "account";
 
 export default function ProfilePage() {
-  const { data: session, status } = useSession();
+  const { data: session, status, update } = useSession();
   const [activeTab, setActiveTab] = useState<Tab>("overview");
   const [copied, setCopied] = useState(false);
 
+  // Profile photo state
+  const fileInputRef = useRef<HTMLInputElement | null>(null);
+  const [photoUrl, setPhotoUrl] = useState<string | null>(null);
+  const [photoBusy, setPhotoBusy] = useState(false);
+  const [photoError, setPhotoError] = useState<string | null>(null);
+
   const user = session?.user;
+
+  // Set initial photo URL when session loads (cache-busted via session refresh)
+  useEffect(() => {
+    if (user?.id && user.profilePhoto) {
+      setPhotoUrl(`/api/profile/photo/${user.id}?v=${user.profilePhoto.length}`);
+    } else {
+      setPhotoUrl(null);
+    }
+  }, [user?.id, user?.profilePhoto]);
+
+  async function handlePhotoSelect(e: React.ChangeEvent<HTMLInputElement>) {
+    const file = e.target.files?.[0];
+    e.target.value = "";
+    if (!file) return;
+
+    if (!file.type.startsWith("image/")) {
+      setPhotoError("Please choose an image file (PNG, JPEG, WebP, or GIF).");
+      return;
+    }
+    if (file.size > 4 * 1024 * 1024) {
+      setPhotoError("Maximum file size is 4 MiB.");
+      return;
+    }
+
+    setPhotoError(null);
+    setPhotoBusy(true);
+
+    // Optimistic preview
+    const localPreview = URL.createObjectURL(file);
+    setPhotoUrl(localPreview);
+
+    try {
+      const fd = new FormData();
+      fd.append("file", file);
+      const res = await fetch("/api/profile/photo", {
+        method: "POST",
+        body: fd,
+      });
+      if (res.ok) {
+        const data = await res.json();
+        setPhotoUrl(data.url);
+        await update();
+      } else {
+        const err = await res.json().catch(() => null);
+        setPhotoError(err?.error ?? "Upload failed");
+        // Revert preview on error
+        setPhotoUrl(
+          user?.profilePhoto && user.id
+            ? `/api/profile/photo/${user.id}?v=${user.profilePhoto.length}`
+            : null
+        );
+      }
+    } catch {
+      setPhotoError("Network error");
+    } finally {
+      setPhotoBusy(false);
+      URL.revokeObjectURL(localPreview);
+    }
+  }
+
+  async function handleRemovePhoto() {
+    if (!confirm("Remove your profile photo?")) return;
+    setPhotoBusy(true);
+    setPhotoError(null);
+    try {
+      const res = await fetch("/api/profile/photo", { method: "DELETE" });
+      if (res.ok) {
+        setPhotoUrl(null);
+        await update();
+      } else {
+        const err = await res.json().catch(() => null);
+        setPhotoError(err?.error ?? "Remove failed");
+      }
+    } catch {
+      setPhotoError("Network error");
+    } finally {
+      setPhotoBusy(false);
+    }
+  }
   const permissionGroups = useMemo(
     () => groupPermissions(user?.permissions ?? []),
     [user?.permissions]
@@ -123,14 +208,95 @@ export default function ProfilePage() {
 
         {/* Avatar + Info */}
         <div className="px-6 pb-6">
-          {/* Avatar - overlaps the banner */}
+          {/* Avatar - overlaps the banner. Click to upload a photo. */}
           <div className="-mt-10 mb-3">
-            <div className="relative w-20 h-20 shrink-0">
-              <div className="w-20 h-20 rounded-full ring-4 ring-white dark:ring-gray-900 bg-gradient-to-br from-[#02773b] to-[#014d28] flex items-center justify-center shadow-lg">
-                <span className="text-white font-bold text-2xl">{getInitials(user.name ?? "U")}</span>
-              </div>
-              <span className="absolute bottom-1 right-1 w-4 h-4 rounded-full bg-green-400 border-2 border-white dark:border-gray-900" title="Online" />
+            <div className="relative w-20 h-20 shrink-0 group">
+              <button
+                type="button"
+                onClick={() => fileInputRef.current?.click()}
+                disabled={photoBusy}
+                title="Change photo"
+                className="block w-20 h-20 rounded-full ring-4 ring-white dark:ring-gray-900 overflow-hidden bg-gradient-to-br from-[#02773b] to-[#014d28] shadow-lg relative focus:outline-none focus:ring-[#dd9f42] disabled:cursor-wait"
+              >
+                {photoUrl ? (
+                  // eslint-disable-next-line @next/next/no-img-element
+                  <img
+                    src={photoUrl}
+                    alt={user.name ?? "Profile"}
+                    className="w-full h-full object-cover"
+                  />
+                ) : (
+                  <span className="absolute inset-0 flex items-center justify-center text-white font-bold text-2xl">
+                    {getInitials(user.name ?? "U")}
+                  </span>
+                )}
+                {/* Hover overlay with camera icon */}
+                <span
+                  className={`absolute inset-0 bg-black/40 flex items-center justify-center transition-opacity ${
+                    photoBusy ? "opacity-100" : "opacity-0 group-hover:opacity-100"
+                  }`}
+                >
+                  {photoBusy ? (
+                    <svg className="w-5 h-5 text-white animate-spin" fill="none" viewBox="0 0 24 24">
+                      <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" />
+                      <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z" />
+                    </svg>
+                  ) : (
+                    <svg className="w-5 h-5 text-white" fill="none" viewBox="0 0 24 24" strokeWidth={1.8} stroke="currentColor">
+                      <path strokeLinecap="round" strokeLinejoin="round" d="M6.827 6.175A2.31 2.31 0 0 1 5.186 7.23c-.38.054-.757.112-1.134.175C2.999 7.58 2.25 8.507 2.25 9.574V18a2.25 2.25 0 0 0 2.25 2.25h15A2.25 2.25 0 0 0 21.75 18V9.574c0-1.067-.75-1.994-1.802-2.169a47.865 47.865 0 0 0-1.134-.175 2.31 2.31 0 0 1-1.64-1.055l-.823-1.316a2.192 2.192 0 0 0-1.736-1.039 48.774 48.774 0 0 0-5.232 0 2.192 2.192 0 0 0-1.736 1.039l-.823 1.316Z" />
+                      <path strokeLinecap="round" strokeLinejoin="round" d="M16.5 12.75a4.5 4.5 0 1 1-9 0 4.5 4.5 0 0 1 9 0ZM18.75 10.5h.008v.008h-.008V10.5Z" />
+                    </svg>
+                  )}
+                </span>
+              </button>
+              {!photoBusy && (
+                <span className="absolute bottom-1 right-1 w-4 h-4 rounded-full bg-green-400 border-2 border-white dark:border-gray-900" title="Online" />
+              )}
+              <input
+                ref={fileInputRef}
+                type="file"
+                accept="image/png,image/jpeg,image/webp,image/gif"
+                onChange={handlePhotoSelect}
+                className="sr-only"
+              />
             </div>
+            {(photoError || photoUrl) && (
+              <div className="mt-2 flex items-center gap-3 text-xs">
+                {photoError ? (
+                  <span className="text-red-600 dark:text-red-400">{photoError}</span>
+                ) : (
+                  <>
+                    <button
+                      type="button"
+                      onClick={() => fileInputRef.current?.click()}
+                      disabled={photoBusy}
+                      className="text-[#02773b] dark:text-[#60c988] hover:underline font-medium"
+                    >
+                      Change photo
+                    </button>
+                    {photoUrl && (
+                      <button
+                        type="button"
+                        onClick={handleRemovePhoto}
+                        disabled={photoBusy}
+                        className="text-red-600 dark:text-red-400 hover:underline"
+                      >
+                        Remove
+                      </button>
+                    )}
+                  </>
+                )}
+              </div>
+            )}
+            {!photoUrl && !photoError && !photoBusy && (
+              <button
+                type="button"
+                onClick={() => fileInputRef.current?.click()}
+                className="mt-2 text-xs text-[#02773b] dark:text-[#60c988] hover:underline font-medium"
+              >
+                Upload a photo
+              </button>
+            )}
           </div>
           {/* Name — clearly in white card area */}
           <div className="mb-4">
@@ -342,21 +508,13 @@ export default function ProfilePage() {
                   <p className="text-xs text-gray-400 mt-0.5">Change your account password</p>
                 </div>
                 <Link
-                  href="/auth/reset-password"
+                  href="/change-password"
                   className="text-xs font-medium text-[#02773b] dark:text-[#60c988] hover:underline"
                 >
                   Change
                 </Link>
               </div>
-              <div className="flex items-center justify-between px-5 py-4">
-                <div>
-                  <p className="text-sm font-medium text-gray-900 dark:text-white">Two-Factor Authentication</p>
-                  <p className="text-xs text-gray-400 mt-0.5">Add an extra layer of security</p>
-                </div>
-                <span className="px-2.5 py-1 rounded-full bg-gray-100 dark:bg-gray-800 text-gray-400 text-xs font-medium">
-                  Coming soon
-                </span>
-              </div>
+              <MfaSection />
             </div>
           </div>
 
@@ -373,6 +531,234 @@ export default function ProfilePage() {
               Sign out
             </Link>
           </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
+/* ------------------------------------------------------------------ */
+/*  MFA setup / disable section (used inside the Account tab)         */
+/* ------------------------------------------------------------------ */
+
+function MfaSection() {
+  const { data: session, update } = useSession();
+  const [mfaEnabled, setMfaEnabled] = useState(false);
+  const [loadingState, setLoadingState] = useState(true);
+  const [stage, setStage] = useState<"idle" | "verify">("idle");
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const [info, setInfo] = useState<string | null>(null);
+  const [maskedEmail, setMaskedEmail] = useState<string>("");
+  const [code, setCode] = useState("");
+  const [disablePw, setDisablePw] = useState("");
+
+  // Fetch current MFA status on mount.
+  useEffect(() => {
+    let cancelled = false;
+    (async () => {
+      try {
+        const res = await fetch(`/api/admin/users/${session?.user?.id}`);
+        if (res.ok) {
+          const data = await res.json();
+          if (!cancelled) setMfaEnabled(!!data.user?.mfaEnabled);
+        }
+      } catch {
+        /* ignore */
+      } finally {
+        if (!cancelled) setLoadingState(false);
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [session?.user?.id]);
+
+  async function startSetup() {
+    setBusy(true);
+    setError(null);
+    setInfo(null);
+    try {
+      const res = await fetch("/api/auth/mfa/setup", { method: "POST" });
+      const data = await res.json().catch(() => null);
+      if (!res.ok) {
+        setError(data?.error ?? "Failed to send code");
+      } else {
+        setMaskedEmail(data?.maskedEmail ?? "your email");
+        setStage("verify");
+        setInfo(`A 6-digit code has been sent to ${data?.maskedEmail ?? "your email"}.`);
+      }
+    } catch {
+      setError("Network error");
+    }
+    setBusy(false);
+  }
+
+  async function confirmSetup() {
+    setBusy(true);
+    setError(null);
+    setInfo(null);
+    try {
+      const res = await fetch("/api/auth/mfa/enable", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ code }),
+      });
+      if (!res.ok) {
+        const e = await res.json().catch(() => null);
+        setError(e?.error ?? "Verification failed");
+      } else {
+        setMfaEnabled(true);
+        setStage("idle");
+        setCode("");
+        setInfo("Email Two-Factor Authentication is now enabled.");
+        await update();
+      }
+    } catch {
+      setError("Network error");
+    }
+    setBusy(false);
+  }
+
+  async function disable() {
+    setBusy(true);
+    setError(null);
+    setInfo(null);
+    try {
+      const res = await fetch("/api/auth/mfa/disable", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ password: disablePw }),
+      });
+      if (!res.ok) {
+        const e = await res.json().catch(() => null);
+        setError(e?.error ?? "Disable failed");
+      } else {
+        setMfaEnabled(false);
+        setStage("idle");
+        setDisablePw("");
+        setInfo("Two-Factor Authentication has been disabled.");
+        await update();
+      }
+    } catch {
+      setError("Network error");
+    }
+    setBusy(false);
+  }
+
+  return (
+    <div className="px-5 py-4 space-y-4">
+      <div className="flex items-start justify-between gap-3">
+        <div>
+          <p className="text-sm font-medium text-gray-900 dark:text-white">
+            Two-Factor Authentication
+          </p>
+          <p className="text-xs text-gray-400 mt-0.5">
+            Email a 6-digit code to your inbox each time you sign in.
+          </p>
+        </div>
+        {loadingState ? (
+          <span className="text-xs text-gray-400">Loading…</span>
+        ) : mfaEnabled ? (
+          <span className="px-2.5 py-1 rounded-full bg-emerald-50 dark:bg-emerald-950/40 text-emerald-700 dark:text-emerald-300 text-xs font-medium">
+            Enabled
+          </span>
+        ) : (
+          <button
+            type="button"
+            onClick={startSetup}
+            disabled={busy}
+            className="text-xs font-medium text-[#02773b] dark:text-[#60c988] hover:underline disabled:opacity-50"
+          >
+            {busy ? "Sending…" : "Enable"}
+          </button>
+        )}
+      </div>
+
+      {/* Verify stage — code entry */}
+      {stage === "verify" && (
+        <div className="border border-gray-200 dark:border-gray-800 rounded-xl p-4 space-y-3 bg-gray-50 dark:bg-gray-800/40">
+          <p className="text-sm text-gray-700 dark:text-gray-300">
+            Enter the 6-digit code sent to <strong>{maskedEmail}</strong> to
+            confirm Two-Factor Authentication. The code is valid for 10 minutes.
+          </p>
+          <input
+            type="text"
+            inputMode="numeric"
+            pattern="[0-9]*"
+            maxLength={6}
+            value={code}
+            onChange={(e) => setCode(e.target.value.replace(/\D/g, ""))}
+            placeholder="6-digit code"
+            className="w-full h-10 rounded-lg border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-900 px-3 text-sm font-mono tracking-[0.4em] focus:border-[#02773b] focus:ring-2 focus:ring-[#02773b]/20 outline-none"
+          />
+          <div className="flex flex-wrap items-center gap-2">
+            <button
+              type="button"
+              onClick={() => {
+                setStage("idle");
+                setCode("");
+                setError(null);
+                setInfo(null);
+              }}
+              className="px-3 h-9 rounded-lg border border-gray-200 dark:border-gray-700 text-xs font-medium text-gray-700 dark:text-gray-300 hover:bg-gray-50 dark:hover:bg-gray-800"
+            >
+              Cancel
+            </button>
+            <button
+              type="button"
+              onClick={startSetup}
+              disabled={busy}
+              className="px-3 h-9 rounded-lg border border-gray-200 dark:border-gray-700 text-xs font-medium text-gray-700 dark:text-gray-300 hover:bg-gray-50 dark:hover:bg-gray-800 disabled:opacity-50"
+            >
+              Resend code
+            </button>
+            <button
+              type="button"
+              onClick={confirmSetup}
+              disabled={busy || code.length < 6}
+              className="px-3 h-9 rounded-lg bg-[#02773b] text-white text-xs font-medium hover:bg-[#014d28] disabled:opacity-50"
+            >
+              {busy ? "Verifying…" : "Confirm & enable"}
+            </button>
+          </div>
+        </div>
+      )}
+
+      {/* Disable controls when MFA is on */}
+      {mfaEnabled && stage === "idle" && (
+        <details className="border border-gray-200 dark:border-gray-800 rounded-xl p-3 bg-gray-50 dark:bg-gray-800/40">
+          <summary className="text-xs font-medium text-red-600 dark:text-red-400 cursor-pointer">
+            Disable Two-Factor Authentication
+          </summary>
+          <div className="mt-3 space-y-2">
+            <input
+              type="password"
+              value={disablePw}
+              onChange={(e) => setDisablePw(e.target.value)}
+              placeholder="Confirm with your password"
+              className="w-full h-10 rounded-lg border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-900 px-3 text-sm focus:border-red-500 focus:ring-2 focus:ring-red-500/20 outline-none"
+            />
+            <button
+              type="button"
+              onClick={disable}
+              disabled={busy || !disablePw}
+              className="px-3 h-9 rounded-lg bg-red-600 text-white text-xs font-medium hover:bg-red-700 disabled:opacity-50"
+            >
+              {busy ? "Disabling…" : "Disable two-factor authentication"}
+            </button>
+          </div>
+        </details>
+      )}
+
+      {info && (
+        <div className="rounded-lg bg-emerald-50 dark:bg-emerald-950/30 border border-emerald-200 dark:border-emerald-900 px-3 py-2 text-xs text-emerald-700 dark:text-emerald-300">
+          {info}
+        </div>
+      )}
+      {error && (
+        <div className="rounded-lg bg-red-50 dark:bg-red-950/30 border border-red-200 dark:border-red-800 px-3 py-2 text-xs text-red-700 dark:text-red-300">
+          {error}
         </div>
       )}
     </div>

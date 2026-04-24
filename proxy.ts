@@ -12,7 +12,11 @@ export async function proxy(req: NextRequest) {
   const isPublicRoute =
     pathname === "/login" ||
     pathname.startsWith("/api/auth") ||
-    pathname.startsWith("/api/integration");
+    pathname.startsWith("/api/integration") ||
+    // Circulated memos: signed-token endpoint, no account required
+    pathname.startsWith("/api/memos/public/") ||
+    // Document share links: token already authenticates
+    pathname.startsWith("/api/shared/");
 
   if (isPublicRoute) {
     return NextResponse.next();
@@ -32,6 +36,20 @@ export async function proxy(req: NextRequest) {
     const loginUrl = new URL("/login", req.url);
     loginUrl.searchParams.set("callbackUrl", pathname);
     return NextResponse.redirect(loginUrl);
+  }
+
+  // Force a password change before any other navigation when an admin has
+  // initiated a reset. Allow only the change-password page itself, the
+  // sign-out endpoint, and the change-password API.
+  if (token.mustChangePassword) {
+    const allowedDuringForcedReset =
+      pathname === "/change-password" ||
+      pathname.startsWith("/api/auth/change-password") ||
+      pathname.startsWith("/api/auth/signout") ||
+      pathname.startsWith("/api/auth/session");
+    if (!allowedDuringForcedReset) {
+      return NextResponse.redirect(new URL("/change-password", req.url));
+    }
   }
 
   return NextResponse.next();

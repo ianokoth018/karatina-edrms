@@ -354,7 +354,7 @@ export default function CaptureActivityPage() {
      ================================================================ */
 
   return (
-    <div className="p-6 max-w-[1400px] mx-auto space-y-6 animate-fade-in">
+    <div className="p-4 sm:p-6 space-y-6 animate-fade-in">
       {/* -------- Breadcrumb -------- */}
       <nav className="flex items-center gap-1.5 text-sm text-gray-500 dark:text-gray-400">
         <a

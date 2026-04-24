@@ -546,7 +546,7 @@ export async function PATCH(
         const nextTask = pendingTasks.find(
           (t) => t.stepIndex > currentTask.stepIndex
         );
-        if (nextTask) {
+        if (nextTask && nextTask.assigneeId) {
           await tx.workflowInstance.update({
             where: { id: memo.id },
             data: { currentStepIndex: nextTask.stepIndex },

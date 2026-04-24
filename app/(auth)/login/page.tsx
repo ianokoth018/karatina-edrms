@@ -9,45 +9,96 @@ export default function LoginPage() {
   const searchParams = useSearchParams();
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
+  const [mfaCode, setMfaCode] = useState("");
+  const [mfaRequired, setMfaRequired] = useState(false);
   const [showPassword, setShowPassword] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [isLoading, setIsLoading] = useState(false);
 
-  // Detect auth errors from URL (NextAuth redirects with ?error=)
+  // Detect auth errors from URL (NextAuth redirects with ?error=) — only used
+  // for legacy redirect-based flows; this page uses redirect:false so most
+  // errors come back inline.
   useEffect(() => {
     const err = searchParams.get("error");
-    if (err === "CredentialsSignin") {
-      setError("Invalid email or password. Please try again.");
-    } else if (err) {
+    if (err && err !== "CredentialsSignin") {
       setError("Authentication error. Please try again.");
     }
   }, [searchParams]);
+
+  function decodeAuthError(raw: string | undefined | null): string {
+    // NextAuth returns the message thrown by `authorize()` either as `code`
+    // (Auth.js v5) or appended to the URL after a slash. We try both.
+    if (!raw) return "Invalid email or password. Please try again.";
+    if (raw.includes("MFA_REQUIRED")) return "MFA_REQUIRED";
+    // Strip the NextAuth wrapper "CredentialsSignin Read more..."
+    const cleaned = raw
+      .replace(/^CredentialsSignin\.?\s*/i, "")
+      .replace(/Read more at.*$/i, "")
+      .trim();
+    return cleaned || "Invalid email or password. Please try again.";
+  }
+
+  async function requestEmailCode(): Promise<{ ok: boolean; error?: string }> {
+    try {
+      const res = await fetch("/api/auth/mfa/request-code", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ email, password, purpose: "LOGIN" }),
+      });
+      const data = await res.json().catch(() => null);
+      if (!res.ok) {
+        return { ok: false, error: data?.error ?? "Couldn't send code" };
+      }
+      return { ok: true };
+    } catch {
+      return { ok: false, error: "Network error" };
+    }
+  }
+
+  async function handleResendCode() {
+    if (!email || !password) return;
+    setIsLoading(true);
+    setError(null);
+    const r = await requestEmailCode();
+    setIsLoading(false);
+    if (r.ok) {
+      setError("A new code has been sent to your email.");
+    } else if (r.error) {
+      setError(r.error);
+    }
+  }
 
   async function handleSubmit(e: React.FormEvent<HTMLFormElement>) {
     e.preventDefault();
     setIsLoading(true);
     setError(null);
 
-    try {
-      const result = await signIn("credentials", {
-        email,
-        password,
-        callbackUrl: "/dashboard",
-        redirect: true,
-      });
+    const result = await signIn("credentials", {
+      email,
+      password,
+      mfaCode: mfaRequired ? mfaCode : undefined,
+      redirect: false,
+    });
 
-      // signIn with redirect:true should navigate away — if we're still here, something failed
-      void result;
-      setIsLoading(false);
-    } catch {
-      // signIn with redirect:true navigates away on success
-      // If we reach here, check URL for error param
-      const params = new URLSearchParams(window.location.search);
-      if (params.get("error")) {
-        setError("Invalid email or password. Please try again.");
-      }
-      setIsLoading(false);
+    if (result?.ok) {
+      window.location.href = "/dashboard";
+      return;
     }
+
+    const decoded = decodeAuthError(result?.error ?? result?.code ?? null);
+    if (decoded === "MFA_REQUIRED") {
+      // Auto-issue the email code so the user doesn't have to click anything.
+      const sent = await requestEmailCode();
+      setMfaRequired(true);
+      setError(
+        sent.ok
+          ? null
+          : sent.error ?? "Couldn't send your sign-in code — try again."
+      );
+    } else {
+      setError(decoded);
+    }
+    setIsLoading(false);
   }
 
   return (
@@ -58,10 +109,9 @@ export default function LoginPage() {
           <Image
             src="/karu-crest.png"
             alt="Karatina University Crest"
-            width={56}
-            height={56}
+            width={112}
+            height={112}
             className="h-14 w-auto drop-shadow-sm"
-            style={{ width: "auto", height: "56px" }}
             priority
           />
         </div>
@@ -149,6 +199,46 @@ export default function LoginPage() {
           </div>
         </div>
 
+        {mfaRequired && (
+          <div className="space-y-1.5 animate-slide-up">
+            <label htmlFor="mfa" className="block text-sm font-medium text-gray-700 dark:text-gray-200">
+              Sign-in code
+            </label>
+            <div className="relative">
+              <div className="pointer-events-none absolute left-3.5 top-1/2 -translate-y-1/2 text-gray-400 dark:text-gray-500">
+                <svg className="h-4 w-4" fill="none" viewBox="0 0 24 24" strokeWidth={1.5} stroke="currentColor">
+                  <path strokeLinecap="round" strokeLinejoin="round" d="M21.75 6.75v10.5a2.25 2.25 0 0 1-2.25 2.25h-15a2.25 2.25 0 0 1-2.25-2.25V6.75m19.5 0A2.25 2.25 0 0 0 19.5 4.5h-15a2.25 2.25 0 0 0-2.25 2.25m19.5 0v.243a2.25 2.25 0 0 1-1.07 1.916l-7.5 4.615a2.25 2.25 0 0 1-2.36 0L3.32 8.91a2.25 2.25 0 0 1-1.07-1.916V6.75" />
+                </svg>
+              </div>
+              <input
+                id="mfa"
+                type="text"
+                inputMode="numeric"
+                pattern="[0-9]*"
+                maxLength={6}
+                value={mfaCode}
+                onChange={(e) => setMfaCode(e.target.value.replace(/\D/g, ""))}
+                placeholder="6-digit code"
+                autoComplete="one-time-code"
+                autoFocus
+                required
+                className="w-full rounded-xl border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-800 pl-10 pr-4 py-2.5 text-sm tracking-[0.4em] font-mono text-gray-900 dark:text-gray-100 placeholder:text-gray-400 dark:placeholder:text-gray-500 placeholder:font-sans placeholder:tracking-normal transition-colors focus:border-[#02773b] focus:ring-2 focus:ring-[#02773b]/20 outline-none"
+              />
+            </div>
+            <div className="flex items-center justify-between gap-2 text-xs text-gray-500 dark:text-gray-400">
+              <span>We&apos;ve emailed a 6-digit code to <strong>{email}</strong>. It expires in 10 minutes.</span>
+              <button
+                type="button"
+                onClick={handleResendCode}
+                disabled={isLoading}
+                className="text-[#02773b] dark:text-[#60c988] font-medium hover:underline disabled:opacity-50 shrink-0"
+              >
+                Resend
+              </button>
+            </div>
+          </div>
+        )}
+
         <button
           type="submit"
           disabled={isLoading}
@@ -164,7 +254,7 @@ export default function LoginPage() {
             </>
           ) : (
             <>
-              Sign In
+              {mfaRequired ? "Verify code" : "Sign In"}
               <svg className="h-4 w-4" fill="none" viewBox="0 0 24 24" strokeWidth={2} stroke="currentColor">
                 <path strokeLinecap="round" strokeLinejoin="round" d="M13.5 4.5 21 12m0 0-7.5 7.5M21 12H3" />
               </svg>

@@ -13,7 +13,16 @@ interface User {
   displayName: string;
   email: string;
   department: string | null;
+  jobTitle: string | null;
+  designation: string | null;
+  phone: string | null;
+  employeeId: string | null;
   isActive: boolean;
+  mustChangePassword?: boolean;
+  passwordResetExpiresAt?: string | null;
+  mfaEnabled?: boolean;
+  lockedUntil?: string | null;
+  failedLoginAttempts?: number;
   lastLoginAt: string | null;
   createdAt: string;
   roles: UserRole[];
@@ -53,7 +62,23 @@ export default function UsersPage() {
   const [formEmail, setFormEmail] = useState("");
   const [formPassword, setFormPassword] = useState("");
   const [formDepartment, setFormDepartment] = useState("");
+  const [formJobTitle, setFormJobTitle] = useState("");
+  const [formDesignation, setFormDesignation] = useState("");
+  const [formPhone, setFormPhone] = useState("");
+  const [formEmployeeId, setFormEmployeeId] = useState("");
   const [formRoleIds, setFormRoleIds] = useState<string[]>([]);
+
+  // Password-reset modal state
+  const [resetUser, setResetUser] = useState<User | null>(null);
+  const [resetNote, setResetNote] = useState("");
+  const [resetting, setResetting] = useState(false);
+  const [resetResult, setResetResult] = useState<{
+    otp: string;
+    validityHours: number;
+    emailSent: boolean;
+  } | null>(null);
+  const [resetError, setResetError] = useState<string | null>(null);
+  const [otpCopied, setOtpCopied] = useState(false);
 
   const fetchUsers = useCallback(
     async (page = 1, searchQuery = search) => {
@@ -103,6 +128,10 @@ export default function UsersPage() {
     setFormEmail("");
     setFormPassword("");
     setFormDepartment("");
+    setFormJobTitle("");
+    setFormDesignation("");
+    setFormPhone("");
+    setFormEmployeeId("");
     setFormRoleIds([]);
     setFormError(null);
     setShowModal(true);
@@ -114,9 +143,78 @@ export default function UsersPage() {
     setFormEmail(user.email);
     setFormPassword("");
     setFormDepartment(user.department ?? "");
+    setFormJobTitle(user.jobTitle ?? "");
+    setFormDesignation(user.designation ?? "");
+    setFormPhone(user.phone ?? "");
+    setFormEmployeeId(user.employeeId ?? "");
     setFormRoleIds(user.roles.map((r) => r.role.id));
     setFormError(null);
     setShowModal(true);
+  }
+
+  function openResetModal(user: User) {
+    setResetUser(user);
+    setResetNote("");
+    setResetResult(null);
+    setResetError(null);
+    setOtpCopied(false);
+  }
+
+  async function handleResetPassword() {
+    if (!resetUser) return;
+    setResetting(true);
+    setResetError(null);
+    try {
+      const res = await fetch(
+        `/api/admin/users/${resetUser.id}/reset-password`,
+        {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ note: resetNote || undefined }),
+        }
+      );
+      if (res.ok) {
+        const data = await res.json();
+        setResetResult({
+          otp: data.otp,
+          validityHours: data.validityHours,
+          emailSent: !!data.emailSent,
+        });
+        fetchUsers(pagination.page);
+      } else {
+        const data = await res.json().catch(() => null);
+        setResetError(data?.error ?? "Reset failed");
+      }
+    } catch {
+      setResetError("Network error");
+    } finally {
+      setResetting(false);
+    }
+  }
+
+  async function handleUnlock(user: User) {
+    if (!confirm(`Unlock ${user.displayName}'s account?`)) return;
+    try {
+      await fetch(`/api/admin/users/${user.id}`, {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ unlock: true }),
+      });
+      fetchUsers(pagination.page);
+    } catch {
+      /* ignore */
+    }
+  }
+
+  async function copyOtpToClipboard() {
+    if (!resetResult?.otp) return;
+    try {
+      await navigator.clipboard.writeText(resetResult.otp);
+      setOtpCopied(true);
+      setTimeout(() => setOtpCopied(false), 2000);
+    } catch {
+      /* clipboard blocked — admin can still read the OTP */
+    }
   }
 
   async function handleSubmit(e: React.FormEvent) {
@@ -125,6 +223,13 @@ export default function UsersPage() {
     setFormError(null);
 
     try {
+      const sharedFields = {
+        department: formDepartment || null,
+        jobTitle: formJobTitle || null,
+        designation: formDesignation || null,
+        phone: formPhone || null,
+        employeeId: formEmployeeId || null,
+      };
       if (editUser) {
         // PATCH update
         const res = await fetch(`/api/admin/users/${editUser.id}`, {
@@ -133,8 +238,8 @@ export default function UsersPage() {
           body: JSON.stringify({
             name: formName,
             email: formEmail,
-            department: formDepartment || null,
             roleIds: formRoleIds,
+            ...sharedFields,
           }),
         });
         if (!res.ok) {
@@ -155,8 +260,8 @@ export default function UsersPage() {
             name: formName,
             email: formEmail,
             password: formPassword,
-            department: formDepartment || null,
             roleIds: formRoleIds,
+            ...sharedFields,
           }),
         });
         if (!res.ok) {
@@ -353,7 +458,14 @@ export default function UsersPage() {
                       {user.email}
                     </td>
                     <td className="px-4 py-3 text-gray-600 dark:text-gray-300 hidden md:table-cell">
-                      {user.department ?? "-"}
+                      <div className="flex flex-col">
+                        <span>{user.designation ?? user.jobTitle ?? "—"}</span>
+                        {user.department && (
+                          <span className="text-xs text-gray-400 dark:text-gray-500 truncate">
+                            {user.department}
+                          </span>
+                        )}
+                      </div>
                     </td>
                     <td className="px-4 py-3 hidden lg:table-cell">
                       <div className="flex flex-wrap gap-1">
@@ -373,20 +485,44 @@ export default function UsersPage() {
                       </div>
                     </td>
                     <td className="px-4 py-3">
-                      <span
-                        className={`inline-flex items-center gap-1.5 px-2 py-0.5 rounded-md text-xs font-medium ${
-                          user.isActive
-                            ? "bg-green-50 dark:bg-green-950/30 text-green-700 dark:text-green-400"
-                            : "bg-red-50 dark:bg-red-950/30 text-red-700 dark:text-red-400"
-                        }`}
-                      >
+                      <div className="flex flex-wrap items-center gap-1.5">
                         <span
-                          className={`w-1.5 h-1.5 rounded-full ${
-                            user.isActive ? "bg-green-500" : "bg-red-500"
+                          className={`inline-flex items-center gap-1.5 px-2 py-0.5 rounded-md text-xs font-medium ${
+                            user.isActive
+                              ? "bg-green-50 dark:bg-green-950/30 text-green-700 dark:text-green-400"
+                              : "bg-red-50 dark:bg-red-950/30 text-red-700 dark:text-red-400"
                           }`}
-                        />
-                        {user.isActive ? "Active" : "Inactive"}
-                      </span>
+                        >
+                          <span
+                            className={`w-1.5 h-1.5 rounded-full ${
+                              user.isActive ? "bg-green-500" : "bg-red-500"
+                            }`}
+                          />
+                          {user.isActive ? "Active" : "Inactive"}
+                        </span>
+                        {user.lockedUntil && new Date(user.lockedUntil).getTime() > Date.now() && (
+                          <span
+                            title={`Locked until ${new Date(user.lockedUntil).toLocaleString("en-GB")}`}
+                            className="inline-flex items-center gap-1 px-2 py-0.5 rounded-md text-[10px] font-medium bg-amber-50 dark:bg-amber-950/40 text-amber-700 dark:text-amber-300"
+                          >
+                            <svg className="w-3 h-3" fill="none" viewBox="0 0 24 24" strokeWidth={2} stroke="currentColor">
+                              <path strokeLinecap="round" strokeLinejoin="round" d="M16.5 10.5V6.75a4.5 4.5 0 1 0-9 0v3.75m-.75 11.25h10.5a2.25 2.25 0 0 0 2.25-2.25v-6.75a2.25 2.25 0 0 0-2.25-2.25H6.75a2.25 2.25 0 0 0-2.25 2.25v6.75a2.25 2.25 0 0 0 2.25 2.25Z" />
+                            </svg>
+                            Locked
+                          </span>
+                        )}
+                        {user.mfaEnabled && (
+                          <span
+                            title="Multi-factor authentication enabled"
+                            className="inline-flex items-center gap-1 px-2 py-0.5 rounded-md text-[10px] font-medium bg-emerald-50 dark:bg-emerald-950/40 text-emerald-700 dark:text-emerald-300"
+                          >
+                            <svg className="w-3 h-3" fill="none" viewBox="0 0 24 24" strokeWidth={2} stroke="currentColor">
+                              <path strokeLinecap="round" strokeLinejoin="round" d="M9 12.75 11.25 15 15 9.75m-3-7.036A11.959 11.959 0 0 1 3.598 6 11.99 11.99 0 0 0 3 9.749c0 5.592 3.824 10.29 9 11.623 5.176-1.332 9-6.03 9-11.622 0-1.31-.21-2.571-.598-3.751h-.152c-3.196 0-6.1-1.248-8.25-3.285Z" />
+                            </svg>
+                            MFA
+                          </span>
+                        )}
+                      </div>
                     </td>
                     <td className="px-4 py-3 text-gray-500 dark:text-gray-400 text-xs hidden lg:table-cell">
                       {user.lastLoginAt
@@ -423,6 +559,27 @@ export default function UsersPage() {
                             />
                           </svg>
                         </button>
+                        <button
+                          onClick={() => openResetModal(user)}
+                          disabled={!user.isActive}
+                          className="p-1.5 rounded-lg text-gray-400 hover:text-amber-600 hover:bg-amber-50 dark:hover:bg-amber-950/30 transition-colors disabled:opacity-30 disabled:cursor-not-allowed"
+                          title={user.isActive ? "Reset password (issue OTP)" : "Reactivate user before resetting password"}
+                        >
+                          <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" strokeWidth={1.5} stroke="currentColor">
+                            <path strokeLinecap="round" strokeLinejoin="round" d="M15.75 5.25a3 3 0 0 1 3 3m3 0a6 6 0 0 1-7.029 5.912c-.563-.097-1.159.026-1.563.43L10.5 17.25H8.25v2.25H6v2.25H2.25v-2.818c0-.597.237-1.17.659-1.591l6.499-6.499c.404-.404.527-1 .43-1.563A6 6 0 1 1 21.75 8.25Z" />
+                          </svg>
+                        </button>
+                        {user.lockedUntil && new Date(user.lockedUntil).getTime() > Date.now() && (
+                          <button
+                            onClick={() => handleUnlock(user)}
+                            className="p-1.5 rounded-lg text-amber-600 hover:text-emerald-600 hover:bg-emerald-50 dark:hover:bg-emerald-950/30 transition-colors"
+                            title="Unlock account (clear failed attempts)"
+                          >
+                            <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" strokeWidth={1.5} stroke="currentColor">
+                              <path strokeLinecap="round" strokeLinejoin="round" d="M13.5 10.5V6.75a4.5 4.5 0 1 1 9 0v3.75M3.75 21.75h10.5a2.25 2.25 0 0 0 2.25-2.25v-6.75a2.25 2.25 0 0 0-2.25-2.25H3.75a2.25 2.25 0 0 0-2.25 2.25v6.75a2.25 2.25 0 0 0 2.25 2.25Z" />
+                            </svg>
+                          </button>
+                        )}
                         <button
                           onClick={() => toggleActive(user)}
                           className={`p-1.5 rounded-lg transition-colors ${
@@ -586,17 +743,68 @@ export default function UsersPage() {
                 </div>
               )}
 
-              <div className="space-y-1.5">
-                <label className="block text-sm font-medium text-gray-700 dark:text-gray-200">
-                  Department
-                </label>
-                <input
-                  type="text"
-                  value={formDepartment}
-                  onChange={(e) => setFormDepartment(e.target.value)}
-                  placeholder="e.g. Registry, Finance, ICT"
-                  className="w-full h-10 rounded-xl border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-800 px-4 text-sm text-gray-900 dark:text-gray-100 placeholder:text-gray-400 transition-colors focus:border-karu-green focus:ring-2 focus:ring-karu-green/20 outline-none"
-                />
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+                <div className="space-y-1.5">
+                  <label className="block text-sm font-medium text-gray-700 dark:text-gray-200">
+                    Department
+                  </label>
+                  <input
+                    type="text"
+                    value={formDepartment}
+                    onChange={(e) => setFormDepartment(e.target.value)}
+                    placeholder="e.g. Registry, Finance, ICT"
+                    className="w-full h-10 rounded-xl border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-800 px-4 text-sm text-gray-900 dark:text-gray-100 placeholder:text-gray-400 transition-colors focus:border-karu-green focus:ring-2 focus:ring-karu-green/20 outline-none"
+                  />
+                </div>
+                <div className="space-y-1.5">
+                  <label className="block text-sm font-medium text-gray-700 dark:text-gray-200">
+                    Designation
+                  </label>
+                  <input
+                    type="text"
+                    value={formDesignation}
+                    onChange={(e) => setFormDesignation(e.target.value)}
+                    placeholder="e.g. Vice Chancellor, Head of Department"
+                    className="w-full h-10 rounded-xl border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-800 px-4 text-sm text-gray-900 dark:text-gray-100 placeholder:text-gray-400 transition-colors focus:border-karu-green focus:ring-2 focus:ring-karu-green/20 outline-none"
+                  />
+                  <p className="text-[11px] text-gray-400">Used on memos &amp; signatures</p>
+                </div>
+                <div className="space-y-1.5">
+                  <label className="block text-sm font-medium text-gray-700 dark:text-gray-200">
+                    Job title
+                  </label>
+                  <input
+                    type="text"
+                    value={formJobTitle}
+                    onChange={(e) => setFormJobTitle(e.target.value)}
+                    placeholder="e.g. Senior Lecturer, Records Officer"
+                    className="w-full h-10 rounded-xl border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-800 px-4 text-sm text-gray-900 dark:text-gray-100 placeholder:text-gray-400 transition-colors focus:border-karu-green focus:ring-2 focus:ring-karu-green/20 outline-none"
+                  />
+                </div>
+                <div className="space-y-1.5">
+                  <label className="block text-sm font-medium text-gray-700 dark:text-gray-200">
+                    Phone
+                  </label>
+                  <input
+                    type="text"
+                    value={formPhone}
+                    onChange={(e) => setFormPhone(e.target.value)}
+                    placeholder="+254 7XX XXX XXX"
+                    className="w-full h-10 rounded-xl border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-800 px-4 text-sm text-gray-900 dark:text-gray-100 placeholder:text-gray-400 transition-colors focus:border-karu-green focus:ring-2 focus:ring-karu-green/20 outline-none"
+                  />
+                </div>
+                <div className="space-y-1.5 sm:col-span-2">
+                  <label className="block text-sm font-medium text-gray-700 dark:text-gray-200">
+                    Employee ID
+                  </label>
+                  <input
+                    type="text"
+                    value={formEmployeeId}
+                    onChange={(e) => setFormEmployeeId(e.target.value)}
+                    placeholder="e.g. KU-EMP-12345 (optional)"
+                    className="w-full h-10 rounded-xl border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-800 px-4 text-sm text-gray-900 dark:text-gray-100 placeholder:text-gray-400 transition-colors focus:border-karu-green focus:ring-2 focus:ring-karu-green/20 outline-none"
+                  />
+                </div>
               </div>
 
               <div className="space-y-1.5">
@@ -664,6 +872,132 @@ export default function UsersPage() {
                 </button>
               </div>
             </form>
+          </div>
+        </div>
+      )}
+
+      {/* Password reset modal */}
+      {resetUser && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 p-4">
+          <div className="w-full max-w-lg bg-white dark:bg-gray-900 rounded-2xl shadow-2xl border border-gray-200 dark:border-gray-800 max-h-[90vh] overflow-y-auto">
+            <div className="px-5 py-4 border-b border-gray-200 dark:border-gray-800 flex items-start justify-between gap-3">
+              <div className="min-w-0">
+                <h2 className="text-base font-semibold text-gray-900 dark:text-gray-100">
+                  Reset password for {resetUser.displayName}
+                </h2>
+                <p className="text-xs text-gray-500 dark:text-gray-400 mt-0.5 truncate">
+                  {resetUser.email}
+                </p>
+              </div>
+              <button
+                onClick={() => {
+                  setResetUser(null);
+                  setResetResult(null);
+                  setResetError(null);
+                }}
+                className="text-gray-400 hover:text-gray-700 dark:hover:text-gray-200 p-1"
+              >
+                <svg className="w-5 h-5" fill="none" viewBox="0 0 24 24" strokeWidth={2} stroke="currentColor">
+                  <path strokeLinecap="round" strokeLinejoin="round" d="M6 18 18 6M6 6l12 12" />
+                </svg>
+              </button>
+            </div>
+
+            <div className="p-5 space-y-4">
+              {!resetResult ? (
+                <>
+                  <div className="rounded-xl bg-amber-50 dark:bg-amber-950/30 border border-amber-200 dark:border-amber-900 px-4 py-3 text-sm text-amber-800 dark:text-amber-300 flex gap-2">
+                    <svg className="w-4 h-4 mt-0.5 shrink-0" fill="none" viewBox="0 0 24 24" strokeWidth={1.8} stroke="currentColor">
+                      <path strokeLinecap="round" strokeLinejoin="round" d="M12 9v3.75m-9.303 3.376c-.866 1.5.217 3.374 1.948 3.374h14.71c1.73 0 2.813-1.874 1.948-3.374L13.949 3.378c-.866-1.5-3.032-1.5-3.898 0L2.697 16.126ZM12 15.75h.007v.008H12v-.008Z" />
+                    </svg>
+                    <span>
+                      This will <strong>replace the user&apos;s password</strong> with a one-time
+                      password. They will be prompted to set a new password on next login.
+                      The OTP is also emailed to <strong>{resetUser.email}</strong>.
+                    </span>
+                  </div>
+                  <div className="space-y-1.5">
+                    <label className="block text-sm font-medium text-gray-700 dark:text-gray-200">
+                      Note for the user (optional)
+                    </label>
+                    <textarea
+                      value={resetNote}
+                      onChange={(e) => setResetNote(e.target.value)}
+                      rows={3}
+                      placeholder="e.g. Resetting after the SSO migration — please pick a strong personal password."
+                      className="w-full rounded-xl border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-800 px-3 py-2 text-sm text-gray-900 dark:text-gray-100 placeholder:text-gray-400 focus:border-karu-green focus:ring-2 focus:ring-karu-green/20 outline-none resize-none"
+                    />
+                  </div>
+                  {resetError && (
+                    <div className="rounded-xl bg-red-50 dark:bg-red-950/30 border border-red-200 dark:border-red-800 px-4 py-3 text-sm text-red-700 dark:text-red-300">
+                      {resetError}
+                    </div>
+                  )}
+                  <div className="flex justify-end gap-3 pt-2">
+                    <button
+                      type="button"
+                      onClick={() => setResetUser(null)}
+                      className="px-4 py-2.5 rounded-xl border border-gray-200 dark:border-gray-700 text-sm font-medium text-gray-700 dark:text-gray-300 hover:bg-gray-50 dark:hover:bg-gray-800 transition-colors"
+                    >
+                      Cancel
+                    </button>
+                    <button
+                      type="button"
+                      onClick={handleResetPassword}
+                      disabled={resetting}
+                      className="px-4 py-2.5 rounded-xl bg-amber-600 text-white text-sm font-medium hover:bg-amber-700 transition-colors disabled:opacity-60"
+                    >
+                      {resetting ? "Resetting…" : "Reset password & email OTP"}
+                    </button>
+                  </div>
+                </>
+              ) : (
+                <>
+                  <div className="rounded-xl bg-emerald-50 dark:bg-emerald-950/30 border border-emerald-200 dark:border-emerald-900 px-4 py-3 text-sm text-emerald-800 dark:text-emerald-300">
+                    Password reset.{" "}
+                    {resetResult.emailSent
+                      ? `An email with the OTP was sent to ${resetUser.email}.`
+                      : "SMTP isn't configured (or delivery failed) — share the OTP below directly with the user."}
+                  </div>
+
+                  <div>
+                    <div className="text-[11px] font-semibold uppercase tracking-widest text-gray-500 dark:text-gray-400 mb-1.5">
+                      One-time password
+                    </div>
+                    <div className="flex items-center gap-2">
+                      <code className="flex-1 px-4 py-3 rounded-xl bg-gray-100 dark:bg-gray-800 text-lg font-bold tracking-[0.3em] text-karu-green text-center">
+                        {resetResult.otp}
+                      </code>
+                      <button
+                        type="button"
+                        onClick={copyOtpToClipboard}
+                        className="px-3 py-3 rounded-xl border border-gray-200 dark:border-gray-700 text-xs font-medium text-gray-700 dark:text-gray-300 hover:bg-gray-50 dark:hover:bg-gray-800 transition-colors"
+                      >
+                        {otpCopied ? "Copied!" : "Copy"}
+                      </button>
+                    </div>
+                    <p className="text-[11px] text-gray-400 mt-2">
+                      Valid for {resetResult.validityHours} hour
+                      {resetResult.validityHours === 1 ? "" : "s"}. The user
+                      will be required to set a new password on first login.
+                    </p>
+                  </div>
+
+                  <div className="flex justify-end gap-3 pt-2">
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setResetUser(null);
+                        setResetResult(null);
+                      }}
+                      className="px-4 py-2.5 rounded-xl bg-karu-green text-white text-sm font-medium hover:bg-karu-green-dark transition-colors"
+                    >
+                      Done
+                    </button>
+                  </div>
+                </>
+              )}
+            </div>
           </div>
         </div>
       )}

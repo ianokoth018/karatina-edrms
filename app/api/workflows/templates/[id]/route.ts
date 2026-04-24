@@ -117,6 +117,13 @@ export async function PUT(
     }
     if (isActive !== undefined) updateData.isActive = isActive;
 
+    // Warn caller if there are active instances on the current version
+    const activeInstanceCount = definition
+      ? await db.workflowInstance.count({
+          where: { templateId: id, status: { in: ["PENDING", "IN_PROGRESS"] } },
+        })
+      : 0;
+
     const template = await db.workflowTemplate.update({
       where: { id },
       data: updateData,
@@ -149,7 +156,12 @@ export async function PUT(
       action: "WORKFLOW_TEMPLATE_UPDATED",
     });
 
-    return NextResponse.json(serialise({ template }));
+    return NextResponse.json(serialise({
+      template,
+      warnings: activeInstanceCount > 0
+        ? [`${activeInstanceCount} active instance(s) still running on the previous version. Use POST /migrate to upgrade them.`]
+        : [],
+    }));
   } catch (error) {
     logger.error("Failed to update workflow template", error);
     return NextResponse.json(

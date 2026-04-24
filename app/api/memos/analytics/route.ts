@@ -108,14 +108,18 @@ export async function GET(_req: NextRequest) {
       }
     }
 
+    // Match both legacy "MEMO" and the current "Internal Memo" casefolder type
+    // (memos filed via the Internal Memo casefolder are stored with that type).
+    const memoDocTypes = { in: ["MEMO", "Internal Memo"] };
+
     if (scope === "institutional") {
-      baseWhere = { document: { documentType: "MEMO" } };
+      baseWhere = { document: { documentType: memoDocTypes } };
       scopeLabel = "Institutional View";
     } else if (scope === "directorate") {
       const deptsInDirectorate = getDepartmentsInDirectorate(scopeDirectorate);
       baseWhere = {
         document: {
-          documentType: "MEMO",
+          documentType: memoDocTypes,
           department: { in: deptsInDirectorate },
         },
       };
@@ -124,14 +128,14 @@ export async function GET(_req: NextRequest) {
       scopeDepartment = userDepartment;
       baseWhere = {
         document: {
-          documentType: "MEMO",
+          documentType: memoDocTypes,
           department: userDepartment ?? undefined,
         },
       };
       scopeLabel = `Departmental View — ${userDepartment ?? "Unassigned"}`;
     } else {
       baseWhere = {
-        document: { documentType: "MEMO" },
+        document: { documentType: memoDocTypes },
         OR: [
           { initiatedById: userId },
           { tasks: { some: { assigneeId: userId } } },
@@ -276,9 +280,14 @@ export async function GET(_req: NextRequest) {
     // Scope-conditional aggregates
     // -----------------------------------------------------------------------
     let byDepartment: { department: string; count: number }[] | undefined;
+    // Top initiators groups by *directorate* on institutional view, by
+    // *department* on directorate view, and by *individual user* on
+    // departmental view. The page uses `topInitiatorsGroupBy` to label the
+    // section appropriately.
     let topInitiators:
-      | { userId: string; name: string; count: number }[]
+      | { key: string; name: string; count: number }[]
       | undefined;
+    let topInitiatorsGroupBy: "directorate" | "department" | "user" | undefined;
     let topRecommenders:
       | { userId: string; name: string; completed: number; avgHours: number | null }[]
       | undefined;
@@ -302,32 +311,84 @@ export async function GET(_req: NextRequest) {
       scope === "directorate" ||
       scope === "departmental"
     ) {
-      // Top initiators
-      const initiatorCounts = new Map<string, number>();
-      for (const m of enriched) {
-        initiatorCounts.set(
-          m.initiatedById,
-          (initiatorCounts.get(m.initiatedById) ?? 0) + 1,
-        );
-      }
-      const topInitiatorIds = Array.from(initiatorCounts.entries())
-        .sort((a, b) => b[1] - a[1])
-        .slice(0, 5);
-      const initiatorUsers =
-        topInitiatorIds.length > 0
+      // ---- Top initiators (grouped by scope) ----
+      // Pre-resolve creator names so we can fall back to the memo's author
+      // when its directorate/department can't be determined (avoids a chart
+      // dominated by an "Unassigned" bar).
+      const allInitiatorIds = Array.from(
+        new Set(enriched.map((m) => m.initiatedById)),
+      );
+      const allInitiators =
+        allInitiatorIds.length > 0
           ? await db.user.findMany({
-              where: { id: { in: topInitiatorIds.map(([id]) => id) } },
+              where: { id: { in: allInitiatorIds } },
               select: { id: true, displayName: true, name: true },
             })
           : [];
-      const nameById = new Map(
-        initiatorUsers.map((u) => [u.id, u.displayName || u.name]),
+      const creatorNameById = new Map(
+        allInitiators.map((u) => [u.id, u.displayName || u.name]),
       );
-      topInitiators = topInitiatorIds.map(([userId, count]) => ({
-        userId,
-        name: nameById.get(userId) ?? "Unknown",
-        count,
-      }));
+
+      if (scope === "institutional") {
+        // Group by directorate; fall back to creator name when unmapped
+        topInitiatorsGroupBy = "directorate";
+        const dirCounts = new Map<string, number>();
+        for (const m of enriched) {
+          const dept = m.document?.department ?? null;
+          const directorate = getDirectorateForDepartment(dept);
+          const bucket =
+            directorate ??
+            creatorNameById.get(m.initiatedById) ??
+            "Unknown";
+          dirCounts.set(bucket, (dirCounts.get(bucket) ?? 0) + 1);
+        }
+        topInitiators = Array.from(dirCounts.entries())
+          .map(([directorate, count]) => ({
+            key: directorate,
+            name: directorate,
+            count,
+          }))
+          .sort((a, b) => b.count - a.count)
+          .slice(0, 5);
+      } else if (scope === "directorate") {
+        // Group by department; fall back to creator name when unset
+        topInitiatorsGroupBy = "department";
+        const deptCounts = new Map<string, number>();
+        for (const m of enriched) {
+          const dept = m.document?.department;
+          const bucket =
+            (dept && dept.trim()) ||
+            creatorNameById.get(m.initiatedById) ||
+            "Unknown";
+          deptCounts.set(bucket, (deptCounts.get(bucket) ?? 0) + 1);
+        }
+        topInitiators = Array.from(deptCounts.entries())
+          .map(([department, count]) => ({
+            key: department,
+            name: department,
+            count,
+          }))
+          .sort((a, b) => b.count - a.count)
+          .slice(0, 5);
+      } else {
+        // departmental: group by individual user
+        topInitiatorsGroupBy = "user";
+        const initiatorCounts = new Map<string, number>();
+        for (const m of enriched) {
+          initiatorCounts.set(
+            m.initiatedById,
+            (initiatorCounts.get(m.initiatedById) ?? 0) + 1,
+          );
+        }
+        const topInitiatorIds = Array.from(initiatorCounts.entries())
+          .sort((a, b) => b[1] - a[1])
+          .slice(0, 5);
+        topInitiators = topInitiatorIds.map(([userId, count]) => ({
+          key: userId,
+          name: creatorNameById.get(userId) ?? "Unknown",
+          count,
+        }));
+      }
 
       // Top recommenders — completed WorkflowTasks in scope
       const scopeInstanceIds = enriched.map((m) => m.id);
@@ -350,6 +411,7 @@ export async function GET(_req: NextRequest) {
           { name: string; completed: number; totalHours: number; hoursCount: number }
         >();
         for (const t of completedTasks) {
+          if (!t.assigneeId) continue;
           const existing = stats.get(t.assigneeId) ?? {
             name: t.assignee?.displayName || t.assignee?.name || "Unknown",
             completed: 0,
@@ -418,6 +480,7 @@ export async function GET(_req: NextRequest) {
       memosOverTime,
       byDepartment,
       topInitiators,
+      topInitiatorsGroupBy,
       topRecommenders,
       recentActivity,
     });

@@ -57,9 +57,12 @@ startProcess("next", "npx", ["next", "dev"]);
 
 // Delay workers slightly to let Prisma warm up
 setTimeout(() => {
-  startProcess("capture", "npx", ["tsx", "scripts/capture-worker.ts"]);
-  startProcess("email",   "npx", ["tsx", "scripts/email-capture-worker.ts"]);
-  startProcess("remote",  "npx", ["tsx", "scripts/remote-capture-worker.ts"]);
+  startProcess("capture",  "npx", ["tsx", "scripts/capture-worker.ts"]);
+  startProcess("email",    "npx", ["tsx", "scripts/email-capture-worker.ts"]);
+  startProcess("remote",   "npx", ["tsx", "scripts/remote-capture-worker.ts"]);
+  startProcess("vc-expiry","npx", ["tsx", "scripts/checkout-expiry-worker.ts"]);
+  startProcess("timer",    "npx", ["tsx", "scripts/timer-worker.ts"]);
+  startProcess("sla",      "npx", ["tsx", "scripts/sla-worker.ts"]);
 }, 3000);
 
 // Graceful shutdown

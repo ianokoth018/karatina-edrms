@@ -89,6 +89,21 @@ export async function POST(req: NextRequest) {
       duplicateAction,
       autoWorkflow,
       workflowTemplateId,
+      sourceType,
+      imapHost,
+      imapPort,
+      imapUser,
+      imapPassword,
+      imapFolder,
+      imapSenderFilter,
+      imapSubjectFilter,
+      remoteHost,
+      remotePort,
+      remoteUser,
+      remotePassword,
+      remotePath,
+      remotePollInterval,
+      remoteDeleteAfterCopy,
     } = body as {
       name?: string;
       description?: string;
@@ -105,6 +120,21 @@ export async function POST(req: NextRequest) {
       duplicateAction?: string;
       autoWorkflow?: boolean;
       workflowTemplateId?: string;
+      sourceType?: string;
+      imapHost?: string;
+      imapPort?: number;
+      imapUser?: string;
+      imapPassword?: string;
+      imapFolder?: string;
+      imapSenderFilter?: string;
+      imapSubjectFilter?: string;
+      remoteHost?: string;
+      remotePort?: number;
+      remoteUser?: string;
+      remotePassword?: string;
+      remotePath?: string;
+      remotePollInterval?: number;
+      remoteDeleteAfterCopy?: boolean;
     };
 
     // Validate required fields
@@ -115,7 +145,7 @@ export async function POST(req: NextRequest) {
       );
     }
 
-    if (!folderPath?.trim()) {
+    if (!folderPath?.trim() && (!sourceType || sourceType === "HOT_FOLDER")) {
       return NextResponse.json(
         { error: "Folder path is required" },
         { status: 400 }
@@ -154,7 +184,7 @@ export async function POST(req: NextRequest) {
       data: {
         name: name.trim(),
         description: description?.trim() || null,
-        folderPath: folderPath.trim(),
+        folderPath: folderPath?.trim() ?? "",
         processedPath: processedPath?.trim() || null,
         errorPath: errorPath?.trim() || null,
         fileTypes: fileTypes.map((ft) => ft.toLowerCase().replace(/^\./, "")),
@@ -167,6 +197,21 @@ export async function POST(req: NextRequest) {
         duplicateAction: duplicateAction ?? "SKIP",
         autoWorkflow: autoWorkflow ?? false,
         workflowTemplateId: workflowTemplateId || null,
+        sourceType: (sourceType ?? "HOT_FOLDER") as "HOT_FOLDER" | "EMAIL" | "API" | "SFTP" | "SMB",
+        imapHost: imapHost?.trim() || null,
+        imapPort: imapPort ?? null,
+        imapUser: imapUser?.trim() || null,
+        imapPassword: imapPassword?.trim() || null,
+        imapFolder: imapFolder?.trim() || "INBOX",
+        imapSenderFilter: imapSenderFilter?.trim() || null,
+        imapSubjectFilter: imapSubjectFilter?.trim() || null,
+        remoteHost: remoteHost?.trim() || null,
+        remotePort: remotePort ?? null,
+        remoteUser: remoteUser?.trim() || null,
+        remotePassword: remotePassword?.trim() || null,
+        remotePath: remotePath?.trim() || null,
+        remotePollInterval: remotePollInterval ?? 60,
+        remoteDeleteAfterCopy: remoteDeleteAfterCopy ?? false,
         createdById: session.user.id,
       },
     });

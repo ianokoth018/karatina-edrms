@@ -75,7 +75,7 @@ export async function POST(
     }
 
     const previousAssigneeId = task.assigneeId;
-    const previousAssigneeName = task.assignee.name;
+    const previousAssigneeName = task.assignee?.name ?? "(unassigned)";
 
     // Update the task's assigneeId
     const updatedTask = await db.workflowTask.update({

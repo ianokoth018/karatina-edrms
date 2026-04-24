@@ -34,6 +34,7 @@ import { EmailNode } from "./email-node";
 import { SubprocessNode } from "./subprocess-node";
 import { SystemNode } from "./system-node";
 import { ParallelNode } from "./parallel-node";
+import { WaitSignalNode } from "./wait-signal-node";
 
 const nodeTypes: NodeTypes = {
   start: StartNode,
@@ -45,6 +46,7 @@ const nodeTypes: NodeTypes = {
   subprocess: SubprocessNode,
   system: SystemNode,
   parallel: ParallelNode,
+  wait_signal: WaitSignalNode,
 };
 
 interface WorkflowCanvasProps {

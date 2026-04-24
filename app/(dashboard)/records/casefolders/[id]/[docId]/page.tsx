@@ -1019,11 +1019,11 @@ export default function CasefolderDocumentViewerPage({
             </div>
           )}
 
-          {/* ---- Metadata fields ---- */}
+          {/* ---- File details ---- */}
           {fields.length > 0 && (
             <section className="space-y-3">
               <h2 className="text-xs font-bold uppercase tracking-wider text-[#dd9f42] dark:text-[#dd9f42]">
-                Metadata Fields
+                File Details
               </h2>
               <dl className="space-y-3">
                 {fields.map((field) =>

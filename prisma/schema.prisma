@@ -15,24 +15,53 @@ model User {
   email         String   @unique
   name          String
   displayName   String
-  password      String   // hashed bcrypt
+  password      String   // hashed bcrypt (or hashed OTP if mustChangePassword)
   department    String?
   jobTitle      String?
+  /// Formal designation used on memos / signatures (e.g. "Vice Chancellor",
+  /// "Head of Department, ICT"). Distinct from jobTitle which is the
+  /// professional/academic title.
+  designation   String?
   phone         String?
   profilePhoto  String?
   isActive      Boolean  @default(true)
   lastLoginAt   DateTime?
   mfaEnabled    Boolean  @default(false)
+  /// AES-256-GCM ciphertext of the TOTP secret (stored as base64 IV.tag.ct).
+  /// Plaintext is never persisted.
   mfaSecret     String?
+  /// JSON array of bcrypt hashes of one-time backup codes (each can be used
+  /// once if the user loses their authenticator device).
+  mfaBackupCodes Json?
+  /// Counter of consecutive failed login attempts. Reset on success.
+  failedLoginAttempts Int @default(0)
+  /// Account is locked until this timestamp after too many failed attempts.
+  lockedUntil   DateTime?
+  /// JSON array of the last N bcrypt hashes used by this user. Used to
+  /// reject password reuse during change-password.
+  passwordHistory Json?
+  /// True after an admin-initiated password reset. The user must set a
+  /// new password before they can use the system.
+  mustChangePassword       Boolean   @default(false)
+  /// Expiry for the temporary OTP issued during admin reset. Login is
+  /// rejected with a "your reset link has expired" message past this time.
+  passwordResetExpiresAt   DateTime?
+  /// When the password was last set by the user themselves (not by reset).
+  /// Used by password-rotation policy.
+  passwordChangedAt        DateTime?
   createdAt     DateTime @default(now())
   updatedAt     DateTime @updatedAt
 
   roles             UserRole[]
   createdDocuments  Document[]     @relation("CreatedBy")
   auditLogs         AuditLog[]
-  workflowTasks     WorkflowTask[] @relation("Assignee")
-  delegationsFrom   Delegation[]   @relation("Delegator")
-  delegationsTo     Delegation[]   @relation("Delegate")
+  workflowTasks          WorkflowTask[]      @relation("Assignee")
+  claimedTasks           WorkflowTask[]      @relation("TaskClaimer")
+  taskComments           TaskComment[]       @relation("CommentAuthor")
+  taskAttachments        TaskAttachment[]    @relation("AttachmentUploader")
+  workflowPoolMemberships WorkflowPoolMember[] @relation("PoolMember")
+  delegationsFrom        Delegation[]        @relation("Delegator")
+  delegationsTo          Delegation[]        @relation("Delegate")
   notifications     Notification[]
   correspondencesAssigned Correspondence[] @relation("CorrespondenceAssignee")
   correspondencesCreated  Correspondence[] @relation("CorrespondenceCreator")
@@ -40,8 +69,16 @@ model User {
   signatures              DocumentSignature[]
   dispositionApprovals    DispositionCertificate[] @relation("DispositionApprover")
   dispositionWitnesses    DispositionCertificate[] @relation("DispositionWitness")
+  appSettingsUpdated      AppSetting[]             @relation("AppSettingUpdater")
+  sessions                UserSession[]            @relation("UserSessions")
+  loginOtps               LoginOtp[]               @relation("UserLoginOtps")
   shareLinksCreated       DocumentShareLink[]      @relation("ShareLinkCreator")
   captureExceptionsResolved CaptureException[]     @relation("CaptureExceptionResolver")
+  approvedVersions          DocumentVersion[]       @relation("VersionApprover")
+  savedSearches             SavedSearch[]
+  documentRelations         DocumentRelation[]      @relation("RelationCreator")
+  redactionsCreated         DocumentRedaction[]     @relation("RedactionCreator")
+  documentSubscriptions     DocumentSubscription[]  @relation("DocumentWatcher")
 
   @@map("users")
 }
@@ -141,6 +178,8 @@ model Document {
   legalHoldAt          DateTime?
   checkoutUserId       String?
   checkoutAt           DateTime?
+  checkoutExpiresAt    DateTime?  // auto force-checkin after this time
+  checkoutToken        String?    @unique // opaque token for offline lock validation
   retentionExpiresAt   DateTime?
   contentHash          String?
   metadata             Json     @default("{}")
@@ -156,6 +195,10 @@ model Document {
   correspondences Correspondence[]
   comments        DocumentComment[]
   signatures      DocumentSignature[]
+  relationsFrom   DocumentRelation[] @relation("RelationSource")
+  relationsTo     DocumentRelation[] @relation("RelationTarget")
+  redactions      DocumentRedaction[]
+  subscriptions   DocumentSubscription[]
 
   @@index([status])
   @@index([department])
@@ -179,25 +222,49 @@ model DocumentFile {
   ocrStatus    OcrStatus @default(PENDING)
   encryptionIv String?
   encryptionTag String?
+  renditionPath   String?   // PDF rendition for non-PDF files (Word/Excel/PPT)
+  renditionStatus String    @default("NONE") // NONE, PENDING, DONE, FAILED
   uploadedAt   DateTime @default(now())
 
   @@map("document_files")
 }
 
 model DocumentVersion {
-  id          String   @id @default(cuid())
-  documentId  String
-  document    Document @relation(fields: [documentId], references: [id], onDelete: Cascade)
-  versionNum  Int
-  storagePath String
-  sizeBytes   BigInt
-  changeNote  String
-  createdById String
-  createdAt   DateTime @default(now())
+  id              String              @id @default(cuid())
+  documentId      String
+  document        Document            @relation(fields: [documentId], references: [id], onDelete: Cascade)
+  versionNum      Int
+  storagePath     String
+  fileName        String?
+  mimeType        String?
+  sizeBytes       BigInt
+  changeNote      String
+  label           String?             // user-defined label e.g. "FINAL", "APPROVED"
+  status          VersionStatus       @default(DRAFT)
+  isLatest        Boolean             @default(false)
+  parentVersionId String?             // for rollback tracking
+  encryptionIv    String?
+  encryptionTag   String?
+  approvedById    String?
+  approvedBy      User?               @relation("VersionApprover", fields: [approvedById], references: [id])
+  approvedAt      DateTime?
+  createdById     String
+  createdAt       DateTime            @default(now())
 
   @@unique([documentId, versionNum])
+  @@index([documentId, isLatest])
+  @@index([documentId, status])
   @@map("document_versions")
 }
+
+enum VersionStatus {
+  DRAFT
+  IN_REVIEW
+  APPROVED
+  SUPERSEDED
+  REJECTED
+}
+
 
 model DocumentTag {
   id         String   @id @default(cuid())
@@ -279,6 +346,7 @@ model WorkflowTemplate {
   createdAt   DateTime @default(now())
   updatedAt   DateTime @updatedAt
   instances   WorkflowInstance[]
+  triggers    WorkflowTrigger[]
 
   @@map("workflow_templates")
 }
@@ -288,14 +356,17 @@ model WorkflowInstance {
   referenceNumber          String   @unique
   templateId               String
   template                 WorkflowTemplate @relation(fields: [templateId], references: [id])
+  templateVersion          Int      @default(1)
   documentId               String?
   document                 Document? @relation(fields: [documentId], references: [id])
   initiatedById            String
   originalInitiatedById    String?
+  parentInstanceId         String?  // for subprocess child instances
   subject                  String
   status                   WorkflowStatus @default(PENDING)
   currentStepIndex         Int      @default(0)
   formData                 Json     @default("{}")
+  version                  Int      @default(0)  // optimistic concurrency lock
   startedAt                DateTime @default(now())
   completedAt              DateTime?
   dueAt                    DateTime?
@@ -310,22 +381,112 @@ model WorkflowInstance {
 }
 
 model WorkflowTask {
-  id           String   @id @default(cuid())
-  instanceId   String
-  instance     WorkflowInstance @relation(fields: [instanceId], references: [id], onDelete: Cascade)
-  stepName     String
-  stepIndex    Int
-  assigneeId   String
-  assignee     User     @relation("Assignee", fields: [assigneeId], references: [id])
-  taskType     TaskType @default(PRIMARY)
-  status       TaskStatus @default(PENDING)
-  action       TaskAction?
-  comment      String?
-  dueAt        DateTime?
-  assignedAt   DateTime @default(now())
-  completedAt  DateTime?
+  id              String   @id @default(cuid())
+  instanceId      String
+  instance        WorkflowInstance @relation(fields: [instanceId], references: [id], onDelete: Cascade)
+  nodeId          String?
+  stepName        String
+  stepIndex       Int
+  // Pool assignment — assigneeId is null until task is claimed from the pool
+  poolId          String?
+  pool            WorkflowPool? @relation(fields: [poolId], references: [id])
+  assigneeId      String?
+  assignee        User?    @relation("Assignee", fields: [assigneeId], references: [id])
+  claimedById     String?
+  claimedBy       User?    @relation("TaskClaimer", fields: [claimedById], references: [id])
+  claimedAt       DateTime?
+  taskType        TaskType @default(PRIMARY)
+  status          TaskStatus @default(PENDING)
+  action          TaskAction?
+  comment         String?
+  dueAt           DateTime?
+  escalatedAt     DateTime?
+  escalationLevel Int      @default(0)
+  assignedAt      DateTime @default(now())
+  completedAt     DateTime?
+  comments        TaskComment[]
+  attachments     TaskAttachment[]
 
+  @@index([instanceId])
+  @@index([assigneeId, status])
+  @@index([poolId, status])
   @@map("workflow_tasks")
+}
+
+model WorkflowPool {
+  id          String   @id @default(cuid())
+  name        String   @unique
+  description String?
+  createdById String
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+  members     WorkflowPoolMember[]
+  tasks       WorkflowTask[]
+
+  @@map("workflow_pools")
+}
+
+model WorkflowPoolMember {
+  id        String   @id @default(cuid())
+  poolId    String
+  pool      WorkflowPool @relation(fields: [poolId], references: [id], onDelete: Cascade)
+  userId    String
+  user      User     @relation("PoolMember", fields: [userId], references: [id])
+  joinedAt  DateTime @default(now())
+
+  @@unique([poolId, userId])
+  @@map("workflow_pool_members")
+}
+
+model TaskComment {
+  id         String   @id @default(cuid())
+  taskId     String
+  task       WorkflowTask @relation(fields: [taskId], references: [id], onDelete: Cascade)
+  authorId   String
+  author     User     @relation("CommentAuthor", fields: [authorId], references: [id])
+  parentId   String?  // for threaded replies
+  parent     TaskComment? @relation("CommentThread", fields: [parentId], references: [id])
+  replies    TaskComment[] @relation("CommentThread")
+  body       String
+  isInternal Boolean  @default(false) // internal note not visible to initiator
+  editedAt   DateTime?
+  createdAt  DateTime @default(now())
+
+  @@index([taskId])
+  @@map("task_comments")
+}
+
+model TaskAttachment {
+  id           String   @id @default(cuid())
+  taskId       String
+  task         WorkflowTask @relation(fields: [taskId], references: [id], onDelete: Cascade)
+  uploadedById String
+  uploadedBy   User     @relation("AttachmentUploader", fields: [uploadedById], references: [id])
+  fileName     String
+  storagePath  String
+  mimeType     String
+  sizeBytes    Int
+  createdAt    DateTime @default(now())
+
+  @@index([taskId])
+  @@map("task_attachments")
+}
+
+model WorkflowSignal {
+  id          String    @id @default(cuid())
+  signalKey   String    @unique // "{instanceId}:{nodeId}" — unique per wait point
+  instanceId  String
+  nodeId      String
+  taskId      String?   // the placeholder task waiting for this signal
+  receivedAt  DateTime?
+  timedOutAt  DateTime?
+  timeoutAt   DateTime? // wall-clock deadline; signal-timeout-worker fires when exceeded
+  payload     Json      @default("{}")
+  createdAt   DateTime  @default(now())
+
+  @@index([instanceId])
+  @@index([timeoutAt]) // worker query index
+  @@map("workflow_signals")
 }
 
 model WorkflowEvent {
@@ -354,6 +515,58 @@ model Delegation {
   createdAt    DateTime @default(now())
 
   @@map("delegations")
+}
+
+model BusinessCalendar {
+  id             String   @id @default(cuid())
+  name           String   @unique
+  timezone       String   @default("Africa/Nairobi")
+  workdayStart   Int      @default(8)   // hour of day (24h), e.g. 8 = 08:00
+  workdayEnd     Int      @default(17)  // hour of day (24h), e.g. 17 = 17:00
+  workDays       Int[]    @default([1,2,3,4,5]) // 0=Sun,1=Mon,...,6=Sat
+  holidays       Json     @default("[]") // array of "YYYY-MM-DD" strings
+  isDefault      Boolean  @default(false)
+  createdAt      DateTime @default(now())
+  updatedAt      DateTime @updatedAt
+
+  @@map("business_calendars")
+}
+
+model WorkflowTrigger {
+  id             String   @id @default(cuid())
+  name           String
+  templateId     String
+  template       WorkflowTemplate @relation(fields: [templateId], references: [id])
+  conditions     Json     // array of {field, operator, value} matching document metadata
+  documentType   String?  // filter by document type (null = any)
+  department     String?  // filter by department (null = any)
+  subjectTemplate String? // template for workflow subject e.g. "Review: {{title}}"
+  isActive       Boolean  @default(true)
+  createdById    String
+  createdAt      DateTime @default(now())
+  updatedAt      DateTime @updatedAt
+
+  @@index([isActive])
+  @@map("workflow_triggers")
+}
+
+model WebhookLog {
+  id           String   @id @default(cuid())
+  instanceId   String
+  nodeId       String
+  url          String
+  payload      Json
+  status       String   @default("PENDING") // PENDING | SUCCESS | FAILED
+  attempts     Int      @default(0)
+  lastAttemptAt DateTime?
+  responseCode Int?
+  responseBody String?
+  nextRetryAt  DateTime?
+  createdAt    DateTime @default(now())
+
+  @@index([instanceId])
+  @@index([status, nextRetryAt])
+  @@map("webhook_logs")
 }
 
 enum WorkflowStatus {
@@ -518,6 +731,70 @@ enum PhysicalRecordStatus {
 }
 
 // === Document Capture (Hot Folder) ===
+model DocumentRelation {
+  id           String   @id @default(cuid())
+  sourceId     String
+  targetId     String
+  source       Document @relation("RelationSource", fields: [sourceId], references: [id], onDelete: Cascade)
+  target       Document @relation("RelationTarget", fields: [targetId], references: [id], onDelete: Cascade)
+  relationType String   // SUPERSEDES, SUPPORTS, RELATED_TO, TRANSLATES, REPLACES
+  note         String?
+  createdById  String
+  createdBy    User     @relation("RelationCreator", fields: [createdById], references: [id])
+  createdAt    DateTime @default(now())
+
+  @@unique([sourceId, targetId, relationType])
+  @@index([sourceId])
+  @@index([targetId])
+  @@map("document_relations")
+}
+
+model SavedSearch {
+  id        String   @id @default(cuid())
+  userId    String
+  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  name      String
+  query     Json     // { search?, documentType?, department?, tags?, dateFrom?, dateTo?, status? }
+  isPublic  Boolean  @default(false)
+  icon      String?  // emoji or icon name
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([userId])
+  @@map("saved_searches")
+}
+
+model DocumentRedaction {
+  id           String   @id @default(cuid())
+  documentId   String
+  document     Document @relation(fields: [documentId], references: [id], onDelete: Cascade)
+  fileId       String                        // source DocumentFile
+  redactedPath String                        // storage path of redacted copy
+  regions      Json     @default("[]")       // [{ page, x, y, width, height, reason }]
+  reason       String?
+  createdById  String
+  createdBy    User     @relation("RedactionCreator", fields: [createdById], references: [id])
+  createdAt    DateTime @default(now())
+
+  @@index([documentId])
+  @@map("document_redactions")
+}
+
+model DocumentSubscription {
+  id           String   @id @default(cuid())
+  documentId   String
+  document     Document @relation(fields: [documentId], references: [id], onDelete: Cascade)
+  userId       String
+  user         User     @relation("DocumentWatcher", fields: [userId], references: [id], onDelete: Cascade)
+  events       String[] // VERSION_UPLOADED, APPROVED, COMMENTED, STATUS_CHANGED, CHECKED_OUT
+  createdAt    DateTime @default(now())
+
+  @@unique([documentId, userId])
+  @@index([documentId])
+  @@index([userId])
+  @@map("document_subscriptions")
+}
+
 model CaptureProfile {
   id                String   @id @default(cuid())
   name              String   @unique
@@ -821,4 +1098,91 @@ model DispositionCertificate {
   @@index([approvedById])
   @@index([status])
   @@map("disposition_certificates")
+}
+
+// === System Settings ===
+// Key/value store for runtime-configurable settings (SMTP, branding, etc.)
+// administered through the admin UI. Secret values are AES-256-GCM
+// encrypted via lib/encryption and stored as { encrypted, iv, tag } JSON.
+model AppSetting {
+  id          String   @id @default(cuid())
+  key         String   @unique
+  value       Json
+  updatedAt   DateTime @updatedAt
+  updatedById String?
+  updatedBy   User?    @relation("AppSettingUpdater", fields: [updatedById], references: [id])
+
+  @@map("app_settings")
+}
+
+// === User Sessions ===
+// Server-side ledger of every issued refresh token, so we can:
+//   - Show users their active sessions ("Other devices")
+//   - Let users / admins revoke any session in real time
+//   - Force-revoke all sessions on password change or admin reset
+//   - Flag suspicious activity (many concurrent IPs, geo jumps, etc.)
+model UserSession {
+  id              String   @id @default(cuid())
+  userId          String
+  user            User     @relation("UserSessions", fields: [userId], references: [id], onDelete: Cascade)
+  /// Bcrypt hash of the rotating refresh token. Plaintext is never stored.
+  refreshTokenHash String
+  ipAddress       String?
+  userAgent       String?
+  /// Last time this session emitted a request (refreshed its access token).
+  lastActiveAt    DateTime @default(now())
+  expiresAt       DateTime
+  revokedAt       DateTime?
+  /// Optional reason: USER_LOGOUT, PASSWORD_CHANGED, ADMIN_REVOKED,
+  /// REVOKED_OTHER_DEVICES, EXPIRED, MFA_DISABLED.
+  revokedReason   String?
+  createdAt       DateTime @default(now())
+
+  @@index([userId, revokedAt])
+  @@index([refreshTokenHash])
+  @@index([expiresAt])
+  @@map("user_sessions")
+}
+
+// === Login OTP ===
+// Short-lived one-time code emailed to users who have enabled email MFA.
+// Issued by /api/auth/mfa/request-code, consumed by the credentials
+// authorize() flow on next sign-in. Only the bcrypt hash is persisted.
+model LoginOtp {
+  id           String   @id @default(cuid())
+  userId       String
+  user         User     @relation("UserLoginOtps", fields: [userId], references: [id], onDelete: Cascade)
+  codeHash     String
+  /// Hard expiry — 10 minutes after issue.
+  expiresAt    DateTime
+  /// Set when the code is successfully consumed at login.
+  usedAt       DateTime?
+  /// How many failed attempts have been made against this code.
+  attempts     Int      @default(0)
+  /// "LOGIN" (default) or "MFA_VERIFY" (used when verifying enable).
+  purpose      String   @default("LOGIN")
+  createdAt    DateTime @default(now())
+
+  @@index([userId, usedAt, expiresAt])
+  @@map("login_otps")
+}
+
+// === Login Attempts ===
+// Append-only log of every authentication attempt — successful or not.
+// Used for security visibility, anomaly detection, and to enforce
+// IP-level rate limiting at the application layer.
+model LoginAttempt {
+  id            String   @id @default(cuid())
+  email         String   // attempted email (may not exist)
+  userId        String?  // populated when the email matched a user
+  success       Boolean
+  reason        String?  // INVALID_PASSWORD, ACCOUNT_LOCKED, MFA_REQUIRED, MFA_INVALID, EXPIRED_OTP, INACTIVE, OK
+  ipAddress     String?
+  userAgent     String?
+  createdAt     DateTime @default(now())
+
+  @@index([email, createdAt])
+  @@index([ipAddress, createdAt])
+  @@index([userId, createdAt])
+  @@map("login_attempts")
 }

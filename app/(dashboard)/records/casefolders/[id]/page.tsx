@@ -23,6 +23,7 @@ interface DocumentFile {
   id: string;
   fileName: string;
   mimeType: string;
+  storagePath: string;
 }
 
 interface CasefolderDocument {
@@ -512,6 +513,26 @@ export default function CasefolderDetailPage({
     return () => clearTimeout(timer);
   }, [fieldFilters]);
 
+  /* ---------- auto-redirect to first doc's detail page ---------- */
+  /* When the user lands on a flat casefolder OR drills into a folder,
+   * we send them straight to the first document's detail view rather
+   * than showing a list + preview. Avoids the extra "Open" click. */
+
+  useEffect(() => {
+    if (activeTab !== "documents") return;
+    if (loading) return;
+    if (documents.length === 0) return;
+
+    const showingDocuments = !hasAggregation || !!activeFolderKey;
+    if (!showingDocuments) return;
+
+    const firstDoc = documents[0];
+    const qs = activeFolderKey
+      ? `?folderKey=${encodeURIComponent(activeFolderKey)}`
+      : "";
+    router.replace(`/records/casefolders/${id}/${firstDoc.id}${qs}`);
+  }, [activeTab, loading, documents, hasAggregation, activeFolderKey, id, router]);
+
   /* ---------- restore scroll when folder is closed ---------- */
 
   useEffect(() => {
@@ -736,8 +757,8 @@ export default function CasefolderDetailPage({
         </div>
       )}
 
-      {/* ---- Field filter bar ---- */}
-      {visibleFields.length > 0 && (
+      {/* ---- Field filter bar (only visible in folders grid view) ---- */}
+      {visibleFields.length > 0 && viewMode === "folders" && !activeFolderKey && hasAggregation && (
         <div>
           {/* Header strip */}
           <div className="flex items-center justify-between px-1 py-2">
@@ -960,6 +981,7 @@ export default function CasefolderDetailPage({
           ) : (
             /* List view for folders */
             <div className="bg-white dark:bg-gray-900 rounded-2xl border border-gray-200 dark:border-gray-800 overflow-hidden">
+              <div className="overflow-x-auto">
               <table className="w-full text-sm">
                 <thead>
                   <tr className="bg-gray-50 dark:bg-gray-800/50 border-b border-gray-200 dark:border-gray-800">
@@ -1013,12 +1035,13 @@ export default function CasefolderDetailPage({
                   ))}
                 </tbody>
               </table>
+              </div>
             </div>
           )}
         </>
       )}
 
-      {/* ---- Documents view (flat / inside a folder) ---- */}
+      {/* ---- Documents view (auto-redirects to first doc's detail page) ---- */}
       {(viewMode === "documents" || activeFolderKey || !hasAggregation) && (
         documents.length === 0 && !loading ? (
           /* Empty state */
@@ -1048,161 +1071,17 @@ export default function CasefolderDetailPage({
               </Link>
             )}
           </div>
-        ) : displayView === "card" ? (
-          /* Card view */
-          <div className="relative">
-            {loading && (
-              <div className="absolute inset-0 bg-white/50 dark:bg-gray-900/50 z-10 flex items-center justify-center rounded-2xl">
-                <div className="w-6 h-6 border-2 border-[#02773b] border-t-transparent rounded-full animate-spin" />
-              </div>
-            )}
-            <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4">
-              {documents.map((doc) => (
-                <button
-                  key={doc.id}
-                  onClick={() => router.push(`/records/casefolders/${id}/${doc.id}${activeFolderKey ? `?folderKey=${encodeURIComponent(activeFolderKey)}` : ""}`)}
-                  className="bg-white dark:bg-gray-900 rounded-2xl border border-gray-200 dark:border-gray-800 p-5 text-left hover:border-[#02773b]/40 hover:shadow-md transition-all group"
-                >
-                  <div className="flex items-start gap-3">
-                    <div className="w-10 h-10 rounded-xl bg-[#02773b]/10 flex items-center justify-center flex-shrink-0">
-                      <svg className="w-5 h-5 text-[#02773b]" fill="none" viewBox="0 0 24 24" strokeWidth={1.5} stroke="currentColor">
-                        <path strokeLinecap="round" strokeLinejoin="round" d="M19.5 14.25v-2.625a3.375 3.375 0 0 0-3.375-3.375h-1.5A1.125 1.125 0 0 1 13.5 7.125v-1.5a3.375 3.375 0 0 0-3.375-3.375H8.25m2.25 0H5.625c-.621 0-1.125.504-1.125 1.125v17.25c0 .621.504 1.125 1.125 1.125h12.75c.621 0 1.125-.504 1.125-1.125V11.25a9 9 0 0 0-9-9Z" />
-                      </svg>
-                    </div>
-                    <div className="flex-1 min-w-0">
-                      <span className="text-[10px] text-[#dd9f42] font-mono uppercase tracking-wide">{doc.referenceNumber}</span>
-                      <p className="text-sm font-semibold text-gray-900 dark:text-gray-100 truncate group-hover:text-[#02773b] transition-colors mt-0.5">
-                        {doc.title}
-                      </p>
-                      <p className="text-xs text-gray-400 dark:text-gray-500 truncate">
-                        {doc.createdBy.displayName || doc.createdBy.name}
-                      </p>
-                    </div>
-                  </div>
-                  {visibleFields.length > 0 && (
-                    <div className="mt-3 pt-3 border-t border-gray-100 dark:border-gray-800 space-y-1">
-                      {visibleFields.slice(0, 3).map((field) => {
-                        const meta = (doc.metadata ?? {}) as Record<string, unknown>;
-                        const labels = (meta._fieldLabels ?? {}) as Record<string, string>;
-                        let raw = meta[field.name];
-                        if (raw === undefined && field.label && labels[field.label] !== undefined) raw = labels[field.label];
-                        if (raw === undefined) {
-                          const camel = field.name.replace(/_([a-z])/g, (_: string, c: string) => c.toUpperCase());
-                          raw = meta[camel];
-                        }
-                        const value = raw === null || raw === undefined ? "—" : String(raw);
-                        return (
-                          <p key={field.name} className="text-xs text-gray-500 dark:text-gray-400 truncate">
-                            <span className="font-medium">{field.label}:</span> {value}
-                          </p>
-                        );
-                      })}
-                    </div>
-                  )}
-                  <div className="mt-3 flex items-center justify-between">
-                    <StatusBadge status={doc.status} />
-                    <div className="flex items-center gap-2 text-xs text-gray-400 dark:text-gray-500">
-                      {doc.files.length > 0 && (
-                        <span className="flex items-center gap-1">
-                          <IconPaperclip className="w-3.5 h-3.5" />
-                          {doc.files.length}
-                        </span>
-                      )}
-                      <span>{formatDate(doc.createdAt)}</span>
-                    </div>
-                  </div>
-                </button>
-              ))}
-            </div>
-            <Paginator pagination={pagination} onPageChange={goToPage} />
-          </div>
         ) : (
-          /* List view */
-          <div className="bg-white dark:bg-gray-900 rounded-2xl border border-gray-200 dark:border-gray-800 overflow-hidden">
-            {loading && (
-              <div className="absolute inset-0 bg-white/50 dark:bg-gray-900/50 z-10 flex items-center justify-center rounded-2xl">
-                <div className="w-6 h-6 border-2 border-[#02773b] border-t-transparent rounded-full animate-spin" />
-              </div>
-            )}
-            <div className="overflow-x-auto relative">
-              <table className="w-full text-sm">
-                <thead>
-                  <tr className="bg-gray-50 dark:bg-gray-800/50 border-b border-gray-200 dark:border-gray-800">
-                    <th className="text-left px-4 py-3 text-xs font-semibold text-gray-500 dark:text-gray-400 uppercase tracking-wider whitespace-nowrap">Reference #</th>
-                    <th className="text-left px-4 py-3 text-xs font-semibold text-gray-500 dark:text-gray-400 uppercase tracking-wider whitespace-nowrap">Title</th>
-                    {visibleFields.map((field) => (
-                      <th key={field.name} className="text-left px-4 py-3 text-xs font-semibold text-gray-500 dark:text-gray-400 uppercase tracking-wider whitespace-nowrap hidden lg:table-cell">
-                        {field.label || field.name}
-                      </th>
-                    ))}
-                    <th className="text-left px-4 py-3 text-xs font-semibold text-gray-500 dark:text-gray-400 uppercase tracking-wider whitespace-nowrap">Status</th>
-                    <th className="text-left px-4 py-3 text-xs font-semibold text-gray-500 dark:text-gray-400 uppercase tracking-wider whitespace-nowrap hidden lg:table-cell">Workflow</th>
-                    <th className="text-left px-4 py-3 text-xs font-semibold text-gray-500 dark:text-gray-400 uppercase tracking-wider whitespace-nowrap hidden sm:table-cell">Created</th>
-                    <th className="text-left px-4 py-3 text-xs font-semibold text-gray-500 dark:text-gray-400 uppercase tracking-wider whitespace-nowrap hidden md:table-cell">Files</th>
-                  </tr>
-                </thead>
-                <tbody className="divide-y divide-gray-100 dark:divide-gray-800/50">
-                  {documents.map((doc) => (
-                    <tr
-                      key={doc.id}
-                      onClick={() => router.push(`/records/casefolders/${id}/${doc.id}${activeFolderKey ? `?folderKey=${encodeURIComponent(activeFolderKey)}` : ""}`)}
-                      className="hover:bg-[#02773b]/[0.03] dark:hover:bg-[#02773b]/[0.06] cursor-pointer transition-colors group"
-                    >
-                      <td className="px-4 py-3.5 whitespace-nowrap">
-                        <span className="text-xs font-mono font-medium text-[#dd9f42]">{doc.referenceNumber}</span>
-                      </td>
-                      <td className="px-4 py-3.5 max-w-[240px]">
-                        <div className="flex flex-col">
-                          <span className="text-sm font-medium text-gray-900 dark:text-gray-100 truncate group-hover:text-[#02773b] transition-colors">{doc.title}</span>
-                          <span className="text-xs text-gray-400 dark:text-gray-500 truncate">{doc.createdBy.displayName || doc.createdBy.name}</span>
-                        </div>
-                      </td>
-                      {visibleFields.map((field) => {
-                        const meta = (doc.metadata ?? {}) as Record<string, unknown>;
-                        const labels = (meta._fieldLabels ?? {}) as Record<string, string>;
-                        let raw = meta[field.name];
-                        if (raw === undefined && field.label && labels[field.label] !== undefined) raw = labels[field.label];
-                        if (raw === undefined) {
-                          const camel = field.name.replace(/_([a-z])/g, (_: string, c: string) => c.toUpperCase());
-                          raw = meta[camel];
-                        }
-                        const value = raw === null || raw === undefined ? "—" : String(raw);
-                        return (
-                          <td key={field.name} className="px-4 py-3.5 whitespace-nowrap text-gray-600 dark:text-gray-300 hidden lg:table-cell" title={value !== "—" ? value : undefined}>
-                            {truncate(value, 28)}
-                          </td>
-                        );
-                      })}
-                      <td className="px-4 py-3.5 whitespace-nowrap"><StatusBadge status={doc.status} /></td>
-                      <td className="px-4 py-3.5 whitespace-nowrap hidden lg:table-cell">
-                        {doc.workflowStatus ? (
-                          <span className={`inline-flex items-center px-2.5 py-0.5 rounded-full text-[11px] font-semibold uppercase tracking-wide ${
-                            doc.workflowStatus === "COMPLETED" ? "bg-emerald-50 text-emerald-700 dark:bg-emerald-950/40 dark:text-emerald-400"
-                            : doc.workflowStatus === "REJECTED" ? "bg-red-50 text-red-700 dark:bg-red-950/40 dark:text-red-400"
-                            : doc.workflowStatus === "IN_PROGRESS" ? "bg-sky-50 text-sky-700 dark:bg-sky-950/40 dark:text-sky-400"
-                            : "bg-amber-50 text-amber-700 dark:bg-amber-950/40 dark:text-amber-400"
-                          }`}>
-                            {doc.workflowStatus.replace(/_/g, " ")}
-                          </span>
-                        ) : <span className="text-xs text-gray-300 dark:text-gray-600">--</span>}
-                      </td>
-                      <td className="px-4 py-3.5 whitespace-nowrap text-gray-500 dark:text-gray-400 hidden sm:table-cell">{formatDate(doc.createdAt)}</td>
-                      <td className="px-4 py-3.5 whitespace-nowrap hidden md:table-cell">
-                        {doc.files.length > 0 ? (
-                          <span className="inline-flex items-center gap-1 text-xs text-gray-500 dark:text-gray-400">
-                            <IconPaperclip className="w-3.5 h-3.5" />{doc.files.length}
-                          </span>
-                        ) : <span className="text-xs text-gray-300 dark:text-gray-600">-</span>}
-                      </td>
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
+          /* Redirect in progress — show a subtle spinner */
+          <div className="flex items-center justify-center py-20">
+            <div className="flex flex-col items-center gap-3">
+              <div className="w-6 h-6 border-2 border-[#02773b] border-t-transparent rounded-full animate-spin" />
+              <span className="text-xs text-gray-400 dark:text-gray-500">Opening document…</span>
             </div>
-            <Paginator pagination={pagination} onPageChange={goToPage} />
           </div>
         )
       )}
+
 
       </>}{/* end documents tab */}
     </div>

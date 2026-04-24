@@ -40,6 +40,16 @@ interface Pagination {
   totalPages: number;
 }
 
+interface SavedSearch {
+  id: string;
+  name: string;
+  icon: string | null;
+  query: Record<string, unknown>;
+  isPublic: boolean;
+  userId: string;
+  user?: { displayName: string };
+}
+
 function SearchContent() {
   const router = useRouter();
   const searchParams = useSearchParams();
@@ -47,6 +57,13 @@ function SearchContent() {
 
   const [query, setQuery] = useState(initialQuery);
   const [results, setResults] = useState<SearchResult[]>([]);
+
+  // Saved searches (smart folders)
+  const [savedSearches, setSavedSearches] = useState<SavedSearch[]>([]);
+  const [showSaveDialog, setShowSaveDialog] = useState(false);
+  const [saveName, setSaveName] = useState("");
+  const [saveIcon, setSaveIcon] = useState("🔍");
+
   const [facets, setFacets] = useState<Facets>({
     departments: [],
     types: [],
@@ -117,6 +134,47 @@ function SearchContent() {
     doSearch(1);
   }
 
+  useEffect(() => {
+    fetch("/api/search/saved").then((r) => r.ok ? r.json() : []).then(setSavedSearches).catch(() => {});
+  }, []);
+
+  async function saveSearch() {
+    if (!saveName.trim()) return;
+    const q: Record<string, unknown> = { search: query };
+    if (filterDepartment) q.department = filterDepartment;
+    if (filterType) q.type = filterType;
+    if (filterStatus) q.status = filterStatus;
+    if (filterDateFrom) q.dateFrom = filterDateFrom;
+    if (filterDateTo) q.dateTo = filterDateTo;
+    const res = await fetch("/api/search/saved", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ name: saveName.trim(), query: q, icon: saveIcon }),
+    });
+    if (res.ok) {
+      const saved = await res.json();
+      setSavedSearches((prev) => [saved, ...prev]);
+      setShowSaveDialog(false);
+      setSaveName("");
+    }
+  }
+
+  function applySearch(s: SavedSearch) {
+    const q = s.query;
+    if (typeof q.search === "string") setQuery(q.search);
+    if (typeof q.department === "string") setFilterDepartment(q.department);
+    if (typeof q.type === "string") setFilterType(q.type);
+    if (typeof q.status === "string") setFilterStatus(q.status);
+    if (typeof q.dateFrom === "string") setFilterDateFrom(q.dateFrom);
+    if (typeof q.dateTo === "string") setFilterDateTo(q.dateTo);
+    setTimeout(() => doSearch(1), 0);
+  }
+
+  async function deleteSavedSearch(id: string) {
+    await fetch(`/api/search/saved/${id}`, { method: "DELETE" });
+    setSavedSearches((prev) => prev.filter((s) => s.id !== id));
+  }
+
   function getStatusColor(status: string) {
     const styles: Record<string, string> = {
       DRAFT:
@@ -172,7 +230,66 @@ function SearchContent() {
             </button>
           </div>
         </form>
+
+        {/* Save search button + dialog */}
+        {hasSearched && (
+          <div className="mt-2 flex justify-end">
+            <button
+              onClick={() => setShowSaveDialog((v) => !v)}
+              className="text-xs text-gray-500 hover:text-karu-green flex items-center gap-1"
+            >
+              <svg className="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" strokeWidth={1.5} stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" d="M17.593 3.322c1.1.128 1.907 1.077 1.907 2.185V21L12 17.25 4.5 21V5.507c0-1.108.806-2.057 1.907-2.185a48.507 48.507 0 0 1 11.186 0Z" /></svg>
+              Save as Smart Folder
+            </button>
+          </div>
+        )}
+        {showSaveDialog && (
+          <div className="mt-2 p-4 bg-white dark:bg-gray-900 border border-gray-200 dark:border-gray-700 rounded-xl shadow-lg max-w-sm ml-auto space-y-3">
+            <p className="text-sm font-medium text-gray-700 dark:text-gray-300">Save Smart Folder</p>
+            <div className="flex gap-2">
+              <input
+                className="w-12 border rounded-lg px-2 text-center text-lg dark:bg-gray-800 dark:border-gray-700"
+                value={saveIcon}
+                onChange={(e) => setSaveIcon(e.target.value)}
+                maxLength={2}
+              />
+              <input
+                className="flex-1 border rounded-lg px-3 py-2 text-sm dark:bg-gray-800 dark:border-gray-700"
+                placeholder="Folder name"
+                value={saveName}
+                onChange={(e) => setSaveName(e.target.value)}
+                onKeyDown={(e) => e.key === "Enter" && saveSearch()}
+                autoFocus
+              />
+            </div>
+            <div className="flex gap-2 justify-end">
+              <button onClick={() => setShowSaveDialog(false)} className="text-xs px-3 py-1.5 border rounded-lg hover:bg-gray-50 dark:hover:bg-gray-800">Cancel</button>
+              <button onClick={saveSearch} className="text-xs px-3 py-1.5 rounded-lg bg-karu-green text-white hover:bg-karu-green-dark">Save</button>
+            </div>
+          </div>
+        )}
       </div>
+
+      {/* Smart Folders strip */}
+      {savedSearches.length > 0 && (
+        <div className="max-w-3xl mx-auto">
+          <p className="text-xs text-gray-400 uppercase tracking-wide mb-2">Smart Folders</p>
+          <div className="flex flex-wrap gap-2">
+            {savedSearches.map((s) => (
+              <div key={s.id} className="group flex items-center gap-1.5 bg-white dark:bg-gray-900 border border-gray-200 dark:border-gray-700 rounded-full pl-3 pr-1 py-1.5 text-sm hover:border-karu-green transition-colors cursor-pointer"
+                onClick={() => applySearch(s)}>
+                <span>{s.icon ?? "🔍"}</span>
+                <span className="font-medium text-gray-700 dark:text-gray-300">{s.name}</span>
+                {s.isPublic && <span className="text-[10px] text-gray-400">shared</span>}
+                <button
+                  onClick={(e) => { e.stopPropagation(); deleteSavedSearch(s.id); }}
+                  className="ml-1 w-5 h-5 rounded-full flex items-center justify-center text-gray-300 hover:text-red-500 hover:bg-red-50 dark:hover:bg-red-950/30 opacity-0 group-hover:opacity-100 transition-all"
+                >✕</button>
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
 
       {/* Results area */}
       {hasSearched && (

@@ -3,10 +3,96 @@ import { auth } from "@/lib/auth";
 import { db } from "@/lib/db";
 import { logger } from "@/lib/logger";
 
-interface Change {
-  field: string;
-  before: string | null;
-  after: string | null;
+interface DiffChunk {
+  type: "equal" | "insert" | "delete";
+  lines: string[];
+}
+
+function computeDiff(a: string[], b: string[]): DiffChunk[] {
+  const m = a.length;
+  const n = b.length;
+  const max = m + n;
+  const v: Record<number, number> = { 1: 0 };
+  const trace: Record<number, number>[] = [];
+
+  for (let d = 0; d <= max; d++) {
+    trace.push({ ...v });
+    for (let k = -d; k <= d; k += 2) {
+      let x: number;
+      if (k === -d || (k !== d && (v[k - 1] ?? 0) < (v[k + 1] ?? 0))) {
+        x = v[k + 1] ?? 0;
+      } else {
+        x = (v[k - 1] ?? 0) + 1;
+      }
+      let y = x - k;
+      while (x < m && y < n && a[x] === b[y]) {
+        x++;
+        y++;
+      }
+      v[k] = x;
+      if (x >= m && y >= n) {
+        return backtrack(a, b, trace, d);
+      }
+    }
+  }
+  return [{ type: "delete", lines: a }, { type: "insert", lines: b }];
+}
+
+function backtrack(
+  a: string[],
+  b: string[],
+  trace: Record<number, number>[],
+  d: number
+): DiffChunk[] {
+  const moves: { type: "equal" | "insert" | "delete"; x: number; y: number }[] = [];
+  let x = a.length;
+  let y = b.length;
+
+  for (let step = d; step > 0; step--) {
+    const v = trace[step];
+    const k = x - y;
+    let prevK: number;
+    if (k === -step || (k !== step && (v[k - 1] ?? 0) < (v[k + 1] ?? 0))) {
+      prevK = k + 1;
+    } else {
+      prevK = k - 1;
+    }
+    const prevX = v[prevK] ?? 0;
+    const prevY = prevX - prevK;
+    while (x > prevX + 1 && y > prevY + 1) {
+      moves.unshift({ type: "equal", x: x - 1, y: y - 1 });
+      x--;
+      y--;
+    }
+    if (step > 0) {
+      if (x === prevX + 1 && y === prevY) {
+        moves.unshift({ type: "delete", x: x - 1, y });
+        x = prevX;
+        y = prevY;
+      } else {
+        moves.unshift({ type: "insert", x, y: y - 1 });
+        x = prevX;
+        y = prevY;
+      }
+    }
+  }
+  while (x > 0 && y > 0) {
+    moves.unshift({ type: "equal", x: x - 1, y: y - 1 });
+    x--;
+    y--;
+  }
+
+  const chunks: DiffChunk[] = [];
+  for (const move of moves) {
+    const line = move.type === "delete" ? a[move.x] : b[move.y];
+    const last = chunks[chunks.length - 1];
+    if (last && last.type === move.type) {
+      last.lines.push(line);
+    } else {
+      chunks.push({ type: move.type, lines: [line] });
+    }
+  }
+  return chunks;
 }
 
 function serialiseBigInt(data: unknown): unknown {
@@ -24,10 +110,13 @@ function serialiseBigInt(data: unknown): unknown {
   return data;
 }
 
-// ---------------------------------------------------------------------------
-// GET /api/documents/[id]/versions/compare?v1=...&v2=...
-// Compare two versions of a document
-// ---------------------------------------------------------------------------
+function formatFileSize(bytes: bigint): string {
+  const n = Number(bytes);
+  if (n < 1024) return `${n} B`;
+  if (n < 1024 * 1024) return `${(n / 1024).toFixed(1)} KB`;
+  return `${(n / (1024 * 1024)).toFixed(1)} MB`;
+}
+
 export async function GET(
   req: NextRequest,
   { params }: { params: Promise<{ id: string }> }
@@ -57,131 +146,101 @@ export async function GET(
       );
     }
 
-    // Verify document exists
     const document = await db.document.findUnique({
       where: { id },
-      select: { id: true, title: true },
+      select: { id: true, referenceNumber: true },
     });
 
     if (!document) {
       return NextResponse.json({ error: "Document not found" }, { status: 404 });
     }
 
-    // Fetch both versions
     const [version1, version2] = await Promise.all([
-      db.documentVersion.findFirst({
-        where: { id: v1Id, documentId: id },
-      }),
-      db.documentVersion.findFirst({
-        where: { id: v2Id, documentId: id },
-      }),
+      db.documentVersion.findFirst({ where: { id: v1Id, documentId: id } }),
+      db.documentVersion.findFirst({ where: { id: v2Id, documentId: id } }),
     ]);
 
     if (!version1) {
-      return NextResponse.json(
-        { error: `Version ${v1Id} not found` },
-        { status: 404 }
-      );
+      return NextResponse.json({ error: `Version ${v1Id} not found` }, { status: 404 });
     }
-
     if (!version2) {
+      return NextResponse.json({ error: `Version ${v2Id} not found` }, { status: 404 });
+    }
+
+    const isPdf =
+      (version1.mimeType ?? "").includes("pdf") ||
+      (version2.mimeType ?? "").includes("pdf");
+
+    if (isPdf) {
+      const [file1, file2] = await Promise.all([
+        db.documentFile.findFirst({
+          where: { documentId: id, storagePath: version1.storagePath },
+          select: { ocrText: true },
+        }),
+        db.documentFile.findFirst({
+          where: { documentId: id, storagePath: version2.storagePath },
+          select: { ocrText: true },
+        }),
+      ]);
+
+      const lines1 = (file1?.ocrText ?? "").split("\n");
+      const lines2 = (file2?.ocrText ?? "").split("\n");
+      const diff = computeDiff(lines1, lines2);
+
       return NextResponse.json(
-        { error: `Version ${v2Id} not found` },
-        { status: 404 }
+        serialiseBigInt({
+          v1: {
+            versionNum: version1.versionNum,
+            label: version1.label,
+            status: version1.status,
+            ocrText: file1?.ocrText ?? null,
+          },
+          v2: {
+            versionNum: version2.versionNum,
+            label: version2.label,
+            status: version2.status,
+            ocrText: file2?.ocrText ?? null,
+          },
+          diff,
+        })
       );
     }
 
-    // Build the list of changes between versions
-    const changes: Change[] = [];
+    const metaDiff: { field: string; before: unknown; after: unknown }[] = [];
 
-    // Compare version numbers
-    if (version1.versionNum !== version2.versionNum) {
-      changes.push({
-        field: "Version Number",
-        before: `v${version1.versionNum}`,
-        after: `v${version2.versionNum}`,
-      });
-    }
-
-    // Compare change notes
-    if (version1.changeNote !== version2.changeNote) {
-      changes.push({
-        field: "Change Note",
-        before: version1.changeNote,
-        after: version2.changeNote,
-      });
-    }
-
-    // Compare file sizes
     if (version1.sizeBytes !== version2.sizeBytes) {
-      changes.push({
-        field: "File Size",
+      metaDiff.push({
+        field: "size",
         before: formatFileSize(version1.sizeBytes),
         after: formatFileSize(version2.sizeBytes),
       });
     }
-
-    // Compare storage paths (file name changes)
-    const fileName1 = version1.storagePath.split("/").pop() ?? version1.storagePath;
-    const fileName2 = version2.storagePath.split("/").pop() ?? version2.storagePath;
-    if (fileName1 !== fileName2) {
-      changes.push({
-        field: "File Name",
-        before: fileName1,
-        after: fileName2,
-      });
+    if (version1.mimeType !== version2.mimeType) {
+      metaDiff.push({ field: "mimeType", before: version1.mimeType, after: version2.mimeType });
     }
-
-    // Compare created by
-    if (version1.createdById !== version2.createdById) {
-      // Fetch user names for display
-      const [user1, user2] = await Promise.all([
-        db.user.findUnique({
-          where: { id: version1.createdById },
-          select: { displayName: true },
-        }),
-        db.user.findUnique({
-          where: { id: version2.createdById },
-          select: { displayName: true },
-        }),
-      ]);
-      changes.push({
-        field: "Created By",
-        before: user1?.displayName ?? version1.createdById,
-        after: user2?.displayName ?? version2.createdById,
-      });
+    if (version1.changeNote !== version2.changeNote) {
+      metaDiff.push({ field: "changeNote", before: version1.changeNote, after: version2.changeNote });
     }
-
-    // Compare dates
-    if (version1.createdAt.toISOString() !== version2.createdAt.toISOString()) {
-      changes.push({
-        field: "Created At",
-        before: version1.createdAt.toISOString(),
-        after: version2.createdAt.toISOString(),
-      });
+    if (version1.label !== version2.label) {
+      metaDiff.push({ field: "label", before: version1.label, after: version2.label });
+    }
+    if (version1.status !== version2.status) {
+      metaDiff.push({ field: "status", before: version1.status, after: version2.status });
     }
 
     return NextResponse.json(
       serialiseBigInt({
-        version1: {
-          id: version1.id,
+        v1: {
           versionNum: version1.versionNum,
-          changeNote: version1.changeNote,
-          sizeBytes: version1.sizeBytes,
-          storagePath: version1.storagePath,
-          createdById: version1.createdById,
-          createdAt: version1.createdAt.toISOString(),
+          label: version1.label,
+          status: version1.status,
         },
-        version2: {
-          id: version2.id,
+        v2: {
           versionNum: version2.versionNum,
-          changeNote: version2.changeNote,
-          sizeBytes: version2.sizeBytes,
-          storagePath: version2.storagePath,
-          createdById: version2.createdById,
-          createdAt: version2.createdAt.toISOString(),
+          label: version2.label,
+          status: version2.status,
         },
-        changes,
+        metaDiff,
       })
     );
   } catch (error) {
@@ -189,16 +248,6 @@ export async function GET(
       route: "/api/documents/[id]/versions/compare",
       method: "GET",
     });
-    return NextResponse.json(
-      { error: "Internal server error" },
-      { status: 500 }
-    );
+    return NextResponse.json({ error: "Internal server error" }, { status: 500 });
   }
-}
-
-function formatFileSize(bytes: bigint): string {
-  const n = Number(bytes);
-  if (n < 1024) return `${n} B`;
-  if (n < 1024 * 1024) return `${(n / 1024).toFixed(1)} KB`;
-  return `${(n / (1024 * 1024)).toFixed(1)} MB`;
 }

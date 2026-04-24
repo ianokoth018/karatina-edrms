@@ -344,7 +344,7 @@ export async function GET(
             select: { id: true, name: true, displayName: true },
           },
           files: {
-            select: { id: true, fileName: true, mimeType: true },
+            select: { id: true, fileName: true, mimeType: true, storagePath: true },
           },
           workflowInstances: {
             select: { id: true, status: true, referenceNumber: true },

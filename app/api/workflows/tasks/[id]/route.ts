@@ -3,6 +3,8 @@ import { auth } from "@/lib/auth";
 import { db } from "@/lib/db";
 import { writeAudit } from "@/lib/audit";
 import { logger } from "@/lib/logger";
+import { advanceWorkflow } from "@/lib/workflow-engine";
+import { validateTaskFormData } from "@/lib/workflow-form-validator";
 
 function serialise<T>(data: T): T {
   return JSON.parse(
@@ -12,7 +14,6 @@ function serialise<T>(data: T): T {
 
 /**
  * GET /api/workflows/tasks/[id]
- * Get a single workflow task with its instance, template, document (incl. files), and assignee.
  */
 export async function GET(
   _req: NextRequest,
@@ -32,23 +33,14 @@ export async function GET(
         instance: {
           include: {
             template: {
-              select: {
-                id: true,
-                name: true,
-                description: true,
-                definition: true,
-              },
+              select: { id: true, name: true, description: true, definition: true },
             },
             document: {
               include: {
                 files: {
                   select: {
-                    id: true,
-                    storagePath: true,
-                    fileName: true,
-                    mimeType: true,
-                    sizeBytes: true,
-                    uploadedAt: true,
+                    id: true, storagePath: true, fileName: true,
+                    mimeType: true, sizeBytes: true, uploadedAt: true,
                   },
                 },
               },
@@ -56,13 +48,7 @@ export async function GET(
           },
         },
         assignee: {
-          select: {
-            id: true,
-            name: true,
-            displayName: true,
-            email: true,
-            department: true,
-          },
+          select: { id: true, name: true, displayName: true, email: true, department: true },
         },
       },
     });
@@ -71,20 +57,23 @@ export async function GET(
       return NextResponse.json({ error: "Task not found" }, { status: 404 });
     }
 
+    // Allow assignee OR instance initiator to read the task
+    const isAssignee = task.assigneeId === session.user.id;
+    const isInitiator = task.instance.initiatedById === session.user.id;
+    if (!isAssignee && !isInitiator) {
+      return NextResponse.json({ error: "Forbidden" }, { status: 403 });
+    }
+
     return NextResponse.json(serialise({ task }));
   } catch (error) {
     logger.error("Failed to fetch workflow task", error);
-    return NextResponse.json(
-      { error: "Internal server error" },
-      { status: 500 }
-    );
+    return NextResponse.json({ error: "Internal server error" }, { status: 500 });
   }
 }
 
 /**
  * PATCH /api/workflows/tasks/[id]
- * Perform an action on a workflow task.
- * Body: { action: "APPROVED" | "REJECTED" | "RETURNED" | "DELEGATED", comment: string, delegateToUserId?: string, reason?: string }
+ * Body: { action, comment, delegateToUserId?, reason?, formData? }
  */
 export async function PATCH(
   req: NextRequest,
@@ -98,50 +87,42 @@ export async function PATCH(
 
     const { id } = await params;
     const body = await req.json();
-    const { action, comment, delegateToUserId, reason } = body as {
+    const {
+      action,
+      comment,
+      delegateToUserId,
+      reason,
+      formData,
+    } = body as {
       action: "APPROVED" | "REJECTED" | "RETURNED" | "DELEGATED";
       comment: string;
       delegateToUserId?: string;
       reason?: string;
+      formData?: Record<string, unknown>;
     };
 
     if (!action || !comment) {
-      return NextResponse.json(
-        { error: "Action and comment are required" },
-        { status: 400 }
-      );
+      return NextResponse.json({ error: "action and comment are required" }, { status: 400 });
     }
 
     const validActions = ["APPROVED", "REJECTED", "RETURNED", "DELEGATED"];
     if (!validActions.includes(action)) {
-      return NextResponse.json(
-        {
-          error:
-            "Invalid action. Must be APPROVED, REJECTED, RETURNED, or DELEGATED",
-        },
-        { status: 400 }
-      );
+      return NextResponse.json({ error: "Invalid action" }, { status: 400 });
     }
 
     if (action === "DELEGATED" && !delegateToUserId) {
-      return NextResponse.json(
-        { error: "delegateToUserId is required for delegation" },
-        { status: 400 }
-      );
+      return NextResponse.json({ error: "delegateToUserId is required for delegation" }, { status: 400 });
     }
 
-    // Get the task with instance and all tasks
     const task = await db.workflowTask.findUnique({
       where: { id },
       include: {
         instance: {
-          include: {
-            tasks: {
-              orderBy: { stepIndex: "asc" },
-              include: {
-                assignee: { select: { id: true, name: true } },
-              },
-            },
+          select: {
+            id: true,
+            subject: true,
+            initiatedById: true,
+            templateId: true,
           },
         },
       },
@@ -151,26 +132,30 @@ export async function PATCH(
       return NextResponse.json({ error: "Task not found" }, { status: 404 });
     }
 
-    // Verify the current user is the assignee
     if (task.assigneeId !== session.user.id) {
-      return NextResponse.json(
-        { error: "You are not assigned to this task" },
-        { status: 403 }
-      );
+      return NextResponse.json({ error: "You are not assigned to this task" }, { status: 403 });
     }
 
     if (task.status !== "PENDING") {
-      return NextResponse.json(
-        { error: "This task has already been completed" },
-        { status: 400 }
-      );
+      return NextResponse.json({ error: "This task has already been actioned" }, { status: 400 });
     }
 
-    const allTasks = task.instance.tasks;
-    const currentIndex = allTasks.findIndex((t) => t.id === id);
-    const isLastStep = currentIndex === allTasks.length - 1;
+    // Validate form data against the task node's linked FormTemplate (if any)
+    if (formData && Object.keys(formData).length > 0) {
+      const validationErrors = await validateTaskFormData({
+        taskNodeId: task.nodeId,
+        instanceId: task.instanceId,
+        formData,
+      });
+      if (validationErrors && validationErrors.length > 0) {
+        return NextResponse.json(
+          { error: "Form validation failed", fields: validationErrors },
+          { status: 422 }
+        );
+      }
+    }
 
-    // 1. Update the current task
+    // Mark the task completed with its action
     await db.workflowTask.update({
       where: { id },
       data: {
@@ -181,150 +166,49 @@ export async function PATCH(
       },
     });
 
-    // 2. Create a workflow event
+    // Record audit event
     await db.workflowEvent.create({
       data: {
         instanceId: task.instanceId,
         eventType: `TASK_${action}`,
         actorId: session.user.id,
-        data: {
-          taskId: id,
-          stepName: task.stepName,
-          stepIndex: task.stepIndex,
-          action,
-          comment,
-        },
+        data: { taskId: id, stepName: task.stepName, action, comment } as object,
       },
     });
 
-    let notificationUserId: string | null = null;
-    let notificationTitle = "";
-    let notificationBody = "";
-
-    if (action === "APPROVED") {
-      if (isLastStep) {
-        // All steps completed -- mark workflow as COMPLETED
-        await db.workflowInstance.update({
-          where: { id: task.instanceId },
-          data: {
-            status: "COMPLETED",
-            completedAt: new Date(),
-          },
-        });
-
-        // Notify the initiator
-        notificationUserId = task.instance.initiatedById;
-        notificationTitle = "Workflow completed";
-        notificationBody = `Workflow "${task.instance.subject}" has been approved and completed.`;
-      } else {
-        // Move to next step
-        const nextTask = allTasks[currentIndex + 1];
-        if (nextTask) {
-          await db.workflowInstance.update({
-            where: { id: task.instanceId },
-            data: { currentStepIndex: nextTask.stepIndex },
-          });
-
-          // Notify the next assignee
-          notificationUserId = nextTask.assigneeId;
-          notificationTitle = "New workflow task assigned";
-          notificationBody = `You have been assigned step "${nextTask.stepName}" for: ${task.instance.subject}`;
-        }
-      }
-    } else if (action === "REJECTED") {
-      // Mark the entire workflow as REJECTED
-      await db.workflowInstance.update({
-        where: { id: task.instanceId },
-        data: {
-          status: "REJECTED",
-          completedAt: new Date(),
-        },
-      });
-
-      // Skip remaining tasks
-      await db.workflowTask.updateMany({
-        where: {
-          instanceId: task.instanceId,
-          status: "PENDING",
-          id: { not: id },
-        },
-        data: { status: "SKIPPED" },
-      });
-
-      // Notify the initiator
-      notificationUserId = task.instance.initiatedById;
-      notificationTitle = "Workflow rejected";
-      notificationBody = `Workflow "${task.instance.subject}" was rejected at step "${task.stepName}". Comment: ${comment}`;
-    } else if (action === "RETURNED") {
-      // Return to previous step
-      if (currentIndex > 0) {
-        const prevTask = allTasks[currentIndex - 1];
-        // Create a new task for the previous assignee
-        const dueAt = new Date();
-        dueAt.setDate(dueAt.getDate() + 7);
-
-        await db.workflowTask.create({
-          data: {
-            instanceId: task.instanceId,
-            stepName: `${prevTask.stepName} (Revision)`,
-            stepIndex: prevTask.stepIndex,
-            assigneeId: prevTask.assigneeId,
-            status: "PENDING",
-            dueAt,
-          },
-        });
-
-        await db.workflowInstance.update({
-          where: { id: task.instanceId },
-          data: { currentStepIndex: prevTask.stepIndex },
-        });
-
-        // Notify the previous assignee
-        notificationUserId = prevTask.assigneeId;
-        notificationTitle = "Workflow returned for revision";
-        notificationBody = `Step "${task.stepName}" of "${task.instance.subject}" was returned for revision. Comment: ${comment}`;
-      } else {
-        // If first step, return to initiator
-        notificationUserId = task.instance.initiatedById;
-        notificationTitle = "Workflow returned for revision";
-        notificationBody = `The first step "${task.stepName}" of "${task.instance.subject}" was returned. Comment: ${comment}`;
-      }
-    } else if (action === "DELEGATED") {
-      // Delegate the task to another user
+    // ----------------------------------------------------------------
+    // DELEGATED — special path: does not advance the graph.
+    // Creates a delegation record and a new sibling task for the delegate.
+    // ----------------------------------------------------------------
+    if (action === "DELEGATED") {
       const delegateUser = await db.user.findUnique({
         where: { id: delegateToUserId! },
         select: { id: true, name: true, isActive: true },
       });
 
-      if (!delegateUser || !delegateUser.isActive) {
-        return NextResponse.json(
-          { error: "Delegate user not found or inactive" },
-          { status: 404 }
-        );
+      if (!delegateUser?.isActive) {
+        return NextResponse.json({ error: "Delegate user not found or inactive" }, { status: 404 });
       }
 
-      // Create a Delegation record (active for 30 days)
-      const startsAt = new Date();
-      const endsAt = new Date();
-      endsAt.setDate(endsAt.getDate() + 30);
+      const now = new Date();
+      const endsAt = new Date(now.getTime() + 30 * 24 * 60 * 60 * 1000);
 
       await db.delegation.create({
         data: {
           delegatorId: session.user.id,
           delegateId: delegateToUserId!,
-          reason: reason || comment,
-          startsAt,
+          reason: reason ?? comment,
+          startsAt: now,
           endsAt,
           isActive: true,
         },
       });
 
-      // Create a new task for the delegate user (same step, same instance)
       const dueAt = task.dueAt ?? new Date(Date.now() + 7 * 24 * 60 * 60 * 1000);
-
       await db.workflowTask.create({
         data: {
           instanceId: task.instanceId,
+          nodeId: task.nodeId,
           stepName: `${task.stepName} (Delegated)`,
           stepIndex: task.stepIndex,
           assigneeId: delegateToUserId!,
@@ -333,22 +217,26 @@ export async function PATCH(
         },
       });
 
-      // Notify the delegate
-      notificationUserId = delegateToUserId!;
-      notificationTitle = "Workflow task delegated to you";
-      notificationBody = `${session.user.name} delegated step "${task.stepName}" of "${task.instance.subject}" to you. Reason: ${reason || comment}`;
-    }
-
-    // Send notification
-    if (notificationUserId) {
       await db.notification.create({
         data: {
-          userId: notificationUserId,
+          userId: delegateToUserId!,
           type: "WORKFLOW_TASK",
-          title: notificationTitle,
-          body: notificationBody,
+          title: "Workflow task delegated to you",
+          body: `${session.user.name} delegated "${task.stepName}" for "${task.instance.subject}" to you. Reason: ${reason ?? comment}`,
           linkUrl: "/workflows",
         },
+      });
+    } else {
+      // ----------------------------------------------------------------
+      // APPROVED / REJECTED / RETURNED — advance via graph engine
+      // ----------------------------------------------------------------
+      await advanceWorkflow({
+        instanceId: task.instanceId,
+        completedTaskId: id,
+        action: action as "APPROVED" | "REJECTED" | "RETURNED",
+        actorId: session.user.id,
+        comment,
+        formData,
       });
     }
 
@@ -357,37 +245,30 @@ export async function PATCH(
       action: `WORKFLOW_TASK_${action}`,
       resourceType: "workflow_task",
       resourceId: id,
-      metadata: {
-        instanceId: task.instanceId,
-        stepName: task.stepName,
-        comment,
-      },
+      metadata: { instanceId: task.instanceId, stepName: task.stepName, comment },
     });
 
-    // Re-fetch the updated task
     const updatedTask = await db.workflowTask.findUnique({
       where: { id },
       include: {
         instance: {
           include: {
             template: { select: { id: true, name: true } },
-            document: {
-              select: { id: true, title: true, referenceNumber: true },
-            },
+            document: { select: { id: true, title: true, referenceNumber: true } },
           },
         },
-        assignee: {
-          select: { id: true, name: true, displayName: true },
-        },
+        assignee: { select: { id: true, name: true, displayName: true } },
       },
     });
 
     return NextResponse.json(serialise({ task: updatedTask }));
   } catch (error) {
+    const msg = error instanceof Error ? error.message : "Internal server error";
+    // Surface concurrency conflict as 409
+    if (msg.includes("Concurrent modification")) {
+      return NextResponse.json({ error: msg }, { status: 409 });
+    }
     logger.error("Failed to process workflow task action", error);
-    return NextResponse.json(
-      { error: "Internal server error" },
-      { status: 500 }
-    );
+    return NextResponse.json({ error: "Internal server error" }, { status: 500 });
   }
 }

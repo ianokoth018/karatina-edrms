@@ -52,8 +52,10 @@ export async function GET(req: NextRequest) {
     //   3. Are the current active assignee (lowest pending stepIndex)
     // -------------------------------------------------------------------------
 
+    // Match both legacy "MEMO" and the current "Internal Memo" casefolder type
+    // (memos filed via the Internal Memo casefolder are stored with that type).
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    const where: any = { document: { documentType: "MEMO" } };
+    const where: any = { document: { documentType: { in: ["MEMO", "Internal Memo"] } } };
 
     if (!hasElevatedAccess) {
       where.OR = [
@@ -227,6 +229,7 @@ export async function GET(req: NextRequest) {
       return {
         id: memo.id,
         referenceNumber: memo.referenceNumber,
+        memoReferenceNumber: memo.document?.referenceNumber ?? null,
         subject: memo.subject,
         status: memoStatus,
         memoType: isCommunicating ? "communicating" : "administrative",

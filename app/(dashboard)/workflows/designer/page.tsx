@@ -121,8 +121,8 @@ export default function WorkflowDesignerPage() {
     text: string;
   } | null>(null);
   const [showPreview, setShowPreview] = useState(false);
-  const [leftPanelOpen, setLeftPanelOpen] = useState(true);
-  const [rightPanelOpen, setRightPanelOpen] = useState(true);
+  const [leftPanelOpen, setLeftPanelOpen] = useState(false);
+  const [rightPanelOpen, setRightPanelOpen] = useState(false);
   const [hasUnsavedChanges, setHasUnsavedChanges] = useState(false);
   const [showValidationPanel, setShowValidationPanel] = useState(false);
   const [validationIssues, setValidationIssues] = useState<ValidationIssue[]>(
@@ -134,6 +134,14 @@ export default function WorkflowDesignerPage() {
   const [publishing, setPublishing] = useState(false);
   const [showLoadDropdown, setShowLoadDropdown] = useState(false);
   const loadDropdownRef = useRef<HTMLDivElement>(null);
+
+  // Open panels by default on desktop, closed on mobile
+  useEffect(() => {
+    if (window.innerWidth >= 1024) {
+      setLeftPanelOpen(true);
+      setRightPanelOpen(true);
+    }
+  }, []);
 
   // ---- Undo/Redo history ----
   const historyRef = useRef<HistoryEntry[]>([
@@ -1585,12 +1593,24 @@ export default function WorkflowDesignerPage() {
       {/* ============================================================ */}
       {/*  MAIN CONTENT - 3-panel layout                                */}
       {/* ============================================================ */}
-      <div className="flex flex-1 overflow-hidden">
+      <div className="flex flex-1 overflow-hidden relative">
+        {/* Mobile backdrop — closes open panels when tapped */}
+        {(leftPanelOpen || rightPanelOpen) && (
+          <div
+            className="lg:hidden absolute inset-0 bg-black/40 z-10"
+            onClick={() => { setLeftPanelOpen(false); setRightPanelOpen(false); }}
+          />
+        )}
+
         {/* ---- Left Panel: Node Palette ---- */}
         <div
-          className={`flex-shrink-0 bg-white dark:bg-gray-900 border-r border-gray-200 dark:border-gray-800 transition-all duration-300 overflow-hidden ${
-            leftPanelOpen ? "w-56" : "w-0"
-          }`}
+          className={`
+            absolute inset-y-0 left-0 z-20
+            lg:relative lg:inset-auto lg:z-auto lg:flex-shrink-0
+            bg-white dark:bg-gray-900 border-r border-gray-200 dark:border-gray-800
+            transition-all duration-300 overflow-hidden
+            ${leftPanelOpen ? "w-56 shadow-xl lg:shadow-none" : "w-0"}
+          `}
         >
           <div className="w-56 h-full overflow-y-auto p-4">
             <NodePalette />
@@ -1599,9 +1619,10 @@ export default function WorkflowDesignerPage() {
 
         {/* Left panel toggle */}
         <button
-          onClick={() => setLeftPanelOpen(!leftPanelOpen)}
-          className="flex-shrink-0 w-5 bg-gray-100 dark:bg-gray-800 border-r border-gray-200 dark:border-gray-700 flex items-center justify-center hover:bg-gray-200 dark:hover:bg-gray-700 transition-colors"
+          onClick={() => { setLeftPanelOpen(!leftPanelOpen); if (!leftPanelOpen) setRightPanelOpen(false); }}
+          className="absolute left-0 top-1/2 -translate-y-1/2 z-30 lg:relative lg:top-auto lg:left-auto lg:translate-y-0 lg:z-auto flex-shrink-0 w-6 lg:w-5 h-12 lg:h-full bg-gray-100 dark:bg-gray-800 border-r border-gray-200 dark:border-gray-700 flex items-center justify-center hover:bg-gray-200 dark:hover:bg-gray-700 transition-colors rounded-r-lg lg:rounded-none shadow-sm lg:shadow-none"
           title={leftPanelOpen ? "Hide palette" : "Show palette"}
+          style={leftPanelOpen ? { left: "224px" } : undefined}
         >
           <svg
             className={`w-3 h-3 text-gray-400 transition-transform ${leftPanelOpen ? "" : "rotate-180"}`}
@@ -1610,11 +1631,7 @@ export default function WorkflowDesignerPage() {
             strokeWidth={2}
             stroke="currentColor"
           >
-            <path
-              strokeLinecap="round"
-              strokeLinejoin="round"
-              d="M15.75 19.5 8.25 12l7.5-7.5"
-            />
+            <path strokeLinecap="round" strokeLinejoin="round" d="M15.75 19.5 8.25 12l7.5-7.5" />
           </svg>
         </button>
 
@@ -1725,9 +1742,10 @@ export default function WorkflowDesignerPage() {
 
         {/* Right panel toggle */}
         <button
-          onClick={() => setRightPanelOpen(!rightPanelOpen)}
-          className="flex-shrink-0 w-5 bg-gray-100 dark:bg-gray-800 border-l border-gray-200 dark:border-gray-700 flex items-center justify-center hover:bg-gray-200 dark:hover:bg-gray-700 transition-colors"
+          onClick={() => { setRightPanelOpen(!rightPanelOpen); if (!rightPanelOpen) setLeftPanelOpen(false); }}
+          className="absolute right-0 top-1/2 -translate-y-1/2 z-30 lg:relative lg:top-auto lg:right-auto lg:translate-y-0 lg:z-auto flex-shrink-0 w-6 lg:w-5 h-12 lg:h-full bg-gray-100 dark:bg-gray-800 border-l border-gray-200 dark:border-gray-700 flex items-center justify-center hover:bg-gray-200 dark:hover:bg-gray-700 transition-colors rounded-l-lg lg:rounded-none shadow-sm lg:shadow-none"
           title={rightPanelOpen ? "Hide config" : "Show config"}
+          style={rightPanelOpen ? { right: "288px" } : undefined}
         >
           <svg
             className={`w-3 h-3 text-gray-400 transition-transform ${rightPanelOpen ? "" : "rotate-180"}`}
@@ -1736,19 +1754,19 @@ export default function WorkflowDesignerPage() {
             strokeWidth={2}
             stroke="currentColor"
           >
-            <path
-              strokeLinecap="round"
-              strokeLinejoin="round"
-              d="m8.25 4.5 7.5 7.5-7.5 7.5"
-            />
+            <path strokeLinecap="round" strokeLinejoin="round" d="m8.25 4.5 7.5 7.5-7.5 7.5" />
           </svg>
         </button>
 
         {/* ---- Right Panel: Node Configuration ---- */}
         <div
-          className={`flex-shrink-0 bg-white dark:bg-gray-900 border-l border-gray-200 dark:border-gray-800 transition-all duration-300 overflow-hidden ${
-            rightPanelOpen ? "w-72" : "w-0"
-          }`}
+          className={`
+            absolute inset-y-0 right-0 z-20
+            lg:relative lg:inset-auto lg:z-auto lg:flex-shrink-0
+            bg-white dark:bg-gray-900 border-l border-gray-200 dark:border-gray-800
+            transition-all duration-300 overflow-hidden
+            ${rightPanelOpen ? "w-72 shadow-xl lg:shadow-none" : "w-0"}
+          `}
         >
           <div className="w-72 h-full overflow-y-auto">
             <div className="p-4">

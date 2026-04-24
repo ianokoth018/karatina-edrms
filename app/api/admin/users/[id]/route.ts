@@ -39,8 +39,15 @@ export async function GET(
         employeeId: true,
         department: true,
         jobTitle: true,
+        designation: true,
         phone: true,
         isActive: true,
+        mustChangePassword: true,
+        passwordResetExpiresAt: true,
+        mfaEnabled: true,
+        failedLoginAttempts: true,
+        lockedUntil: true,
+        passwordChangedAt: true,
         lastLoginAt: true,
         createdAt: true,
         updatedAt: true,
@@ -98,12 +105,29 @@ export async function PATCH(
 
     const { id } = await params;
     const body = await req.json();
-    const { name, email, department, isActive, roleIds } = body as {
+    const {
+      name,
+      email,
+      department,
+      jobTitle,
+      designation,
+      phone,
+      employeeId,
+      isActive,
+      roleIds,
+      unlock,
+    } = body as {
       name?: string;
       email?: string;
-      department?: string;
+      department?: string | null;
+      jobTitle?: string | null;
+      designation?: string | null;
+      phone?: string | null;
+      employeeId?: string | null;
       isActive?: boolean;
       roleIds?: string[];
+      /** When true, clear lockout + reset failed-attempt counter. */
+      unlock?: boolean;
     };
 
     const existing = await db.user.findUnique({ where: { id } });
@@ -129,15 +153,29 @@ export async function PATCH(
         ...(name !== undefined && { name, displayName: name }),
         ...(email !== undefined && { email }),
         ...(department !== undefined && { department }),
+        ...(jobTitle !== undefined && { jobTitle }),
+        ...(designation !== undefined && { designation }),
+        ...(phone !== undefined && { phone }),
+        ...(employeeId !== undefined && { employeeId }),
         ...(isActive !== undefined && { isActive }),
+        ...(unlock && { failedLoginAttempts: 0, lockedUntil: null }),
       },
       select: {
         id: true,
         name: true,
         displayName: true,
         email: true,
+        employeeId: true,
         department: true,
+        jobTitle: true,
+        designation: true,
+        phone: true,
         isActive: true,
+        mustChangePassword: true,
+        passwordResetExpiresAt: true,
+        mfaEnabled: true,
+        failedLoginAttempts: true,
+        lockedUntil: true,
         lastLoginAt: true,
         createdAt: true,
         roles: {
@@ -164,8 +202,14 @@ export async function PATCH(
           name: true,
           displayName: true,
           email: true,
+          employeeId: true,
           department: true,
+          jobTitle: true,
+          designation: true,
+          phone: true,
           isActive: true,
+          mustChangePassword: true,
+          passwordResetExpiresAt: true,
           lastLoginAt: true,
           createdAt: true,
           roles: {

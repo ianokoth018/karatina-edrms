@@ -3,6 +3,7 @@
 import { use, useState, useEffect, useCallback, useMemo, useRef } from "react";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
+import { useSession } from "next-auth/react";
 
 /* ================================================================== */
 /*  Types                                                              */
@@ -402,6 +403,469 @@ function IconComment({ className = "w-5 h-5" }: { className?: string }) {
     <svg className={className} fill="none" viewBox="0 0 24 24" strokeWidth={1.5} stroke="currentColor">
       <path strokeLinecap="round" strokeLinejoin="round" d="M7.5 8.25h9m-9 3H12m-9.75 1.51c0 1.6 1.123 2.994 2.707 3.227 1.129.166 2.27.293 3.423.379.35.026.67.21.865.501L12 21l2.755-4.133a1.14 1.14 0 0 1 .865-.501 48.172 48.172 0 0 0 3.423-.379c1.584-.233 2.707-1.626 2.707-3.228V6.741c0-1.602-1.123-2.995-2.707-3.228A48.394 48.394 0 0 0 12 3c-2.392 0-4.744.175-7.043.513C3.373 3.746 2.25 5.14 2.25 6.741v6.018Z" />
     </svg>
+  );
+}
+
+function IconPaperclip({ className = "w-5 h-5" }: { className?: string }) {
+  return (
+    <svg className={className} fill="none" viewBox="0 0 24 24" strokeWidth={1.5} stroke="currentColor">
+      <path strokeLinecap="round" strokeLinejoin="round" d="m18.375 12.739-7.693 7.693a4.5 4.5 0 0 1-6.364-6.364l10.94-10.94A3 3 0 1 1 19.5 7.372L8.552 18.32m.009-.01-.01.01m5.699-9.941-7.81 7.81a1.5 1.5 0 0 0 2.112 2.13" />
+    </svg>
+  );
+}
+
+function IconReply({ className = "w-4 h-4" }: { className?: string }) {
+  return (
+    <svg className={className} fill="none" viewBox="0 0 24 24" strokeWidth={2} stroke="currentColor">
+      <path strokeLinecap="round" strokeLinejoin="round" d="M9 15 3 9m0 0 6-6M3 9h12a6 6 0 0 1 0 12h-3" />
+    </svg>
+  );
+}
+
+function IconPencil({ className = "w-4 h-4" }: { className?: string }) {
+  return (
+    <svg className={className} fill="none" viewBox="0 0 24 24" strokeWidth={2} stroke="currentColor">
+      <path strokeLinecap="round" strokeLinejoin="round" d="m16.862 4.487 1.687-1.688a1.875 1.875 0 1 1 2.652 2.652L10.582 16.07a4.5 4.5 0 0 1-1.897 1.13L6 18l.8-2.685a4.5 4.5 0 0 1 1.13-1.897l8.932-8.931Zm0 0L19.5 7.125" />
+    </svg>
+  );
+}
+
+function IconTrash({ className = "w-4 h-4" }: { className?: string }) {
+  return (
+    <svg className={className} fill="none" viewBox="0 0 24 24" strokeWidth={2} stroke="currentColor">
+      <path strokeLinecap="round" strokeLinejoin="round" d="m14.74 9-.346 9m-4.788 0L9.26 9m9.968-3.21c.342.052.682.107 1.022.166m-1.022-.165L18.16 19.673a2.25 2.25 0 0 1-2.244 2.077H8.084a2.25 2.25 0 0 1-2.244-2.077L4.772 5.79m14.456 0a48.108 48.108 0 0 0-3.478-.397m-12 .562c.34-.059.68-.114 1.022-.165m0 0a48.11 48.11 0 0 1 3.478-.397m7.5 0v-.916c0-1.18-.91-2.164-2.09-2.201a51.964 51.964 0 0 0-3.32 0c-1.18.037-2.09 1.022-2.09 2.201v.916m7.5 0a48.667 48.667 0 0 0-7.5 0" />
+    </svg>
+  );
+}
+
+/* ================================================================== */
+/*  Task comment types                                                 */
+/* ================================================================== */
+
+interface CommentAuthor {
+  id: string;
+  name: string;
+  displayName: string | null;
+  email: string;
+}
+
+interface TaskCommentData {
+  id: string;
+  body: string;
+  authorId: string;
+  author: CommentAuthor;
+  parentId: string | null;
+  isInternal: boolean;
+  editedAt: string | null;
+  createdAt: string;
+  replies: TaskCommentData[];
+}
+
+interface TaskAttachmentData {
+  id: string;
+  fileName: string;
+  storagePath: string;
+  mimeType: string;
+  sizeBytes: number;
+  createdAt: string;
+  uploadedBy: { id: string; name: string; displayName: string | null };
+}
+
+/* ================================================================== */
+/*  TaskComments component                                             */
+/* ================================================================== */
+
+function TaskComments({ taskId, currentUserId }: { taskId: string; currentUserId: string }) {
+  const [comments, setComments] = useState<TaskCommentData[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [newBody, setNewBody] = useState("");
+  const [submitting, setSubmitting] = useState(false);
+  const [replyingTo, setReplyingTo] = useState<string | null>(null);
+  const [replyBody, setReplyBody] = useState("");
+  const [editingId, setEditingId] = useState<string | null>(null);
+  const [editBody, setEditBody] = useState("");
+
+  const load = useCallback(async () => {
+    try {
+      const res = await fetch(`/api/workflows/tasks/${taskId}/comments`);
+      if (res.ok) {
+        const data = await res.json();
+        setComments(data.comments ?? []);
+      }
+    } finally {
+      setLoading(false);
+    }
+  }, [taskId]);
+
+  useEffect(() => { load(); }, [load]);
+
+  async function postComment(body: string, parentId?: string) {
+    if (!body.trim()) return;
+    setSubmitting(true);
+    try {
+      const res = await fetch(`/api/workflows/tasks/${taskId}/comments`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ body: body.trim(), parentId }),
+      });
+      if (res.ok) {
+        setNewBody("");
+        setReplyBody("");
+        setReplyingTo(null);
+        await load();
+      }
+    } finally {
+      setSubmitting(false);
+    }
+  }
+
+  async function saveEdit(commentId: string) {
+    if (!editBody.trim()) return;
+    const res = await fetch(`/api/workflows/tasks/${taskId}/comments/${commentId}`, {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ body: editBody.trim() }),
+    });
+    if (res.ok) {
+      setEditingId(null);
+      setEditBody("");
+      await load();
+    }
+  }
+
+  async function deleteComment(commentId: string) {
+    if (!confirm("Delete this comment?")) return;
+    await fetch(`/api/workflows/tasks/${taskId}/comments/${commentId}`, { method: "DELETE" });
+    await load();
+  }
+
+  function CommentBubble({ c, depth = 0 }: { c: TaskCommentData; depth?: number }) {
+    const isDeleted = c.body === "[deleted]";
+    const isOwn = c.authorId === currentUserId;
+    const initials = (c.author.displayName || c.author.name)
+      .split(" ").slice(0, 2).map((w) => w[0]).join("").toUpperCase();
+
+    return (
+      <div className={`flex gap-3 ${depth > 0 ? "ml-8 mt-3" : "mt-4"}`}>
+        {/* Avatar */}
+        <div className="w-7 h-7 rounded-full bg-[#02773b]/10 flex items-center justify-center shrink-0 text-[10px] font-bold text-[#02773b] dark:text-emerald-400 dark:bg-[#02773b]/20">
+          {initials}
+        </div>
+
+        <div className="flex-1 min-w-0">
+          <div className="flex items-center gap-2 mb-1">
+            <span className="text-xs font-semibold text-gray-900 dark:text-gray-100">
+              {c.author.displayName || c.author.name}
+            </span>
+            <span className="text-[10px] text-gray-400 dark:text-gray-500">{timeAgo(c.createdAt)}</span>
+            {c.editedAt && <span className="text-[10px] text-gray-400">(edited)</span>}
+            {c.isInternal && (
+              <span className="text-[10px] font-semibold text-amber-600 dark:text-amber-400 bg-amber-50 dark:bg-amber-950/30 px-1.5 py-0.5 rounded">internal</span>
+            )}
+          </div>
+
+          {editingId === c.id ? (
+            <div className="space-y-2">
+              <textarea
+                value={editBody}
+                onChange={(e) => setEditBody(e.target.value)}
+                rows={2}
+                className="w-full rounded-lg border border-gray-300 dark:border-gray-700 bg-white dark:bg-gray-900 text-sm text-gray-900 dark:text-gray-100 px-3 py-2 focus:outline-none focus:ring-2 focus:ring-[#02773b]/40 resize-none"
+              />
+              <div className="flex gap-2">
+                <button
+                  onClick={() => saveEdit(c.id)}
+                  className="text-xs font-semibold text-white bg-[#02773b] hover:bg-[#025f2f] px-3 py-1 rounded-lg transition-colors"
+                >Save</button>
+                <button
+                  onClick={() => setEditingId(null)}
+                  className="text-xs font-medium text-gray-500 hover:text-gray-700 dark:hover:text-gray-300 px-2 py-1 rounded-lg transition-colors"
+                >Cancel</button>
+              </div>
+            </div>
+          ) : (
+            <p className={`text-sm leading-relaxed ${isDeleted ? "text-gray-400 italic" : "text-gray-700 dark:text-gray-300"}`}>
+              {c.body}
+            </p>
+          )}
+
+          {!isDeleted && editingId !== c.id && (
+            <div className="flex items-center gap-3 mt-1.5">
+              {depth === 0 && (
+                <button
+                  onClick={() => { setReplyingTo(c.id); setReplyBody(""); }}
+                  className="inline-flex items-center gap-1 text-[11px] text-gray-400 hover:text-[#02773b] dark:hover:text-emerald-400 transition-colors"
+                >
+                  <IconReply className="w-3 h-3" /> Reply
+                </button>
+              )}
+              {isOwn && (
+                <>
+                  <button
+                    onClick={() => { setEditingId(c.id); setEditBody(c.body); }}
+                    className="inline-flex items-center gap-1 text-[11px] text-gray-400 hover:text-[#02773b] dark:hover:text-emerald-400 transition-colors"
+                  >
+                    <IconPencil className="w-3 h-3" /> Edit
+                  </button>
+                  <button
+                    onClick={() => deleteComment(c.id)}
+                    className="inline-flex items-center gap-1 text-[11px] text-gray-400 hover:text-red-500 transition-colors"
+                  >
+                    <IconTrash className="w-3 h-3" /> Delete
+                  </button>
+                </>
+              )}
+            </div>
+          )}
+
+          {/* Inline reply box */}
+          {replyingTo === c.id && (
+            <div className="mt-3 space-y-2">
+              <textarea
+                value={replyBody}
+                onChange={(e) => setReplyBody(e.target.value)}
+                rows={2}
+                placeholder="Write a reply..."
+                className="w-full rounded-lg border border-gray-300 dark:border-gray-700 bg-white dark:bg-gray-900 text-sm text-gray-900 dark:text-gray-100 px-3 py-2 focus:outline-none focus:ring-2 focus:ring-[#02773b]/40 resize-none"
+              />
+              <div className="flex gap-2">
+                <button
+                  disabled={submitting || !replyBody.trim()}
+                  onClick={() => postComment(replyBody, c.id)}
+                  className="text-xs font-semibold text-white bg-[#02773b] hover:bg-[#025f2f] disabled:opacity-50 px-3 py-1 rounded-lg transition-colors"
+                >Reply</button>
+                <button
+                  onClick={() => setReplyingTo(null)}
+                  className="text-xs font-medium text-gray-500 hover:text-gray-700 dark:hover:text-gray-300 px-2 py-1 rounded-lg transition-colors"
+                >Cancel</button>
+              </div>
+            </div>
+          )}
+
+          {/* Nested replies */}
+          {c.replies?.map((reply) => (
+            <CommentBubble key={reply.id} c={reply} depth={depth + 1} />
+          ))}
+        </div>
+      </div>
+    );
+  }
+
+  return (
+    <div className="rounded-2xl border border-gray-200 dark:border-gray-800 bg-white dark:bg-gray-950 shadow-sm overflow-hidden">
+      <div className="px-6 py-4 border-b border-gray-200 dark:border-gray-800 flex items-center justify-between">
+        <h2 className="text-sm font-semibold text-gray-900 dark:text-gray-100 flex items-center gap-2">
+          <IconComment className="w-4 h-4 text-[#02773b] dark:text-emerald-400" />
+          Comments
+          {comments.length > 0 && (
+            <span className="ml-1 px-1.5 py-0.5 rounded-full text-[10px] font-bold bg-gray-100 dark:bg-gray-800 text-gray-600 dark:text-gray-400">
+              {comments.length}
+            </span>
+          )}
+        </h2>
+      </div>
+
+      <div className="px-6 py-4 space-y-0">
+        {loading ? (
+          <div className="animate-pulse space-y-3 py-4">
+            {[1, 2].map((i) => (
+              <div key={i} className="flex gap-3">
+                <div className="w-7 h-7 rounded-full bg-gray-200 dark:bg-gray-800 shrink-0" />
+                <div className="flex-1 space-y-1.5">
+                  <div className="h-3 w-24 bg-gray-200 dark:bg-gray-800 rounded" />
+                  <div className="h-4 w-full bg-gray-100 dark:bg-gray-900 rounded" />
+                </div>
+              </div>
+            ))}
+          </div>
+        ) : comments.length === 0 ? (
+          <p className="text-sm text-gray-400 dark:text-gray-500 py-4 text-center">No comments yet.</p>
+        ) : (
+          comments.map((c) => <CommentBubble key={c.id} c={c} />)
+        )}
+
+        {/* New comment input */}
+        <div className="mt-5 pt-4 border-t border-gray-100 dark:border-gray-800 space-y-2">
+          <textarea
+            value={newBody}
+            onChange={(e) => setNewBody(e.target.value)}
+            rows={2}
+            placeholder="Add a comment..."
+            className="w-full rounded-lg border border-gray-300 dark:border-gray-700 bg-white dark:bg-gray-900 text-sm text-gray-900 dark:text-gray-100 px-3 py-2 focus:outline-none focus:ring-2 focus:ring-[#02773b]/40 resize-none placeholder-gray-400 dark:placeholder-gray-500"
+          />
+          <div className="flex justify-end">
+            <button
+              disabled={submitting || !newBody.trim()}
+              onClick={() => postComment(newBody)}
+              className="inline-flex items-center gap-2 px-4 py-2 rounded-xl text-sm font-semibold text-white bg-[#02773b] hover:bg-[#025f2f] disabled:opacity-50 shadow-sm transition-colors"
+            >
+              {submitting ? <IconSpinner className="w-4 h-4" /> : <IconComment className="w-4 h-4" />}
+              Post
+            </button>
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+/* ================================================================== */
+/*  TaskAttachments component                                          */
+/* ================================================================== */
+
+function TaskAttachments({ taskId, currentUserId }: { taskId: string; currentUserId: string }) {
+  const [attachments, setAttachments] = useState<TaskAttachmentData[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [uploading, setUploading] = useState(false);
+  const [uploadError, setUploadError] = useState<string | null>(null);
+  const fileInputRef = useRef<HTMLInputElement>(null);
+
+  const load = useCallback(async () => {
+    try {
+      const res = await fetch(`/api/workflows/tasks/${taskId}/attachments`);
+      if (res.ok) {
+        const data = await res.json();
+        setAttachments(data.attachments ?? []);
+      }
+    } finally {
+      setLoading(false);
+    }
+  }, [taskId]);
+
+  useEffect(() => { load(); }, [load]);
+
+  async function handleUpload(e: React.ChangeEvent<HTMLInputElement>) {
+    const file = e.target.files?.[0];
+    if (!file) return;
+
+    if (file.size > 25 * 1024 * 1024) {
+      setUploadError("File must be under 25 MB.");
+      return;
+    }
+
+    setUploading(true);
+    setUploadError(null);
+
+    const fd = new FormData();
+    fd.append("file", file);
+
+    try {
+      const res = await fetch(`/api/workflows/tasks/${taskId}/attachments`, {
+        method: "POST",
+        body: fd,
+      });
+      if (!res.ok) {
+        const data = await res.json().catch(() => ({}));
+        setUploadError(data.error || "Upload failed");
+      } else {
+        await load();
+      }
+    } catch {
+      setUploadError("Upload failed");
+    } finally {
+      setUploading(false);
+      if (fileInputRef.current) fileInputRef.current.value = "";
+    }
+  }
+
+  async function handleDelete(attachId: string, fileName: string) {
+    if (!confirm(`Delete "${fileName}"?`)) return;
+    await fetch(`/api/workflows/tasks/${taskId}/attachments/${attachId}`, { method: "DELETE" });
+    await load();
+  }
+
+  function fileIcon(mime: string) {
+    if (mime === "application/pdf") return "📄";
+    if (mime.startsWith("image/")) return "🖼️";
+    if (mime.includes("word")) return "📝";
+    if (mime.includes("sheet") || mime.includes("excel")) return "📊";
+    return "📎";
+  }
+
+  return (
+    <div className="rounded-2xl border border-gray-200 dark:border-gray-800 bg-white dark:bg-gray-950 shadow-sm overflow-hidden">
+      <div className="px-6 py-4 border-b border-gray-200 dark:border-gray-800 flex items-center justify-between">
+        <h2 className="text-sm font-semibold text-gray-900 dark:text-gray-100 flex items-center gap-2">
+          <IconPaperclip className="w-4 h-4 text-[#02773b] dark:text-emerald-400" />
+          Attachments
+          {attachments.length > 0 && (
+            <span className="ml-1 px-1.5 py-0.5 rounded-full text-[10px] font-bold bg-gray-100 dark:bg-gray-800 text-gray-600 dark:text-gray-400">
+              {attachments.length}
+            </span>
+          )}
+        </h2>
+        <button
+          onClick={() => fileInputRef.current?.click()}
+          disabled={uploading}
+          className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-semibold text-[#02773b] bg-[#02773b]/10 hover:bg-[#02773b]/20 dark:text-emerald-400 dark:bg-[#02773b]/20 dark:hover:bg-[#02773b]/30 transition-colors disabled:opacity-50"
+        >
+          {uploading ? <IconSpinner className="w-3.5 h-3.5" /> : <IconPaperclip className="w-3.5 h-3.5" />}
+          Upload
+        </button>
+        <input ref={fileInputRef} type="file" className="sr-only" onChange={handleUpload} />
+      </div>
+
+      <div className="px-6 py-4">
+        {uploadError && (
+          <div className="mb-3 rounded-lg bg-red-50 dark:bg-red-950/30 border border-red-200 dark:border-red-800 px-3 py-2">
+            <p className="text-sm text-red-700 dark:text-red-400">{uploadError}</p>
+          </div>
+        )}
+
+        {loading ? (
+          <div className="animate-pulse space-y-2 py-2">
+            {[1, 2].map((i) => (
+              <div key={i} className="h-10 bg-gray-100 dark:bg-gray-900 rounded-lg" />
+            ))}
+          </div>
+        ) : attachments.length === 0 ? (
+          <div
+            onClick={() => fileInputRef.current?.click()}
+            className="flex flex-col items-center justify-center py-8 border-2 border-dashed border-gray-200 dark:border-gray-700 rounded-xl cursor-pointer hover:border-[#02773b]/40 transition-colors"
+          >
+            <IconPaperclip className="w-8 h-8 text-gray-300 dark:text-gray-600 mb-2" />
+            <p className="text-sm text-gray-500 dark:text-gray-400">Drop files or click to upload</p>
+            <p className="text-xs text-gray-400 dark:text-gray-500 mt-1">Max 25 MB per file</p>
+          </div>
+        ) : (
+          <ul className="space-y-2">
+            {attachments.map((a) => (
+              <li
+                key={a.id}
+                className="flex items-center gap-3 rounded-xl border border-gray-100 dark:border-gray-800 bg-gray-50 dark:bg-gray-900/50 px-3 py-2.5 group"
+              >
+                <span className="text-lg shrink-0">{fileIcon(a.mimeType)}</span>
+                <div className="flex-1 min-w-0">
+                  <p className="text-sm font-medium text-gray-900 dark:text-gray-100 truncate">{a.fileName}</p>
+                  <p className="text-[10px] text-gray-400 dark:text-gray-500">
+                    {formatBytes(a.sizeBytes)} &middot; {(a.uploadedBy.displayName || a.uploadedBy.name)} &middot; {timeAgo(a.createdAt)}
+                  </p>
+                </div>
+                <div className="flex items-center gap-1.5 shrink-0 opacity-0 group-hover:opacity-100 transition-opacity">
+                  <a
+                    href={`/api/workflows/tasks/${taskId}/attachments/${a.id}`}
+                    download={a.fileName}
+                    className="p-1.5 rounded-lg text-gray-400 hover:text-[#02773b] hover:bg-[#02773b]/10 transition-colors"
+                    title="Download"
+                  >
+                    <IconDownload className="w-3.5 h-3.5" />
+                  </a>
+                  {a.uploadedBy.id === currentUserId && (
+                    <button
+                      onClick={() => handleDelete(a.id, a.fileName)}
+                      className="p-1.5 rounded-lg text-gray-400 hover:text-red-500 hover:bg-red-50 dark:hover:bg-red-950/30 transition-colors"
+                      title="Delete"
+                    >
+                      <IconTrash className="w-3.5 h-3.5" />
+                    </button>
+                  )}
+                </div>
+              </li>
+            ))}
+          </ul>
+        )}
+      </div>
+    </div>
   );
 }
 
@@ -1136,6 +1600,8 @@ export default function WorkflowTaskExecutionPage({
 }) {
   const { id } = use(params);
   const router = useRouter();
+  const { data: session } = useSession();
+  const currentUserId = session?.user?.id ?? "";
 
   /* ---- Core state ---- */
   const [task, setTask] = useState<WorkflowTask | null>(null);
@@ -1154,6 +1620,9 @@ export default function WorkflowTaskExecutionPage({
 
   /* ---- Action modal ---- */
   const [activeAction, setActiveAction] = useState<ActionButton | null>(null);
+
+  /* ---- Split layout tab ---- */
+  const [splitTab, setSplitTab] = useState<"form" | "comments" | "attachments">("form");
 
   /* ---- Success state ---- */
   const [actionSuccess, setActionSuccess] = useState<string | null>(null);
@@ -1454,6 +1923,10 @@ export default function WorkflowTaskExecutionPage({
               </div>
             )}
           </div>
+
+          {/* Comments & Attachments */}
+          <TaskComments taskId={id} currentUserId={currentUserId} />
+          <TaskAttachments taskId={id} currentUserId={currentUserId} />
         </div>
 
         {/* Action modal */}
@@ -1613,6 +2086,10 @@ export default function WorkflowTaskExecutionPage({
             </div>
           )}
 
+          {/* Comments & Attachments */}
+          <TaskComments taskId={id} currentUserId={currentUserId} />
+          <TaskAttachments taskId={id} currentUserId={currentUserId} />
+
           {/* Action buttons (sticky footer) */}
           {isPending && (
             <div className="sticky bottom-0 z-10 -mx-4 sm:-mx-6 px-4 sm:px-6 py-4 bg-gray-50/80 dark:bg-gray-950/80 backdrop-blur-md border-t border-gray-200 dark:border-gray-800">
@@ -1744,50 +2221,87 @@ export default function WorkflowTaskExecutionPage({
 
       {/* Split panels */}
       <div className="flex-1 flex min-h-0">
-        {/* Left panel: Form fields (40%) */}
+        {/* Left panel: Tabbed (40%) */}
         <div className="w-[40%] min-w-[320px] max-w-[520px] border-r border-gray-200 dark:border-gray-800 bg-white dark:bg-gray-950 flex flex-col min-h-0">
-          {/* Form header */}
-          <div className="shrink-0 px-5 py-3 border-b border-gray-200 dark:border-gray-800">
-            <h2 className="text-sm font-semibold text-gray-900 dark:text-gray-100 flex items-center gap-2">
-              <IconDocument className="w-4 h-4 text-[#02773b] dark:text-emerald-400" />
-              {formTemplate?.name ?? "Document Details"}
-            </h2>
-            {formTemplate?.description && (
-              <p className="text-xs text-gray-500 dark:text-gray-400 mt-0.5">{formTemplate.description}</p>
-            )}
+          {/* Tab bar */}
+          <div className="shrink-0 flex border-b border-gray-200 dark:border-gray-800 px-2 pt-2 gap-1">
+            {(["form", "comments", "attachments"] as const).map((tab) => (
+              <button
+                key={tab}
+                onClick={() => setSplitTab(tab)}
+                className={`flex items-center gap-1.5 px-3 py-2 rounded-t-lg text-xs font-semibold transition-colors border-b-2 -mb-px ${
+                  splitTab === tab
+                    ? "border-[#02773b] text-[#02773b] dark:text-emerald-400 bg-[#02773b]/5"
+                    : "border-transparent text-gray-500 dark:text-gray-400 hover:text-gray-900 dark:hover:text-gray-100"
+                }`}
+              >
+                {tab === "form" && <IconDocument className="w-3.5 h-3.5" />}
+                {tab === "comments" && <IconComment className="w-3.5 h-3.5" />}
+                {tab === "attachments" && <IconPaperclip className="w-3.5 h-3.5" />}
+                {tab.charAt(0).toUpperCase() + tab.slice(1)}
+              </button>
+            ))}
           </div>
 
-          {/* Fields */}
-          <div className="flex-1 overflow-y-auto px-5 py-4 space-y-4">
-            {visibleFields.length === 0 ? (
-              <div className="text-center py-8">
-                <IconDocument className="w-10 h-10 text-gray-200 dark:text-gray-700 mx-auto mb-3" />
-                <p className="text-sm text-gray-500 dark:text-gray-400">
-                  No form fields configured for this step.
-                </p>
+          {/* Tab content */}
+          {splitTab === "form" && (
+            <>
+              {/* Form header */}
+              <div className="shrink-0 px-5 py-3 border-b border-gray-200 dark:border-gray-800">
+                <h2 className="text-sm font-semibold text-gray-900 dark:text-gray-100 flex items-center gap-2">
+                  <IconDocument className="w-4 h-4 text-[#02773b] dark:text-emerald-400" />
+                  {formTemplate?.name ?? "Document Details"}
+                </h2>
+                {formTemplate?.description && (
+                  <p className="text-xs text-gray-500 dark:text-gray-400 mt-0.5">{formTemplate.description}</p>
+                )}
               </div>
-            ) : (
-              visibleFields.map(({ field, visibility }) => {
-                if (visibility === "editable" && isPending) {
-                  return (
-                    <FormFieldEditable
-                      key={field.name}
-                      field={field}
-                      value={editValues[field.name] ?? ""}
-                      onChange={(val) => handleEditChange(field.name, val)}
-                    />
-                  );
-                }
-                return (
-                  <FormFieldDisplay
-                    key={field.name}
-                    field={field}
-                    value={fieldValues[field.name]}
-                  />
-                );
-              })
-            )}
-          </div>
+
+              {/* Fields */}
+              <div className="flex-1 overflow-y-auto px-5 py-4 space-y-4">
+                {visibleFields.length === 0 ? (
+                  <div className="text-center py-8">
+                    <IconDocument className="w-10 h-10 text-gray-200 dark:text-gray-700 mx-auto mb-3" />
+                    <p className="text-sm text-gray-500 dark:text-gray-400">
+                      No form fields configured for this step.
+                    </p>
+                  </div>
+                ) : (
+                  visibleFields.map(({ field, visibility }) => {
+                    if (visibility === "editable" && isPending) {
+                      return (
+                        <FormFieldEditable
+                          key={field.name}
+                          field={field}
+                          value={editValues[field.name] ?? ""}
+                          onChange={(val) => handleEditChange(field.name, val)}
+                        />
+                      );
+                    }
+                    return (
+                      <FormFieldDisplay
+                        key={field.name}
+                        field={field}
+                        value={fieldValues[field.name]}
+                      />
+                    );
+                  })
+                )}
+              </div>
+            </>
+          )}
+
+          {splitTab === "comments" && (
+            <div className="flex-1 overflow-y-auto px-5 py-4">
+              <TaskComments taskId={id} currentUserId={currentUserId} />
+            </div>
+          )}
+
+          {splitTab === "attachments" && (
+            <div className="flex-1 overflow-y-auto px-5 py-4">
+              <TaskAttachments taskId={id} currentUserId={currentUserId} />
+            </div>
+          )}
 
           {/* Action buttons at bottom of left panel */}
           {isPending && (

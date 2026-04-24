@@ -650,7 +650,7 @@ export default function WorkflowsPage() {
   /* ================================================================ */
 
   return (
-    <div className="p-4 sm:p-6 space-y-5 max-w-[1440px] mx-auto">
+    <div className="p-4 sm:p-6 space-y-5">
       {/* ---- Header ---- */}
       <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-4">
         <div>

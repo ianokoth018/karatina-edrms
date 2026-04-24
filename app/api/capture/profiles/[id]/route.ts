@@ -94,6 +94,21 @@ export async function PATCH(
       "duplicateAction",
       "autoWorkflow",
       "workflowTemplateId",
+      "sourceType",
+      "imapHost",
+      "imapPort",
+      "imapUser",
+      "imapPassword",
+      "imapFolder",
+      "imapSenderFilter",
+      "imapSubjectFilter",
+      "remoteHost",
+      "remotePort",
+      "remoteUser",
+      "remotePassword",
+      "remotePath",
+      "remotePollInterval",
+      "remoteDeleteAfterCopy",
     ] as const;
 
     const updateData: Record<string, unknown> = {};

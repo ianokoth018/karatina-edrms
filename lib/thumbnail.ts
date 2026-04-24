@@ -4,7 +4,12 @@ import * as fs from "fs/promises";
 import * as path from "path";
 import * as os from "os";
 import { logger } from "@/lib/logger";
-import pdfParse from "pdf-parse";
+// pdf-parse v2 ships ESM without a default export — import the namespace
+// and pick whichever export is callable.
+import * as pdfParseNs from "pdf-parse";
+const pdfParse = (
+  (pdfParseNs as unknown as { default?: unknown }).default ?? pdfParseNs
+) as (data: Buffer) => Promise<{ text: string; numpages: number }>;
 
 const execFileAsync = promisify(execFile);
 

@@ -41,7 +41,9 @@ export async function GET() {
         db.workflowInstance
           .count({
             where: {
-              document: { documentType: "MEMO" },
+              // Match both legacy "MEMO" and the current "Internal Memo"
+              // casefolder type used when memos are filed via the casefolder.
+              document: { documentType: { in: ["MEMO", "Internal Memo"] } },
               OR: [
                 { initiatedById: userId },
                 { tasks: { some: { assigneeId: userId } } },
@@ -54,7 +56,7 @@ export async function GET() {
             where: {
               assigneeId: userId,
               status: "PENDING",
-              instance: { document: { documentType: "MEMO" } },
+              instance: { document: { documentType: { in: ["MEMO", "Internal Memo"] } } },
             },
           })
           .catch(() => 0),

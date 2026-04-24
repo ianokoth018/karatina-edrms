@@ -23,8 +23,10 @@ interface TaskNodeDataExtended {
     | "initiator"
     | "initiator_manager"
     | "round_robin"
-    | "least_loaded";
+    | "least_loaded"
+    | "pool";
   assigneeValue?: string;
+  poolId?: string;
   escalationDays?: number;
   escalationTo?: string;
   slaHours?: number;
@@ -69,7 +71,15 @@ export interface SystemNodeData {
 export interface ParallelNodeData {
   label: string;
   gatewayType: "fork" | "join";
-  joinRule?: "all" | "any";
+  joinRule?: "all" | "any" | "quorum";
+  quorumCount?: number;
+}
+
+export interface WaitSignalNodeData {
+  label: string;
+  signalName: string;
+  description?: string;
+  timeoutHours?: number;
 }
 
 /* ------------------------------------------------------------------ */
@@ -344,6 +354,21 @@ const icons = {
       />
     </svg>
   ),
+  wait_signal: (
+    <svg
+      className="w-4 h-4 text-orange-600 dark:text-orange-400"
+      fill="none"
+      viewBox="0 0 24 24"
+      strokeWidth={2}
+      stroke="currentColor"
+    >
+      <path
+        strokeLinecap="round"
+        strokeLinejoin="round"
+        d="M14.857 17.082a23.848 23.848 0 0 0 5.454-1.31A8.967 8.967 0 0 1 18 9.75V9A6 6 0 0 0 6 9v.75a8.967 8.967 0 0 1-2.312 6.022c1.733.64 3.56 1.085 5.455 1.31m5.714 0a24.255 24.255 0 0 1-5.714 0m5.714 0a3 3 0 1 1-5.714 0"
+      />
+    </svg>
+  ),
 };
 
 const iconBgByType: Record<string, string> = {
@@ -356,6 +381,7 @@ const iconBgByType: Record<string, string> = {
   subprocess: "bg-cyan-100 dark:bg-cyan-900/40",
   system: "bg-indigo-100 dark:bg-indigo-900/40",
   parallel: "bg-teal-100 dark:bg-teal-900/40",
+  wait_signal: "bg-orange-100 dark:bg-orange-900/40",
 };
 
 const nodeLabels: Record<string, { name: string; subtitle: string }> = {
@@ -368,6 +394,7 @@ const nodeLabels: Record<string, { name: string; subtitle: string }> = {
   subprocess: { name: "Subprocess Node", subtitle: "Nested workflow" },
   system: { name: "System Node", subtitle: "Automated action" },
   parallel: { name: "Parallel Gateway", subtitle: "Fork or join paths" },
+  wait_signal: { name: "Wait for Signal", subtitle: "Pause until external trigger" },
 };
 
 /* ================================================================== */
@@ -1123,6 +1150,7 @@ export default function NodeConfigPanel({
                 </option>
                 <option value="round_robin">Round Robin</option>
                 <option value="least_loaded">Least Loaded</option>
+                <option value="pool">Pool / Shared Queue</option>
               </select>
               <HelpText>
                 Determines how the task is assigned at runtime.
@@ -1156,6 +1184,22 @@ export default function NodeConfigPanel({
                   }
                   className={inputCls}
                 />
+              </Field>
+            )}
+
+            {data.assigneeRule === "pool" && (
+              <Field>
+                <Label>Pool Name</Label>
+                <input
+                  type="text"
+                  value={data.assigneeValue ?? ""}
+                  onChange={(e) => updateField("assigneeValue", e.target.value)}
+                  placeholder="e.g. Legal Review Queue"
+                  className={inputCls}
+                />
+                <HelpText>
+                  The exact name of the WorkflowPool. Tasks land in this shared queue and any pool member can claim and complete them.
+                </HelpText>
               </Field>
             )}
 
@@ -2366,15 +2410,118 @@ export default function NodeConfigPanel({
                 <option value="any">
                   Proceed when any branch completes
                 </option>
+                <option value="quorum">
+                  Quorum — N of M branches must complete
+                </option>
               </select>
               <HelpText>
                 {data.joinRule === "any"
                   ? "The workflow continues as soon as the first branch finishes. Other branches are cancelled."
-                  : "The workflow waits until every incoming branch has completed before proceeding."}
+                  : data.joinRule === "quorum"
+                    ? "The workflow proceeds once the required number of branches have completed."
+                    : "The workflow waits until every incoming branch has completed before proceeding."}
               </HelpText>
             </Field>
+
+            {data.joinRule === "quorum" && (
+              <Field>
+                <Label>Quorum Count (N)</Label>
+                <input
+                  type="number"
+                  min={1}
+                  value={(data.quorumCount as number) ?? 2}
+                  onChange={(e) =>
+                    updateField("quorumCount", Math.max(1, Number(e.target.value)))
+                  }
+                  className={inputCls}
+                />
+                <HelpText>
+                  How many branches must complete before the workflow proceeds. Must be ≤ the number of incoming branches.
+                </HelpText>
+              </Field>
+            )}
           </>
         )}
+
+        <DeleteFooter />
+      </div>
+    );
+  }
+
+  /* ================================================================ */
+  /*  WAIT_SIGNAL NODE                                                 */
+  /* ================================================================ */
+  if (nodeType === "wait_signal") {
+    const data = node.data as WaitSignalNodeData & Record<string, unknown>;
+    return (
+      <div className="space-y-4">
+        <PanelHeader />
+
+        <div className="p-3 bg-orange-50 dark:bg-orange-950/20 rounded-lg border border-orange-200 dark:border-orange-800">
+          <p className="text-xs text-orange-700 dark:text-orange-400 leading-relaxed">
+            <span className="font-semibold">Wait for Signal:</span> The workflow pauses here until an external system (or API call) sends the named signal. Use for integrations, approvals from external portals, or webhook callbacks.
+          </p>
+        </div>
+
+        <Field>
+          <Label>Label</Label>
+          <input
+            type="text"
+            value={(data.label as string) ?? ""}
+            onChange={(e) => updateField("label", e.target.value)}
+            placeholder="e.g. Await Payment Confirmation"
+            className={inputCls}
+          />
+        </Field>
+
+        <Field>
+          <Label>Signal Name</Label>
+          <input
+            type="text"
+            value={(data.signalName as string) ?? ""}
+            onChange={(e) => updateField("signalName", e.target.value.trim())}
+            placeholder="e.g. payment_confirmed"
+            className={inputCls}
+          />
+          <HelpText>
+            Snake_case identifier for the signal. External systems POST to{" "}
+            <code className="text-[11px] bg-gray-100 dark:bg-gray-800 px-1 py-0.5 rounded">
+              /api/workflows/signals/&#123;instanceId&#125;:&#123;nodeId&#125;
+            </code>{" "}
+            to fire it.
+          </HelpText>
+        </Field>
+
+        <Field>
+          <Label>Description</Label>
+          <textarea
+            rows={2}
+            value={(data.description as string) ?? ""}
+            onChange={(e) => updateField("description", e.target.value)}
+            placeholder="Describe what this signal represents..."
+            className={`${inputCls} resize-none`}
+          />
+        </Field>
+
+        <Field>
+          <Label>Timeout (hours)</Label>
+          <input
+            type="number"
+            min={0}
+            value={(data.timeoutHours as number) ?? ""}
+            onChange={(e) =>
+              updateField(
+                "timeoutHours",
+                e.target.value === "" ? undefined : Math.max(0, Number(e.target.value))
+              )
+            }
+            placeholder="Leave blank for no timeout"
+            className={inputCls}
+          />
+          <HelpText>
+            If set, the workflow will auto-advance (or fail) after this many hours without receiving the signal. Leave blank to wait indefinitely.
+          </HelpText>
+        </Field>
 
         <DeleteFooter />
       </div>

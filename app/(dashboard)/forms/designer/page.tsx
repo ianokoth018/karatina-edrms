@@ -780,6 +780,7 @@ function FormDesignerInner() {
                   {field.isAggregationKey && <span className="px-1.5 py-0.5 text-[10px] font-medium bg-[#dd9f42]/10 text-[#dd9f42] rounded">Key</span>}
                   {field.usedInTitle && <span className="px-1.5 py-0.5 text-[10px] font-medium bg-[#02773b]/10 text-[#02773b] rounded">Title</span>}
                   {field.condition && <span className="px-1.5 py-0.5 text-[10px] font-medium bg-amber-50 dark:bg-amber-950/30 text-amber-600 rounded">Cond</span>}
+                  {field.hidden && <span className="px-1.5 py-0.5 text-[10px] font-medium bg-gray-100 dark:bg-gray-800 text-gray-400 rounded">Hidden</span>}
                 </div>
                 <div className="flex items-center gap-2 mt-0.5">
                   <span className="text-[10px] text-gray-400 font-mono truncate">{field.name}</span>
@@ -1504,6 +1505,16 @@ function PropertiesPanel({
             checked={!!field.readOnly}
             onChange={(v) => onUpdate({ readOnly: v })}
           />
+          <PropCheckbox
+            label="Hide on layout"
+            checked={!!field.hidden}
+            onChange={(v) => onUpdate({ hidden: v })}
+          />
+          {field.hidden && (
+            <p className="text-[10px] text-gray-400 -mt-1 ml-6">
+              This field won&apos;t be shown when viewing or editing a record
+            </p>
+          )}
 
           {/* Text-specific validation */}
           {isTextLike && (
@@ -2258,7 +2269,8 @@ function renderPreviewField(
         <div className="rounded-lg border-2 border-dashed border-gray-300 dark:border-gray-600 p-4 text-center text-sm text-gray-400">Click or drag to upload</div>
       ) : field.type === "table" ? (
         <div className="border border-gray-200 dark:border-gray-700 rounded-lg overflow-hidden">
-          <table className="w-full text-sm">
+          <div className="overflow-x-auto">
+              <table className="w-full text-sm">
             <thead><tr className="bg-gray-50 dark:bg-gray-800">{field.tableColumns?.map((c) => <th key={c.name} className="px-3 py-2 text-left text-xs font-medium text-gray-500">{c.label}</th>)}</tr></thead>
             <tbody>
               {(tableRows[field.name] || [{}]).map((row, ri) => (
@@ -2278,6 +2290,7 @@ function renderPreviewField(
               ))}
             </tbody>
           </table>
+              </div>
           <button type="button" onClick={() => setTableRows((prev) => ({ ...prev, [field.name]: [...(prev[field.name] || [{}]), {}] }))} className="w-full py-1.5 text-xs text-[#02773b] hover:bg-[#02773b]/5 transition-colors">+ Add Row</button>
         </div>
       ) : (
@@ -2562,7 +2575,8 @@ function PreviewMode({
 
                       {field.type === "table" && (
                         <div className="border border-gray-300 dark:border-gray-600 rounded-lg overflow-hidden">
-                          <table className="w-full text-sm">
+                          <div className="overflow-x-auto">
+              <table className="w-full text-sm">
                             <thead>
                               <tr className="bg-gray-50 dark:bg-gray-800">
                                 {(field.tableColumns ?? []).map((col) => (
@@ -2608,6 +2622,7 @@ function PreviewMode({
                               ))}
                             </tbody>
                           </table>
+              </div>
                           <div className="px-3 py-2 bg-gray-50 dark:bg-gray-800/50">
                             <button
                               type="button"

@@ -1,11 +1,11 @@
 import { NextRequest, NextResponse } from "next/server";
 import { auth } from "@/lib/auth";
 import { db } from "@/lib/db";
-import { decryptFileToBuffer } from "@/lib/encryption";
+import { createDecryptStream } from "@/lib/encryption";
 import { getEffectiveDocumentPermissions } from "@/lib/document-permissions";
-import { processFileOcr } from "@/lib/ocr";
 import { writeAudit } from "@/lib/audit";
 import { logger } from "@/lib/logger";
+import { applyWatermark } from "@/lib/watermark";
 import path from "path";
 import fs from "fs/promises";
 
@@ -54,7 +54,7 @@ export async function GET(req: NextRequest) {
     // Look up the DocumentFile record to get encryption IV/tag
     const docFile = await db.documentFile.findFirst({
       where: { storagePath: filePath },
-      select: { encryptionIv: true, encryptionTag: true, fileName: true, documentId: true },
+      select: { encryptionIv: true, encryptionTag: true, fileName: true, documentId: true, renditionPath: true },
     });
 
     // If the file isn't in the DB, return 404 to avoid leaking existence.
@@ -82,20 +82,21 @@ export async function GET(req: NextRequest) {
       return new NextResponse("You do not have download permission for this file", { status: 403 });
     }
 
-    // Decrypt the file (handles both encrypted and unencrypted legacy files)
-    const buffer = await decryptFileToBuffer(
-      absolutePath,
-      docFile.encryptionIv ?? null,
-      docFile.encryptionTag ?? null
-    );
+    const wantRendition = req.nextUrl.searchParams.get("rendition") === "1";
+    const wantWatermark = req.nextUrl.searchParams.get("watermark") === "1";
 
-    const ext = path.extname(absolutePath).slice(1).toLowerCase();
-    const contentType = MIME_MAP[ext] ?? "application/octet-stream";
+    // If caller wants rendition, resolve the rendition path
+    let servePath = absolutePath;
+    let serveStoragePath = filePath;
+    if (wantRendition && docFile.renditionPath) {
+      servePath = path.join(process.cwd(), docFile.renditionPath);
+      serveStoragePath = docFile.renditionPath;
+    }
+
+    const ext = path.extname(servePath).slice(1).toLowerCase();
+    const contentType = wantRendition ? "application/pdf" : (MIME_MAP[ext] ?? "application/octet-stream");
     const fileName = docFile.fileName ?? path.basename(absolutePath);
 
-    // Audit the view/download.  Records-management systems intentionally over-log;
-    // this may include byte-range re-requests from the PDF viewer but each hit
-    // still represents a real access event worth preserving.
     const ipAddress =
       req.headers.get("x-forwarded-for") ?? req.headers.get("x-real-ip") ?? undefined;
     const userAgent = req.headers.get("user-agent") ?? undefined;
@@ -106,24 +107,85 @@ export async function GET(req: NextRequest) {
       resourceId: docFile.documentId,
       ipAddress: ipAddress ?? undefined,
       userAgent: userAgent ?? undefined,
-      metadata: {
-        path: filePath,
-        forceDownload,
-        mimeType: contentType,
-        fileName,
-      },
+      metadata: { path: filePath, forceDownload, mimeType: contentType, fileName },
     });
 
-    return new NextResponse(new Uint8Array(buffer), {
-      status: 200,
-      headers: {
-        "Content-Type": contentType,
-        "Content-Length": String(buffer.length),
+    // Watermarking requires buffering the whole PDF in memory.
+    // For non-watermarked or non-PDF files, stream directly (no RAM overhead).
+    const isPdfServe = contentType === "application/pdf";
+    const needsBuffer = wantWatermark && isPdfServe;
+
+    const { stat } = await import("fs/promises");
+    const fileStat = await stat(servePath).catch(() => null);
+
+    // Resolve encryption keys — rendition files are not encrypted (LibreOffice output)
+    const useEncryption = !wantRendition && !!docFile.encryptionIv && !!docFile.encryptionTag;
+
+    if (needsBuffer) {
+      // Buffer + decrypt + watermark
+      let rawBytes: Buffer;
+      if (useEncryption) {
+        const { decryptFileToBuffer } = await import("@/lib/encryption");
+        rawBytes = await decryptFileToBuffer(servePath, docFile.encryptionIv!, docFile.encryptionTag!);
+      } else {
+        rawBytes = await fs.readFile(servePath);
+      }
+
+      const user = await db.user.findUnique({
+        where: { id: session.user.id },
+        select: { displayName: true },
+      });
+
+      const doc = await db.document.findUnique({
+        where: { id: docFile.documentId },
+        select: {
+          classificationNode: { select: { title: true } },
+        },
+      });
+
+      const watermarked = await applyWatermark(rawBytes, {
+        userName: user?.displayName ?? session.user.id,
+        timestamp: new Date(),
+        label: doc?.classificationNode?.title ?? undefined,
+      });
+
+      const headers: Record<string, string> = {
+        "Content-Type": "application/pdf",
         "Content-Disposition": `${forceDownload ? "attachment" : "inline"}; filename="${fileName}"`,
         "Cache-Control": "private, no-store",
         "X-Content-Type-Options": "nosniff",
-      },
-    });
+        "Content-Length": String(watermarked.byteLength),
+      };
+      return new NextResponse(watermarked as unknown as BodyInit, { status: 200, headers });
+    }
+
+    // Streaming path (no watermark)
+    const { createReadStream } = await import("fs");
+    const readStream = createReadStream(servePath);
+
+    let sourceStream: NodeJS.ReadableStream;
+    if (useEncryption) {
+      const { createDecryptStream } = await import("@/lib/encryption");
+      const decipher = createDecryptStream(docFile.encryptionIv!, docFile.encryptionTag!);
+      sourceStream = readStream.pipe(decipher);
+    } else {
+      sourceStream = readStream;
+    }
+
+    const { Readable } = await import("stream");
+    const webStream = Readable.toWeb(sourceStream as import("stream").Readable) as ReadableStream;
+
+    const headers: Record<string, string> = {
+      "Content-Type": contentType,
+      "Content-Disposition": `${forceDownload ? "attachment" : "inline"}; filename="${fileName}"`,
+      "Cache-Control": "private, no-store",
+      "X-Content-Type-Options": "nosniff",
+    };
+    if (!useEncryption && fileStat) {
+      headers["Content-Length"] = String(fileStat.size);
+    }
+
+    return new NextResponse(webStream, { status: 200, headers });
   } catch (error) {
     logger.error("Failed to serve file", error, {
       route: "/api/files",
@@ -134,12 +196,12 @@ export async function GET(req: NextRequest) {
   }
 }
 
+
 /**
  * POST /api/files — upload a file and attach to a document
  *
- * Expects FormData with:
- *   - file: File
- *   - documentId: string
+ * Streams multipart body directly to disk via busboy — no full-file RAM buffer.
+ * Supports files up to 10 GB.
  */
 export async function POST(req: NextRequest) {
   try {
@@ -148,64 +210,133 @@ export async function POST(req: NextRequest) {
       return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
     }
 
-    const formData = await req.formData();
-    const file = formData.get("file") as File | null;
-    const documentId = formData.get("documentId") as string | null;
-
-    if (!file) {
-      return NextResponse.json({ error: "File is required" }, { status: 400 });
+    const contentType = req.headers.get("content-type") ?? "";
+    if (!contentType.includes("multipart/form-data")) {
+      return NextResponse.json({ error: "multipart/form-data required" }, { status: 400 });
     }
-    if (!documentId) {
-      return NextResponse.json({ error: "documentId is required" }, { status: 400 });
+    if (!req.body) {
+      return NextResponse.json({ error: "Empty request body" }, { status: 400 });
     }
 
-    // Verify document exists
-    const doc = await db.document.findUnique({ where: { id: documentId }, select: { id: true } });
-    if (!doc) {
-      return NextResponse.json({ error: "Document not found" }, { status: 404 });
-    }
+    const MAX_UPLOAD_BYTES = 10 * 1024 * 1024 * 1024; // 10 GB
 
-    // Validate file size (2GB max per document)
-    if (file.size > 2 * 1024 * 1024 * 1024) {
-      return NextResponse.json({ error: "File too large. Maximum 2GB per document." }, { status: 400 });
-    }
+    const { default: Busboy } = await import("busboy");
+    const { createWriteStream, createReadStream } = await import("fs");
+    const { pipeline } = await import("stream/promises");
+    const { Readable } = await import("stream");
 
-    // Save to disk
-    const uploadDir = path.join(process.cwd(), "uploads", "edrms");
-    await fs.mkdir(uploadDir, { recursive: true });
+    const tmpDir = path.join(process.cwd(), "uploads", ".tmp");
+    await fs.mkdir(tmpDir, { recursive: true });
 
-    const ext = path.extname(file.name);
-    const safeName = `${documentId}_${Date.now()}${ext}`;
-    const filePath = path.join(uploadDir, safeName);
-    const storagePath = `uploads/edrms/${safeName}`;
+    return new Promise<Response>(async (resolve) => {
+      const bb = Busboy({
+        headers: { "content-type": contentType },
+        limits: { fileSize: MAX_UPLOAD_BYTES, files: 1, fields: 10 },
+      });
 
-    const buffer = Buffer.from(await file.arrayBuffer());
-    await fs.writeFile(filePath, buffer);
+      const fields: Record<string, string> = {};
+      let tmpPath: string | null = null;
+      let origName = "upload";
+      let mimeType = "application/octet-stream";
+      let actualSize = 0;
+      let limitHit = false;
 
-    // Create DocumentFile record
-    const docFile = await db.documentFile.create({
-      data: {
-        documentId,
-        fileName: file.name,
-        mimeType: file.type || "application/octet-stream",
-        sizeBytes: BigInt(file.size),
-        storagePath,
-      },
+      bb.on("field", (name, val) => { fields[name] = val; });
+
+      bb.on("file", (_field, fileStream, info) => {
+        origName = info.filename || "upload";
+        mimeType = info.mimeType || "application/octet-stream";
+        tmpPath = path.join(tmpDir, `${Date.now()}-${Math.random().toString(36).slice(2)}`);
+        const ws = createWriteStream(tmpPath);
+        fileStream.on("data", (chunk: Buffer) => { actualSize += chunk.length; });
+        fileStream.on("limit", () => { limitHit = true; });
+        fileStream.pipe(ws);
+      });
+
+      bb.on("finish", async () => {
+        // Validation
+        if (!tmpPath) {
+          resolve(NextResponse.json({ error: "File is required" }, { status: 400 }));
+          return;
+        }
+        if (limitHit) {
+          await fs.unlink(tmpPath).catch(() => {});
+          resolve(NextResponse.json({ error: "File exceeds the 10 GB limit" }, { status: 413 }));
+          return;
+        }
+        const documentId = fields["documentId"];
+        if (!documentId) {
+          await fs.unlink(tmpPath).catch(() => {});
+          resolve(NextResponse.json({ error: "documentId is required" }, { status: 400 }));
+          return;
+        }
+
+        try {
+          const doc = await db.document.findUnique({ where: { id: documentId }, select: { id: true } });
+          if (!doc) {
+            await fs.unlink(tmpPath).catch(() => {});
+            resolve(NextResponse.json({ error: "Document not found" }, { status: 404 }));
+            return;
+          }
+
+          const uploadDir = path.join(process.cwd(), "uploads", "edrms");
+          await fs.mkdir(uploadDir, { recursive: true });
+
+          const ext = path.extname(origName);
+          const safeName = `${documentId}_${Date.now()}${ext}`;
+          const finalPath = path.join(uploadDir, safeName);
+          const storagePath = `uploads/edrms/${safeName}`;
+
+          // Rename is instant on same device; fall back to copy+delete cross-device
+          await fs.rename(tmpPath, finalPath).catch(async () => {
+            await pipeline(createReadStream(tmpPath!), createWriteStream(finalPath));
+            await fs.unlink(tmpPath!).catch(() => {});
+          });
+
+          const docFile = await db.documentFile.create({
+            data: {
+              documentId,
+              fileName: origName,
+              mimeType,
+              sizeBytes: BigInt(actualSize),
+              storagePath,
+            },
+          });
+
+          if (mimeType === "application/pdf" || mimeType.startsWith("image/")) {
+            const { enqueueOcr } = await import("@/lib/queue");
+            await enqueueOcr(docFile.id);
+          }
+          if (mimeType !== "application/pdf") {
+            const { isRenderable, generateRendition } = await import("@/lib/rendition");
+            if (isRenderable(mimeType)) {
+              setImmediate(() => generateRendition(docFile.id).catch(() => {}));
+            }
+          }
+
+          resolve(NextResponse.json({
+            id: docFile.id,
+            fileName: docFile.fileName,
+            mimeType: docFile.mimeType,
+            sizeBytes: Number(docFile.sizeBytes),
+            storagePath: docFile.storagePath,
+          }, { status: 201 }));
+        } catch (err) {
+          await fs.unlink(tmpPath!).catch(() => {});
+          logger.error("Upload post-processing failed", err);
+          resolve(new NextResponse("Internal server error", { status: 500 }));
+        }
+      });
+
+      bb.on("error", (err) => {
+        logger.error("Busboy error during upload", err);
+        resolve(new NextResponse("Bad request", { status: 400 }));
+      });
+
+      Readable.fromWeb(req.body as import("stream/web").ReadableStream).pipe(bb);
     });
-
-    // Kick off OCR/text-extraction in the background — don't block the response
-    if (file.type === "application/pdf" || file.type.startsWith("image/")) {
-      setImmediate(() => processFileOcr(docFile.id).catch(() => {}));
-    }
-
-    return NextResponse.json({
-      id: docFile.id,
-      fileName: docFile.fileName,
-      mimeType: docFile.mimeType,
-      sizeBytes: Number(docFile.sizeBytes),
-      storagePath: docFile.storagePath,
-    }, { status: 201 });
-  } catch {
+  } catch (error) {
+    logger.error("Failed to serve upload endpoint", error);
     return new NextResponse("Internal server error", { status: 500 });
   }
 }

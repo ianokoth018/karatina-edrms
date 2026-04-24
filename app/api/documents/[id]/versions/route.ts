@@ -3,10 +3,10 @@ import { auth } from "@/lib/auth";
 import { db } from "@/lib/db";
 import { writeAudit } from "@/lib/audit";
 import { logger } from "@/lib/logger";
+import { notifyVersionUploaded } from "@/lib/version-notifications";
 import fs from "fs/promises";
 import path from "path";
 
-/** Allowed MIME types for document uploads. */
 const ALLOWED_MIME_TYPES = new Set([
   "application/pdf",
   "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
@@ -17,7 +17,6 @@ const ALLOWED_MIME_TYPES = new Set([
   "image/tiff",
 ]);
 
-/** Maximum file size: 2 GB */
 const MAX_FILE_SIZE = 2 * 1024 * 1024 * 1024;
 
 function serialiseBigInt(data: unknown): unknown {
@@ -36,6 +35,61 @@ function serialiseBigInt(data: unknown): unknown {
 }
 
 // ---------------------------------------------------------------------------
+// GET /api/documents/[id]/versions — list all versions
+// ---------------------------------------------------------------------------
+export async function GET(
+  req: NextRequest,
+  { params }: { params: Promise<{ id: string }> }
+) {
+  try {
+    const session = await auth();
+    if (!session?.user?.id) {
+      return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+    }
+
+    const { id } = await params;
+
+    const document = await db.document.findUnique({
+      where: { id },
+      select: { id: true },
+    });
+
+    if (!document) {
+      return NextResponse.json({ error: "Document not found" }, { status: 404 });
+    }
+
+    const versions = await db.documentVersion.findMany({
+      where: { documentId: id },
+      orderBy: { versionNum: "desc" },
+      include: {
+        approvedBy: { select: { name: true, displayName: true } },
+      },
+    });
+
+    const creatorIds = [...new Set(versions.map((v) => v.createdById))];
+    const creators = await db.user.findMany({
+      where: { id: { in: creatorIds } },
+      select: { id: true, name: true, displayName: true },
+    });
+    const creatorMap = Object.fromEntries(creators.map((u) => [u.id, u]));
+
+    const payload = versions.map((v) => ({
+      ...v,
+      createdBy: creatorMap[v.createdById] ?? null,
+      downloadUrl: `/api/documents/${id}/versions/${v.id}/download`,
+    }));
+
+    return NextResponse.json(serialiseBigInt(payload));
+  } catch (error) {
+    logger.error("Failed to list document versions", error, {
+      route: "/api/documents/[id]/versions",
+      method: "GET",
+    });
+    return NextResponse.json({ error: "Internal server error" }, { status: 500 });
+  }
+}
+
+// ---------------------------------------------------------------------------
 // POST /api/documents/[id]/versions — upload a new version
 // ---------------------------------------------------------------------------
 export async function POST(
@@ -50,7 +104,6 @@ export async function POST(
 
     const { id } = await params;
 
-    // Verify document exists
     const document = await db.document.findUnique({
       where: { id },
       select: { id: true, referenceNumber: true, status: true },
@@ -89,7 +142,6 @@ export async function POST(
       );
     }
 
-    // Get latest version number
     const latestVersion = await db.documentVersion.findFirst({
       where: { documentId: id },
       orderBy: { versionNum: "desc" },
@@ -98,20 +150,22 @@ export async function POST(
 
     const nextVersionNum = (latestVersion?.versionNum ?? 0) + 1;
 
-    // Save file to disk
-    const fileBuffer = Buffer.from(await file.arrayBuffer());
     const uploadDir = path.join(process.cwd(), "uploads", "edrms", document.referenceNumber);
     await fs.mkdir(uploadDir, { recursive: true });
 
-    // Add version number to filename to avoid collisions
     const ext = path.extname(file.name);
     const baseName = path.basename(file.name, ext);
     const versionedFileName = `${baseName}_v${nextVersionNum}${ext}`;
     const filePath = path.join(uploadDir, versionedFileName);
-    await fs.writeFile(filePath, fileBuffer);
+
+    const { Readable } = await import("stream");
+    const { createWriteStream } = await import("fs");
+    const { pipeline } = await import("stream/promises");
+    const writeStream = createWriteStream(filePath);
+    const nodeReadable = Readable.fromWeb(file.stream() as import("stream/web").ReadableStream);
+    await pipeline(nodeReadable, writeStream);
     const storagePath = `uploads/edrms/${document.referenceNumber}/${versionedFileName}`;
 
-    // Create version and file records in a transaction
     const version = await db.$transaction(async (tx) => {
       const ver = await tx.documentVersion.create({
         data: {
@@ -124,7 +178,6 @@ export async function POST(
         },
       });
 
-      // Also create a new DocumentFile record
       await tx.documentFile.create({
         data: {
           documentId: id,
@@ -138,6 +191,20 @@ export async function POST(
 
       return ver;
     });
+
+    const uploader = await db.user.findUnique({
+      where: { id: session.user.id },
+      select: { displayName: true },
+    });
+
+    await notifyVersionUploaded(
+      db,
+      id,
+      nextVersionNum,
+      uploader?.displayName ?? session.user.id
+    ).catch((err) =>
+      logger.warn("notifyVersionUploaded failed", { err: String(err) })
+    );
 
     const ipAddress =
       req.headers.get("x-forwarded-for") ?? req.headers.get("x-real-ip") ?? undefined;

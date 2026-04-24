@@ -116,7 +116,7 @@ export async function POST(
     const involvedUserIds = new Set<string>();
     involvedUserIds.add(instance.initiatedById);
     for (const task of instance.tasks) {
-      involvedUserIds.add(task.assigneeId);
+      if (task.assigneeId) involvedUserIds.add(task.assigneeId);
     }
     // Don't notify the user who performed the cancellation
     involvedUserIds.delete(session.user.id);

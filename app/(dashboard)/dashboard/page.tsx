@@ -30,16 +30,6 @@ interface DashboardStats {
   pendingMemos: number;
 }
 
-interface RecentDocument {
-  id: string;
-  referenceNumber: string;
-  title: string;
-  documentType: string;
-  status: string;
-  department: string;
-  createdAt: string;
-}
-
 interface PendingTask {
   id: string;
   subject: string;
@@ -57,6 +47,8 @@ interface RecentMemo {
   currentStepName: string | null;
   initiatedBy: { name: string; displayName: string };
   createdAt: string;
+  awaitingClarification?: boolean;
+  currentAssignee?: { id: string; name: string; displayName: string } | null;
 }
 
 interface MemoAnalytics {
@@ -293,9 +285,10 @@ export default function DashboardPage() {
   const { data: session } = useSession();
   const { can, ready } = usePermissions();
   const [stats, setStats] = useState<DashboardStats>(emptyStats);
-  const [documents, setDocuments] = useState<RecentDocument[]>([]);
   const [tasks, setTasks] = useState<PendingTask[]>([]);
   const [memos, setMemos] = useState<RecentMemo[]>([]);
+  const [pendingMyAction, setPendingMyAction] = useState<RecentMemo[]>([]);
+  const [myCreatedMemos, setMyCreatedMemos] = useState<RecentMemo[]>([]);
   const [analytics, setAnalytics] = useState<MemoAnalytics | null>(null);
   const [isLoadingAnalytics, setIsLoadingAnalytics] = useState(true);
   const [isLoadingStats, setIsLoadingStats] = useState(true);
@@ -305,7 +298,6 @@ export default function DashboardPage() {
   const canReadMemos = can("memos:read");
   const visibleStatCards = statCards.filter((c) => can(c.permission));
   const visibleQuickActions = quickActions.filter((a) => can(a.permission));
-  const showDocumentsPanel = canReadDocuments;
   const showTasksPanel = canReadWorkflows;
   const showMemosPanel = canReadMemos;
 
@@ -315,7 +307,6 @@ export default function DashboardPage() {
       try {
         const fetches: Array<Promise<Response | null>> = [
           fetch("/api/dashboard/stats").catch(() => null),
-          canReadDocuments ? fetch("/api/documents?limit=8&page=1").catch(() => null) : Promise.resolve(null),
           canReadWorkflows
             ? fetch("/api/workflows/tasks?status=PENDING&limit=5").catch(() => null)
             : Promise.resolve(null),
@@ -323,25 +314,25 @@ export default function DashboardPage() {
             ? fetch("/api/memos?limit=5&page=1&scope=involved").catch(() => null)
             : Promise.resolve(null),
           canReadMemos ? fetch("/api/memos/analytics").catch(() => null) : Promise.resolve(null),
+          // My Memo Centre — pending tab (memos needing my action)
+          canReadMemos
+            ? fetch("/api/memos?limit=5&page=1&tab=pending").catch(() => null)
+            : Promise.resolve(null),
+          // My Memo Centre — my created memos (for the stats tab)
+          canReadMemos
+            ? fetch("/api/memos?limit=200&page=1&initiatedByMe=true").catch(() => null)
+            : Promise.resolve(null),
         ];
-        const [statsRes, docsRes, tasksRes, memosRes, analyticsRes] = await Promise.all(fetches);
+        const [
+          statsRes,
+          tasksRes,
+          memosRes,
+          analyticsRes,
+          pendingRes,
+          myCreatedRes,
+        ] = await Promise.all(fetches);
 
         if (statsRes && statsRes.ok) setStats(await statsRes.json());
-
-        if (docsRes && docsRes.ok) {
-          const docsData = await docsRes.json();
-          setDocuments(
-            (docsData.documents ?? []).map((d: Record<string, unknown>) => ({
-              id: d.id,
-              referenceNumber: d.referenceNumber,
-              title: d.title,
-              documentType: d.documentType,
-              status: d.status,
-              department: d.department,
-              createdAt: d.createdAt,
-            }))
-          );
-        }
 
         if (tasksRes && tasksRes.ok) {
           const tasksData = await tasksRes.json();
@@ -357,21 +348,44 @@ export default function DashboardPage() {
           );
         }
 
+        const mapMemoRow = (m: Record<string, unknown>): RecentMemo => {
+          const fromUser = m.from as { name?: string; displayName?: string } | undefined;
+          return {
+            id: m.id as string,
+            referenceNumber:
+              (m.memoReferenceNumber as string | null) ??
+              (m.referenceNumber as string) ??
+              "",
+            subject: (m.subject ?? "Untitled memo") as string,
+            status: (m.status ?? "DRAFT") as string,
+            currentStepName: (m.currentStepName ?? null) as string | null,
+            initiatedBy:
+              (m.initiatedBy as { name: string; displayName: string } | undefined) ??
+              {
+                name: fromUser?.name ?? "",
+                displayName: fromUser?.displayName ?? "",
+              },
+            createdAt: (m.startedAt ?? m.createdAt ?? new Date().toISOString()) as string,
+            awaitingClarification: Boolean(m.awaitingClarification),
+            currentAssignee:
+              (m.currentAssignee as RecentMemo["currentAssignee"]) ?? null,
+          };
+        };
+
         if (memosRes && memosRes.ok) {
           const memosData = await memosRes.json();
-          setMemos(
-            (memosData.memos ?? memosData.data ?? []).map((m: Record<string, unknown>) => ({
-              id: m.id as string,
-              referenceNumber: (m.referenceNumber ?? "") as string,
-              subject: (m.subject ?? "Untitled memo") as string,
-              status: (m.status ?? "DRAFT") as string,
-              currentStepName: (m.currentStepName ?? null) as string | null,
-              initiatedBy: (m.initiatedBy as { name: string; displayName: string } | undefined) ?? {
-                name: "",
-                displayName: "",
-              },
-              createdAt: (m.createdAt ?? new Date().toISOString()) as string,
-            }))
+          setMemos((memosData.memos ?? memosData.data ?? []).map(mapMemoRow));
+        }
+        if (pendingRes && pendingRes.ok) {
+          const pendingData = await pendingRes.json();
+          setPendingMyAction(
+            (pendingData.memos ?? pendingData.data ?? []).map(mapMemoRow),
+          );
+        }
+        if (myCreatedRes && myCreatedRes.ok) {
+          const myData = await myCreatedRes.json();
+          setMyCreatedMemos(
+            (myData.memos ?? myData.data ?? []).map(mapMemoRow),
           );
         }
         if (analyticsRes && analyticsRes.ok) {
@@ -392,7 +406,7 @@ export default function DashboardPage() {
   const userRole = session?.user?.roles?.[0] ?? "Staff";
 
   return (
-    <div className="p-4 lg:p-6 space-y-6 w-full">
+    <div className="p-4 sm:p-6 space-y-6 w-full">
       {/* Welcome banner */}
       <div className="bg-gradient-to-r from-[#02773b] to-[#014d28] rounded-2xl p-6 lg:p-8 text-white relative overflow-hidden animate-fade-in">
         {/* Decorative pattern */}
@@ -708,10 +722,15 @@ export default function DashboardPage() {
                               ];
                             }}
                             contentStyle={{
+                              background: "rgba(17,24,39,0.97)",
+                              border: "none",
                               borderRadius: 8,
-                              border: "1px solid #e5e7eb",
+                              color: "#fff",
                               fontSize: 12,
+                              boxShadow: "0 8px 24px rgba(0,0,0,0.25)",
                             }}
+                            labelStyle={{ color: "#e5e7eb", fontWeight: 600, marginBottom: 4 }}
+                            itemStyle={{ color: "#fff" }}
                           />
                           <Area
                             type="monotone"
@@ -794,10 +813,15 @@ export default function DashboardPage() {
                               ];
                             }}
                             contentStyle={{
+                              background: "rgba(17,24,39,0.97)",
+                              border: "none",
                               borderRadius: 8,
-                              border: "1px solid #e5e7eb",
+                              color: "#fff",
                               fontSize: 12,
+                              boxShadow: "0 8px 24px rgba(0,0,0,0.25)",
                             }}
+                            labelStyle={{ color: "#e5e7eb", fontWeight: 600, marginBottom: 4 }}
+                            itemStyle={{ color: "#fff" }}
                           />
                           <Legend
                             verticalAlign="bottom"
@@ -833,15 +857,17 @@ export default function DashboardPage() {
                   ) : (
                     (() => {
                       const initData = analytics.topInitiators.slice(0, 6);
+                      // Truncate only very long names; the YAxis width below
+                      // is generous so most names render in full.
                       const truncate = (s: string) =>
-                        s.length > 16 ? `${s.slice(0, 15)}\u2026` : s;
-                      const height = Math.max(200, initData.length * 28 + 40);
+                        s.length > 28 ? `${s.slice(0, 27)}\u2026` : s;
+                      const height = Math.max(220, initData.length * 36 + 40);
                       return (
                         <ResponsiveContainer width="100%" height={height}>
                           <BarChart
                             data={initData}
                             layout="vertical"
-                            margin={{ top: 4, right: 16, left: 80, bottom: 4 }}
+                            margin={{ top: 4, right: 16, left: 8, bottom: 4 }}
                           >
                             <CartesianGrid
                               horizontal={false}
@@ -858,9 +884,10 @@ export default function DashboardPage() {
                             <YAxis
                               type="category"
                               dataKey="name"
-                              width={120}
+                              width={210}
                               tick={{ fill: "#6b7280", fontSize: 11 }}
                               tickFormatter={truncate}
+                              interval={0}
                               axisLine={{ stroke: "#9ca3af" }}
                               tickLine={{ stroke: "#9ca3af" }}
                             />
@@ -873,10 +900,15 @@ export default function DashboardPage() {
                                 ];
                               }}
                               contentStyle={{
-                                borderRadius: 8,
-                                border: "1px solid #e5e7eb",
-                                fontSize: 12,
-                              }}
+                              background: "rgba(17,24,39,0.97)",
+                              border: "none",
+                              borderRadius: 8,
+                              color: "#fff",
+                              fontSize: 12,
+                              boxShadow: "0 8px 24px rgba(0,0,0,0.25)",
+                            }}
+                            labelStyle={{ color: "#e5e7eb", fontWeight: 600, marginBottom: 4 }}
+                            itemStyle={{ color: "#fff" }}
                             />
                             <Bar
                               dataKey="count"
@@ -904,15 +936,17 @@ export default function DashboardPage() {
                   ) : (
                     (() => {
                       const deptData = analytics.byDepartment.slice(0, 8);
+                      // Truncate only very long names; the YAxis width below
+                      // is generous so most departments render in full.
                       const truncate = (s: string) =>
-                        s.length > 16 ? `${s.slice(0, 15)}\u2026` : s;
-                      const height = Math.max(200, deptData.length * 28 + 40);
+                        s.length > 28 ? `${s.slice(0, 27)}\u2026` : s;
+                      const height = Math.max(220, deptData.length * 36 + 40);
                       return (
                         <ResponsiveContainer width="100%" height={height}>
                           <BarChart
                             data={deptData}
                             layout="vertical"
-                            margin={{ top: 4, right: 16, left: 80, bottom: 4 }}
+                            margin={{ top: 4, right: 16, left: 8, bottom: 4 }}
                           >
                             <CartesianGrid
                               horizontal={false}
@@ -929,9 +963,10 @@ export default function DashboardPage() {
                             <YAxis
                               type="category"
                               dataKey="department"
-                              width={120}
+                              width={210}
                               tick={{ fill: "#6b7280", fontSize: 11 }}
                               tickFormatter={truncate}
+                              interval={0}
                               axisLine={{ stroke: "#9ca3af" }}
                               tickLine={{ stroke: "#9ca3af" }}
                             />
@@ -944,10 +979,15 @@ export default function DashboardPage() {
                                 ];
                               }}
                               contentStyle={{
-                                borderRadius: 8,
-                                border: "1px solid #e5e7eb",
-                                fontSize: 12,
-                              }}
+                              background: "rgba(17,24,39,0.97)",
+                              border: "none",
+                              borderRadius: 8,
+                              color: "#fff",
+                              fontSize: 12,
+                              boxShadow: "0 8px 24px rgba(0,0,0,0.25)",
+                            }}
+                            labelStyle={{ color: "#e5e7eb", fontWeight: 600, marginBottom: 4 }}
+                            itemStyle={{ color: "#fff" }}
                             />
                             <Bar
                               dataKey="count"
@@ -1001,247 +1041,375 @@ export default function DashboardPage() {
         </section>
       </Can>
 
-      {/* Recent memos (visible to all memo-read users) */}
-      {showMemosPanel && (
-        <div className="bg-white dark:bg-gray-900 rounded-xl border border-gray-200 dark:border-gray-800 animate-slide-up delay-400">
-          <div className="flex items-center justify-between px-5 py-4 border-b border-gray-200 dark:border-gray-800">
-            <h2 className="text-base font-semibold text-gray-900 dark:text-gray-100">Recent Memos</h2>
-            <Link
-              href="/memos"
-              className="text-sm text-karu-green hover:text-karu-green-dark font-medium transition-colors"
-            >
-              View all
-            </Link>
-          </div>
-          <div className="divide-y divide-gray-100 dark:divide-gray-800">
-            {memos.length > 0 ? (
-              memos.map((memo) => (
+      {/* My Memo Centre + Pending Tasks (side by side on xl) */}
+      {(showMemosPanel || showTasksPanel) && (
+        <div
+          className={`grid grid-cols-1 gap-6 animate-slide-up delay-400 ${
+            showMemosPanel && showTasksPanel ? "xl:grid-cols-3" : ""
+          }`}
+        >
+          {showMemosPanel && (
+            <div className={showTasksPanel ? "xl:col-span-2" : ""}>
+              <MyMemoCentre
+                recent={memos}
+                pending={pendingMyAction}
+                myCreated={myCreatedMemos}
+              />
+            </div>
+          )}
+
+          {showTasksPanel && (
+            <div className="bg-white dark:bg-gray-900 rounded-xl border border-gray-200 dark:border-gray-800">
+              <div className="flex items-center justify-between px-5 py-4 border-b border-gray-200 dark:border-gray-800">
+                <h2 className="text-base font-semibold text-gray-900 dark:text-gray-100">
+                  Pending Tasks
+                </h2>
                 <Link
-                  key={memo.id}
-                  href={`/memos/${memo.id}`}
-                  className="block px-5 py-3 hover:bg-gray-50 dark:hover:bg-gray-800/50 transition-colors"
+                  href="/workflows"
+                  className="text-sm text-karu-green hover:text-karu-green-dark font-medium transition-colors"
                 >
-                  <div className="flex items-start justify-between gap-3">
-                    <div className="min-w-0 flex-1">
-                      <p className="text-sm font-medium text-gray-900 dark:text-gray-100 truncate">
-                        {memo.subject}
-                      </p>
-                      <p className="text-xs text-gray-500 dark:text-gray-400 mt-0.5 truncate">
-                        {memo.referenceNumber}
-                        {memo.initiatedBy?.displayName && ` · from ${memo.initiatedBy.displayName}`}
-                        {memo.currentStepName && ` · ${memo.currentStepName}`}
-                      </p>
-                    </div>
-                    <div className="flex items-center gap-2 flex-shrink-0">
-                      <span
-                        className={`inline-flex items-center px-2 py-0.5 rounded-full text-xs font-medium ${statusColor(memo.status)}`}
-                      >
-                        {memo.status.replace(/_/g, " ")}
-                      </span>
-                      <span className="text-xs text-gray-400 dark:text-gray-500 hidden sm:inline">
-                        {formatRelativeDate(memo.createdAt)}
-                      </span>
-                    </div>
-                  </div>
+                  View all
                 </Link>
-              ))
-            ) : (
-              <div className="px-5 py-10 text-center">
-                <svg
-                  className="w-10 h-10 mx-auto text-gray-300 dark:text-gray-600 mb-3"
-                  fill="none"
-                  viewBox="0 0 24 24"
-                  strokeWidth={1}
-                  stroke="currentColor"
-                >
-                  <path
-                    strokeLinecap="round"
-                    strokeLinejoin="round"
-                    d="M21.75 9v.906a2.25 2.25 0 0 1-1.183 1.981l-6.478 3.488M2.25 9v.906a2.25 2.25 0 0 0 1.183 1.981l6.478 3.488m8.839 2.51-4.66-2.51m0 0-1.023-.55a2.25 2.25 0 0 0-2.134 0l-1.022.55m0 0-4.661 2.51m16.5 1.615a2.25 2.25 0 0 1-2.25 2.25h-15a2.25 2.25 0 0 1-2.25-2.25V8.844a2.25 2.25 0 0 1 1.183-1.981l7.5-4.039a2.25 2.25 0 0 1 2.134 0l7.5 4.039a2.25 2.25 0 0 1 1.183 1.98V19.5Z"
-                  />
-                </svg>
-                <p className="text-sm text-gray-500 dark:text-gray-400">No memos yet</p>
-                <Can permission="memos:create">
-                  <Link
-                    href="/memos/new"
-                    className="inline-flex items-center gap-1.5 mt-3 text-xs font-medium text-karu-green hover:text-karu-green-dark"
-                  >
-                    <svg className="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" strokeWidth={2} stroke="currentColor">
-                      <path strokeLinecap="round" strokeLinejoin="round" d="M12 4.5v15m7.5-7.5h-15" />
-                    </svg>
-                    Compose your first memo
-                  </Link>
-                </Can>
               </div>
-            )}
-          </div>
-        </div>
-      )}
-
-      {/* Two-column layout: Documents table + Pending tasks */}
-      {(showDocumentsPanel || showTasksPanel) && (
-      <div className={`grid grid-cols-1 gap-6 animate-slide-up delay-500 ${showDocumentsPanel && showTasksPanel ? "xl:grid-cols-3" : ""}`}>
-        {/* Recent documents */}
-        {showDocumentsPanel && (
-        <div className={`${showTasksPanel ? "xl:col-span-2" : ""} bg-white dark:bg-gray-900 rounded-xl border border-gray-200 dark:border-gray-800`}>
-          <div className="flex items-center justify-between px-5 py-4 border-b border-gray-200 dark:border-gray-800">
-            <h2 className="text-base font-semibold text-gray-900 dark:text-gray-100">Recent Documents</h2>
-            <Link
-              href="/documents"
-              className="text-sm text-karu-green hover:text-karu-green-dark font-medium transition-colors"
-            >
-              View all
-            </Link>
-          </div>
-
-          {/* Desktop table */}
-          <div className="hidden md:block overflow-x-auto">
-            <table className="w-full">
-              <thead>
-                <tr className="border-b border-gray-100 dark:border-gray-800">
-                  <th className="text-left text-xs font-medium text-gray-500 dark:text-gray-400 uppercase tracking-wider px-5 py-3">
-                    Reference
-                  </th>
-                  <th className="text-left text-xs font-medium text-gray-500 dark:text-gray-400 uppercase tracking-wider px-5 py-3">
-                    Title
-                  </th>
-                  <th className="text-left text-xs font-medium text-gray-500 dark:text-gray-400 uppercase tracking-wider px-5 py-3">
-                    Type
-                  </th>
-                  <th className="text-left text-xs font-medium text-gray-500 dark:text-gray-400 uppercase tracking-wider px-5 py-3">
-                    Status
-                  </th>
-                  <th className="text-left text-xs font-medium text-gray-500 dark:text-gray-400 uppercase tracking-wider px-5 py-3">
-                    Date
-                  </th>
-                </tr>
-              </thead>
-              <tbody className="divide-y divide-gray-100 dark:divide-gray-800">
-                {documents.map((doc) => (
-                  <tr key={doc.id} className="hover:bg-gray-50 dark:hover:bg-gray-800/50 transition-colors">
-                    <td className="px-5 py-3">
-                      <span className="text-xs font-mono text-gray-500 dark:text-gray-400">
-                        {doc.referenceNumber}
-                      </span>
-                    </td>
-                    <td className="px-5 py-3">
-                      <Link
-                        href={`/documents/${doc.id}`}
-                        className="text-sm text-gray-900 dark:text-gray-100 hover:text-karu-green transition-colors line-clamp-1"
-                      >
-                        {doc.title}
-                      </Link>
-                      <p className="text-xs text-gray-500 dark:text-gray-400 mt-0.5">{doc.department}</p>
-                    </td>
-                    <td className="px-5 py-3">
-                      <span className="text-xs text-gray-600 dark:text-gray-400">
-                        {doc.documentType.replace(/_/g, " ")}
-                      </span>
-                    </td>
-                    <td className="px-5 py-3">
-                      <span className={`inline-flex items-center px-2 py-0.5 rounded-full text-xs font-medium ${statusColor(doc.status)}`}>
-                        {doc.status.replace(/_/g, " ")}
-                      </span>
-                    </td>
-                    <td className="px-5 py-3">
-                      <span className="text-xs text-gray-500 dark:text-gray-400">
-                        {formatRelativeDate(doc.createdAt)}
-                      </span>
-                    </td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-          </div>
-
-          {/* Mobile list */}
-          <div className="md:hidden divide-y divide-gray-100 dark:divide-gray-800">
-            {documents.slice(0, 5).map((doc) => (
-              <Link
-                key={doc.id}
-                href={`/documents/${doc.id}`}
-                className="block px-5 py-3 hover:bg-gray-50 dark:hover:bg-gray-800/50 transition-colors"
-              >
-                <div className="flex items-start justify-between gap-3">
-                  <div className="min-w-0 flex-1">
-                    <p className="text-sm font-medium text-gray-900 dark:text-gray-100 truncate">
-                      {doc.title}
-                    </p>
-                    <p className="text-xs text-gray-500 dark:text-gray-400 mt-0.5">
-                      {doc.referenceNumber} &middot; {doc.department}
-                    </p>
-                  </div>
-                  <span className={`flex-shrink-0 inline-flex items-center px-2 py-0.5 rounded-full text-xs font-medium ${statusColor(doc.status)}`}>
-                    {doc.status}
-                  </span>
-                </div>
-              </Link>
-            ))}
-          </div>
-        </div>
-        )}
-
-        {/* Pending tasks */}
-        {showTasksPanel && (
-        <div className="bg-white dark:bg-gray-900 rounded-xl border border-gray-200 dark:border-gray-800">
-          <div className="flex items-center justify-between px-5 py-4 border-b border-gray-200 dark:border-gray-800">
-            <h2 className="text-base font-semibold text-gray-900 dark:text-gray-100">Pending Tasks</h2>
-            <Link
-              href="/workflows"
-              className="text-sm text-karu-green hover:text-karu-green-dark font-medium transition-colors"
-            >
-              View all
-            </Link>
-          </div>
-
-          <div className="divide-y divide-gray-100 dark:divide-gray-800">
-            {tasks.length > 0 ? (
-              tasks.map((task) => (
-                <div key={task.id} className="px-5 py-4">
-                  <div className="flex items-start gap-3">
-                    <div className="mt-0.5 w-8 h-8 rounded-lg bg-karu-gold-light dark:bg-karu-gold/10 flex items-center justify-center flex-shrink-0">
-                      <svg className="w-4 h-4 text-karu-gold" fill="none" viewBox="0 0 24 24" strokeWidth={1.5} stroke="currentColor">
-                        <path strokeLinecap="round" strokeLinejoin="round" d="M12 6v6h4.5m4.5 0a9 9 0 1 1-18 0 9 9 0 0 1 18 0Z" />
-                      </svg>
-                    </div>
-                    <div className="flex-1 min-w-0">
-                      <p className="text-sm font-medium text-gray-900 dark:text-gray-100 line-clamp-2">
-                        {task.subject}
-                      </p>
-                      <div className="flex items-center gap-2 mt-1.5">
-                        <span className={`inline-flex items-center px-2 py-0.5 rounded-full text-xs font-medium ${statusColor(task.status)}`}>
-                          {task.stepName}
-                        </span>
-                      </div>
-                      <div className="flex items-center gap-3 mt-2 text-xs text-gray-500 dark:text-gray-400">
-                        <span>Assigned {formatRelativeDate(task.assignedAt)}</span>
-                        {task.dueAt && (
-                          <>
-                            <span>&middot;</span>
-                            <span className="text-karu-gold font-medium">
-                              Due {formatDate(task.dueAt)}
+              <div className="divide-y divide-gray-100 dark:divide-gray-800">
+                {tasks.length > 0 ? (
+                  tasks.slice(0, 5).map((task) => (
+                    <div key={task.id} className="px-5 py-4">
+                      <div className="flex items-start gap-3">
+                        <div className="mt-0.5 w-8 h-8 rounded-lg bg-karu-gold-light dark:bg-karu-gold/10 flex items-center justify-center flex-shrink-0">
+                          <svg className="w-4 h-4 text-karu-gold" fill="none" viewBox="0 0 24 24" strokeWidth={1.5} stroke="currentColor">
+                            <path strokeLinecap="round" strokeLinejoin="round" d="M12 6v6h4.5m4.5 0a9 9 0 1 1-18 0 9 9 0 0 1 18 0Z" />
+                          </svg>
+                        </div>
+                        <div className="flex-1 min-w-0">
+                          <p className="text-sm font-medium text-gray-900 dark:text-gray-100 line-clamp-2">
+                            {task.subject}
+                          </p>
+                          <div className="flex items-center gap-2 mt-1.5">
+                            <span className={`inline-flex items-center px-2 py-0.5 rounded-full text-xs font-medium ${statusColor(task.status)}`}>
+                              {task.stepName}
                             </span>
-                          </>
-                        )}
+                          </div>
+                          <div className="flex items-center gap-3 mt-2 text-xs text-gray-500 dark:text-gray-400">
+                            <span>Assigned {formatRelativeDate(task.assignedAt)}</span>
+                            {task.dueAt && (
+                              <>
+                                <span>·</span>
+                                <span className="text-karu-gold font-medium">
+                                  Due {formatDate(task.dueAt)}
+                                </span>
+                              </>
+                            )}
+                          </div>
+                        </div>
                       </div>
                     </div>
+                  ))
+                ) : (
+                  <div className="px-5 py-12 text-center">
+                    <svg className="w-10 h-10 mx-auto text-gray-300 dark:text-gray-600 mb-3" fill="none" viewBox="0 0 24 24" strokeWidth={1} stroke="currentColor">
+                      <path strokeLinecap="round" strokeLinejoin="round" d="M9 12.75 11.25 15 15 9.75M21 12a9 9 0 1 1-18 0 9 9 0 0 1 18 0Z" />
+                    </svg>
+                    <p className="text-sm text-gray-500 dark:text-gray-400">No pending tasks</p>
+                    <p className="text-xs text-gray-400 dark:text-gray-500 mt-0.5">You&#39;re all caught up!</p>
                   </div>
-                </div>
-              ))
-            ) : (
-              <div className="px-5 py-12 text-center">
-                <svg className="w-10 h-10 mx-auto text-gray-300 dark:text-gray-600 mb-3" fill="none" viewBox="0 0 24 24" strokeWidth={1} stroke="currentColor">
-                  <path strokeLinecap="round" strokeLinejoin="round" d="M9 12.75 11.25 15 15 9.75M21 12a9 9 0 1 1-18 0 9 9 0 0 1 18 0Z" />
-                </svg>
-                <p className="text-sm text-gray-500 dark:text-gray-400">No pending tasks</p>
-                <p className="text-xs text-gray-400 dark:text-gray-500 mt-0.5">You&#39;re all caught up!</p>
+                )}
               </div>
-            )}
-          </div>
+            </div>
+          )}
         </div>
-        )}
-      </div>
       )}
+
     </div>
   );
+}
+
+/* ------------------------------------------------------------------ */
+/*  My Memo Centre — three-tab panel: Recent / Pending / Stats        */
+/* ------------------------------------------------------------------ */
+
+type MemoCentreTab = "recent" | "pending" | "stats";
+
+function MyMemoCentre({
+  recent,
+  pending,
+  myCreated,
+}: {
+  recent: RecentMemo[];
+  pending: RecentMemo[];
+  myCreated: RecentMemo[];
+}) {
+  const [tab, setTab] = useState<MemoCentreTab>("recent");
+
+  const stats = {
+    approved: myCreated.filter((m) => m.status === "APPROVED" || m.status === "SENT").length,
+    pendingRecommendation: myCreated.filter((m) => m.status === "PENDING_RECOMMENDATION").length,
+    pendingApproval: myCreated.filter((m) => m.status === "PENDING_APPROVAL").length,
+    rejected: myCreated.filter((m) => m.status === "REJECTED").length,
+    drafts: myCreated.filter((m) => m.status === "DRAFT").length,
+    awaitingClarification: myCreated.filter((m) => m.awaitingClarification).length,
+  };
+
+  const tabs: { key: MemoCentreTab; label: string; count?: number }[] = [
+    { key: "recent", label: "Recent", count: recent.length },
+    { key: "pending", label: "Pending", count: pending.length },
+    { key: "stats", label: "Stats" },
+  ];
+
+  return (
+    <div className="bg-white dark:bg-gray-900 rounded-xl border border-gray-200 dark:border-gray-800">
+      {/* Header */}
+      <div className="flex items-center justify-between gap-3 px-5 py-4 border-b border-gray-200 dark:border-gray-800">
+        <h2 className="text-base font-semibold text-gray-900 dark:text-gray-100">
+          My Memo Centre
+        </h2>
+        {tab === "recent" && (
+          <Link
+            href="/memos"
+            className="text-sm text-karu-green hover:text-karu-green-dark font-medium transition-colors"
+          >
+            View all
+          </Link>
+        )}
+        {tab === "pending" && (
+          <Link
+            href="/memos?tab=pending"
+            className="text-sm text-karu-green hover:text-karu-green-dark font-medium transition-colors"
+          >
+            View all
+          </Link>
+        )}
+        {tab === "stats" && (
+          <Link
+            href="/memos/trace"
+            className="text-sm text-karu-green hover:text-karu-green-dark font-medium transition-colors"
+          >
+            Trace my memos
+          </Link>
+        )}
+      </div>
+
+      {/* Tabs */}
+      <div className="flex items-center gap-0 px-5 border-b border-gray-200 dark:border-gray-800 overflow-x-auto">
+        {tabs.map((t) => (
+          <button
+            key={t.key}
+            onClick={() => setTab(t.key)}
+            className={`flex items-center gap-1.5 py-2.5 px-3 -mb-px border-b-2 text-sm font-medium transition-colors whitespace-nowrap ${
+              tab === t.key
+                ? "border-karu-green text-karu-green"
+                : "border-transparent text-gray-500 dark:text-gray-400 hover:text-gray-700 dark:hover:text-gray-200"
+            }`}
+          >
+            {t.label}
+            {typeof t.count === "number" && t.count > 0 && (
+              <span
+                className={`inline-flex items-center justify-center min-w-5 h-5 px-1.5 rounded-full text-[10px] font-semibold ${
+                  tab === t.key
+                    ? "bg-karu-green text-white"
+                    : "bg-gray-100 dark:bg-gray-800 text-gray-600 dark:text-gray-300"
+                }`}
+              >
+                {t.count}
+              </span>
+            )}
+          </button>
+        ))}
+      </div>
+
+      {/* Tab body */}
+      {tab === "recent" && <MemoListBody memos={recent.slice(0, 5)} emptyMessage="No recent memos involving you" />}
+      {tab === "pending" && (
+        <MemoListBody
+          memos={pending.slice(0, 5)}
+          emptyMessage="Nothing waiting for your action"
+          emptySubtitle="You're all caught up!"
+        />
+      )}
+      {tab === "stats" && <MemoStatsGrid stats={stats} total={myCreated.length} />}
+    </div>
+  );
+}
+
+function MemoListBody({
+  memos,
+  emptyMessage,
+  emptySubtitle,
+}: {
+  memos: RecentMemo[];
+  emptyMessage: string;
+  emptySubtitle?: string;
+}) {
+  if (memos.length === 0) {
+    return (
+      <div className="px-5 py-12 text-center">
+        <div className="w-10 h-10 mx-auto rounded-full bg-karu-green/10 flex items-center justify-center mb-3">
+          <svg className="w-5 h-5 text-karu-green" fill="none" viewBox="0 0 24 24" strokeWidth={1.5} stroke="currentColor">
+            <path strokeLinecap="round" strokeLinejoin="round" d="M9 12.75 11.25 15 15 9.75M21 12a9 9 0 1 1-18 0 9 9 0 0 1 18 0Z" />
+          </svg>
+        </div>
+        <p className="text-sm text-gray-700 dark:text-gray-300 font-medium">{emptyMessage}</p>
+        {emptySubtitle && (
+          <p className="text-xs text-gray-400 dark:text-gray-500 mt-0.5">{emptySubtitle}</p>
+        )}
+      </div>
+    );
+  }
+
+  return (
+    <div className="divide-y divide-gray-100 dark:divide-gray-800">
+      {memos.map((memo) => (
+        <Link
+          key={memo.id}
+          href={`/memos/${memo.id}`}
+          className="block px-5 py-3 hover:bg-gray-50 dark:hover:bg-gray-800/50 transition-colors"
+        >
+          <div className="flex items-start justify-between gap-3">
+            <div className="min-w-0 flex-1">
+              <p className="text-sm font-medium text-gray-900 dark:text-gray-100 truncate">
+                {memo.subject}
+              </p>
+              <p className="text-xs text-gray-500 dark:text-gray-400 mt-0.5 truncate">
+                <span className="font-mono">{memo.referenceNumber}</span>
+                {memo.initiatedBy?.displayName && ` · from ${memo.initiatedBy.displayName}`}
+                {memo.currentAssignee?.displayName &&
+                  ` · with ${memo.currentAssignee.displayName}`}
+                {memo.currentStepName && ` · ${memo.currentStepName}`}
+              </p>
+            </div>
+            <div className="flex items-center gap-2 flex-shrink-0">
+              <span
+                className={`inline-flex items-center px-2 py-0.5 rounded-full text-[11px] font-medium ${memoStatusBadge(memo.status)}`}
+              >
+                {memo.status.replace(/_/g, " ")}
+              </span>
+              <span className="text-xs text-gray-400 dark:text-gray-500 hidden sm:inline">
+                {formatRelativeDate(memo.createdAt)}
+              </span>
+            </div>
+          </div>
+        </Link>
+      ))}
+    </div>
+  );
+}
+
+function MemoStatsGrid({
+  stats,
+  total,
+}: {
+  stats: {
+    approved: number;
+    pendingRecommendation: number;
+    pendingApproval: number;
+    rejected: number;
+    drafts: number;
+    awaitingClarification: number;
+  };
+  total: number;
+}) {
+  const items: { label: string; value: number; tone: string; href: string }[] = [
+    {
+      label: "Approved",
+      value: stats.approved,
+      tone: "text-emerald-700 bg-emerald-50 dark:bg-emerald-950/30 dark:text-emerald-300 ring-emerald-200 dark:ring-emerald-900",
+      href: "/memos/trace?tab=approved",
+    },
+    {
+      label: "Pending Recommendation",
+      value: stats.pendingRecommendation,
+      tone: "text-amber-700 bg-amber-50 dark:bg-amber-950/30 dark:text-amber-300 ring-amber-200 dark:ring-amber-900",
+      href: "/memos/trace?tab=in-progress",
+    },
+    {
+      label: "Pending Approval",
+      value: stats.pendingApproval,
+      tone: "text-blue-700 bg-blue-50 dark:bg-blue-950/30 dark:text-blue-300 ring-blue-200 dark:ring-blue-900",
+      href: "/memos/trace?tab=in-progress",
+    },
+    {
+      label: "Rejected",
+      value: stats.rejected,
+      tone: "text-red-700 bg-red-50 dark:bg-red-950/30 dark:text-red-300 ring-red-200 dark:ring-red-900",
+      href: "/memos/trace?tab=rejected",
+    },
+    {
+      label: "Drafts",
+      value: stats.drafts,
+      tone: "text-gray-700 bg-gray-100 dark:bg-gray-800 dark:text-gray-200 ring-gray-200 dark:ring-gray-700",
+      href: "/memos/trace?tab=in-progress",
+    },
+    {
+      label: "Awaiting Clarification",
+      value: stats.awaitingClarification,
+      tone: "text-orange-700 bg-orange-50 dark:bg-orange-950/30 dark:text-orange-300 ring-orange-200 dark:ring-orange-900",
+      href: "/memos/trace",
+    },
+  ];
+
+  if (total === 0) {
+    return (
+      <div className="px-5 py-12 text-center">
+        <div className="w-10 h-10 mx-auto rounded-full bg-karu-green/10 flex items-center justify-center mb-3">
+          <svg className="w-5 h-5 text-karu-green" fill="none" viewBox="0 0 24 24" strokeWidth={1.5} stroke="currentColor">
+            <path strokeLinecap="round" strokeLinejoin="round" d="M9 17.25v1.007a3 3 0 0 1-.879 2.122L7.5 21h9l-.621-.621A3 3 0 0 1 15 18.257V17.25m6-12V15a2.25 2.25 0 0 1-2.25 2.25H5.25A2.25 2.25 0 0 1 3 15V5.25m18 0A2.25 2.25 0 0 0 18.75 3H5.25A2.25 2.25 0 0 0 3 5.25m18 0V12a2.25 2.25 0 0 1-2.25 2.25H5.25A2.25 2.25 0 0 1 3 12V5.25" />
+          </svg>
+        </div>
+        <p className="text-sm text-gray-700 dark:text-gray-300 font-medium">You haven&apos;t initiated any memos yet</p>
+        <Link
+          href="/memos/new"
+          className="inline-flex items-center gap-1.5 mt-3 text-xs font-medium text-karu-green hover:text-karu-green-dark"
+        >
+          <svg className="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" strokeWidth={2} stroke="currentColor">
+            <path strokeLinecap="round" strokeLinejoin="round" d="M12 4.5v15m7.5-7.5h-15" />
+          </svg>
+          Compose your first memo
+        </Link>
+      </div>
+    );
+  }
+
+  return (
+    <div className="p-4 sm:p-5">
+      <p className="text-xs text-gray-500 dark:text-gray-400 mb-3">
+        Stats for the <span className="font-semibold text-gray-700 dark:text-gray-300">{total}</span> memo{total === 1 ? "" : "s"} you have initiated
+      </p>
+      <div className="grid grid-cols-2 sm:grid-cols-3 gap-3">
+        {items.map((item) => (
+          <Link
+            key={item.label}
+            href={item.href}
+            className={`flex flex-col gap-1 px-3 py-3 rounded-lg ring-1 transition-colors hover:brightness-95 dark:hover:brightness-110 ${item.tone}`}
+          >
+            <span className="text-2xl font-bold leading-none tabular-nums">
+              {item.value}
+            </span>
+            <span className="text-[11px] font-medium uppercase tracking-wider opacity-80 line-clamp-2">
+              {item.label}
+            </span>
+          </Link>
+        ))}
+      </div>
+    </div>
+  );
+}
+
+/* Memo-status badge palette (richer than the generic statusColor) */
+function memoStatusBadge(status: string): string {
+  switch (status) {
+    case "APPROVED":
+    case "SENT":
+      return "bg-emerald-50 text-emerald-700 dark:bg-emerald-950/40 dark:text-emerald-300";
+    case "PENDING_RECOMMENDATION":
+      return "bg-amber-50 text-amber-700 dark:bg-amber-950/40 dark:text-amber-300";
+    case "PENDING_APPROVAL":
+      return "bg-blue-50 text-blue-700 dark:bg-blue-950/40 dark:text-blue-300";
+    case "REJECTED":
+      return "bg-red-50 text-red-700 dark:bg-red-950/40 dark:text-red-300";
+    case "RETURNED":
+      return "bg-orange-50 text-orange-700 dark:bg-orange-950/40 dark:text-orange-300";
+    case "DRAFT":
+    default:
+      return "bg-gray-100 text-gray-600 dark:bg-gray-800 dark:text-gray-300";
+  }
 }

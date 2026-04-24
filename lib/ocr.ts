@@ -4,6 +4,10 @@ import { execFile } from "child_process";
 import { promisify } from "util";
 import { db } from "@/lib/db";
 import { logger } from "@/lib/logger";
+import pLimit from "p-limit";
+
+// Cap concurrent OCR jobs — ocrmypdf is CPU-intensive
+const ocrConcurrencyLimit = pLimit(3);
 
 const execFileAsync = promisify(execFile);
 
@@ -81,7 +85,7 @@ async function ocrmypdfAvailable(): Promise<boolean> {
  *  4. If ocrmypdf is unavailable, store whatever partial text we have
  *     and mark status FAILED so staff know OCR was skipped.
  */
-export async function processFileOcr(fileId: string): Promise<void> {
+async function _processFileOcr(fileId: string): Promise<void> {
   const docFile = await db.documentFile.findUnique({
     where: { id: fileId },
     select: { id: true, storagePath: true, mimeType: true, ocrStatus: true },
@@ -138,4 +142,8 @@ export async function processFileOcr(fileId: string): Promise<void> {
       data: { ocrStatus: "FAILED" },
     }).catch(() => {});
   }
+}
+
+export function processFileOcr(fileId: string): Promise<void> {
+  return ocrConcurrencyLimit(() => _processFileOcr(fileId));
 }

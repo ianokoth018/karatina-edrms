@@ -9,22 +9,31 @@ import { db } from "@/lib/db";
  */
 export async function generateReference(
   prefix: string,
-  department: string
+  department: string,
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  tx?: any
 ): Promise<string> {
   const year = new Date().getFullYear();
+  const lockKey = `${prefix}-${year}-${department}`;
+  const client = tx ?? db;
 
-  // Count existing records matching this prefix+year+department pattern
-  // to determine the next sequence number.
-  const count = await db.document.count({
+  if (tx) {
+    // Acquire a PostgreSQL advisory lock scoped to this transaction.
+    // Serialises concurrent reference generation for the same prefix+year+dept
+    // so that COUNT and document.create happen atomically — no duplicates.
+    await tx.$executeRaw`SELECT pg_advisory_xact_lock(hashtext(${lockKey}::text))`;
+  }
+
+  const count = await client.document.count({
     where: {
       referenceNumber: {
-        startsWith: `${prefix}-${year}-${department}-`,
+        startsWith: `${lockKey}-`,
       },
     },
   });
 
   const sequence = (count + 1).toString().padStart(6, "0");
-  return `${prefix}-${year}-${department}-${sequence}`;
+  return `${lockKey}-${sequence}`;
 }
 
 /**

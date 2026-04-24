@@ -103,8 +103,12 @@ const navItems: NavItem[] = [
       { label: "My Tasks", href: "/workflows" },
       { label: "Start New", href: "/workflows/start", permission: "workflows:create" },
       { label: "History", href: "/workflows/history" },
+      { label: "Pool Tasks", href: "/workflows/pool-tasks", permission: "workflows:read" },
       { label: "Templates", href: "/workflows/templates", permission: "workflows:manage" },
       { label: "Designer", href: "/workflows/designer", permission: "workflows:manage" },
+      { label: "Pools", href: "/workflows/pools", permission: "workflows:manage" },
+      { label: "Monitor", href: "/workflows/monitor", permission: "workflows:manage" },
+      { label: "Analytics", href: "/workflows/analytics", permission: "workflows:manage" },
     ],
   },
   {
@@ -307,10 +311,9 @@ export default function Sidebar({ open, onClose }: SidebarProps) {
           <Image
             src="/karu-crest.png"
             alt="Karatina University"
-            width={32}
-            height={32}
-            className="flex-shrink-0"
-            style={{ width: "auto", height: "32px" }}
+            width={64}
+            height={64}
+            className="flex-shrink-0 h-8 w-auto"
           />
           <div className="min-w-0">
             <h1 className="text-sm font-bold text-gray-900 dark:text-gray-100 truncate">KARU EDRMS</h1>
