@@ -3,6 +3,7 @@
 import { useSession } from "next-auth/react";
 import { useState, useMemo, useRef, useEffect } from "react";
 import Link from "next/link";
+import SignaturePanel from "@/components/profile/signature-panel";
 
 const RESOURCE_META: Record<string, { label: string; icon: string; color: string }> = {
   documents: { label: "Documents", icon: "📄", color: "bg-blue-50 text-blue-700 dark:bg-blue-900/20 dark:text-blue-300 border-blue-200 dark:border-blue-800" },
@@ -495,6 +496,9 @@ export default function ProfilePage() {
               ))}
             </div>
           </div>
+
+          {/* Signature & office stamp */}
+          <SignaturePanel userId={user.id} />
 
           {/* Security */}
           <div className="rounded-2xl border border-gray-200 dark:border-gray-800 bg-white dark:bg-gray-900 shadow-sm overflow-hidden">

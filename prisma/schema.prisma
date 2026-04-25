@@ -24,6 +24,18 @@ model User {
   designation   String?
   phone         String?
   profilePhoto  String?
+  /// Storage path (under uploads/signatures/) of the user's saved
+  /// signature PNG. Embedded into memo PDFs when this user approves.
+  signatureImage    String?
+  signatureUploadedAt DateTime?
+  /// Optional storage path for an office stamp/seal PNG (e.g. Registrar's
+  /// circular stamp). Rendered next to the signature for officers who
+  /// have one. nullable per user.
+  officeStamp       String?
+  /// DocuSign user GUID — links this KARU user to their DocuSign account
+  /// so embedded signing impersonates the right person. Pre-provisioned
+  /// in DocuSign (admin invites them once), then admin maps here.
+  docusignUserId    String?
   isActive      Boolean  @default(true)
   lastLoginAt   DateTime?
   mfaEnabled    Boolean  @default(false)
@@ -79,6 +91,7 @@ model User {
   documentRelations         DocumentRelation[]      @relation("RelationCreator")
   redactionsCreated         DocumentRedaction[]     @relation("RedactionCreator")
   documentSubscriptions     DocumentSubscription[]  @relation("DocumentWatcher")
+  memoDrafts                MemoDraft[]             @relation("MemoDraftAuthor")
 
   @@map("users")
 }
@@ -374,9 +387,27 @@ model WorkflowInstance {
   tasks     WorkflowTask[]
   events    WorkflowEvent[]
 
+  /// Initiator's chosen signature method at memo creation:
+  /// "electronic" — embedded signature image rendered in the PDF.
+  /// "digital"    — DocuSign envelope; cryptographic signature on top.
+  /// Used by the memo view to suppress the "Claim ownership with a
+  /// digital signature" prompt for memos already signed electronically.
+  signatureMethod    String?
+  /// DocuSign envelope id when the *initiator* has cryptographically signed
+  /// the memo. Initiator-owned (like the electronic signature), not per-task.
+  docusignEnvelopeId String?
+  /// Last-known envelope status: sent, delivered, completed, declined, voided.
+  docusignStatus     String?
+  /// When the initiator completed the DocuSign envelope.
+  docusignSignedAt   DateTime?
+  /// Storage path of the downloaded, cryptographically signed PDF
+  /// (combined with the certificate of completion).
+  docusignSignedPdf  String?
+
   @@index([status])
   @@index([initiatedById])
   @@index([originalInitiatedById])
+  @@index([docusignEnvelopeId])
   @@map("workflow_instances")
 }
 
@@ -407,9 +438,21 @@ model WorkflowTask {
   comments        TaskComment[]
   attachments     TaskAttachment[]
 
+  /// DocuSign envelope id when this task has been routed for digital
+  /// signature. Used to look up signing status + download the signed PDF.
+  docusignEnvelopeId String?
+  /// Last-known DocuSign envelope status: SENT, DELIVERED, COMPLETED,
+  /// DECLINED, VOIDED. Updated via the Connect webhook.
+  docusignStatus     String?
+  /// When the signer completed the DocuSign envelope.
+  docusignSignedAt   DateTime?
+  /// Storage path of the downloaded, cryptographically signed PDF.
+  docusignSignedPdf  String?
+
   @@index([instanceId])
   @@index([assigneeId, status])
   @@index([poolId, status])
+  @@index([docusignEnvelopeId])
   @@map("workflow_tasks")
 }
 
@@ -1185,4 +1228,32 @@ model LoginAttempt {
   @@index([ipAddress, createdAt])
   @@index([userId, createdAt])
   @@map("login_attempts")
+}
+
+// === Memo Drafts ===
+// In-progress memo composer state, autosaved as the user types so closing
+// the tab or navigating away never loses work. One row per active draft;
+// deleted on successful submit.
+model MemoDraft {
+  id        String   @id @default(cuid())
+  userId    String
+  user      User     @relation("MemoDraftAuthor", fields: [userId], references: [id], onDelete: Cascade)
+  /// Subject extracted from payload for display in the drafts list.
+  subject   String   @default("Untitled draft")
+  /// The full composer form state. Shape mirrors what /api/memos POST expects.
+  payload   Json
+  /// When the initiator chose Digital signature in the composer and signed
+  /// the draft *before* submission, this is the storage path of the
+  /// DocuSign-signed PDF (combined with the certificate of completion).
+  /// On submit, the memo creation route attaches this file directly
+  /// instead of regenerating an unsigned PDF.
+  signedPdfPath      String?
+  docusignEnvelopeId String?
+  docusignStatus     String?
+  docusignSignedAt   DateTime?
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([userId, updatedAt])
+  @@map("memo_drafts")
 }

@@ -56,6 +56,7 @@ const navItems: NavItem[] = [
     ),
     children: [
       { label: "Inbox", href: "/memos" },
+      { label: "My Drafts", href: "/memos?tab=drafts", permission: "memos:create" },
       { label: "Trace My Memos", href: "/memos/trace" },
       { label: "Analytics", href: "/memos/analytics", permission: "reports:read" },
       { label: "New Memo", href: "/memos/new", permission: "memos:create" },
@@ -189,6 +190,7 @@ const navItems: NavItem[] = [
       { label: "Settings", href: "/admin/settings" },
       { label: "Audit Trail", href: "/admin/audit" },
       { label: "Email Integration", href: "/admin/email" },
+      { label: "DocuSign Integration", href: "/admin/integrations/docusign" },
     ],
   },
 ];

@@ -302,6 +302,9 @@ export async function POST(req: NextRequest) {
       memoType: memoTypeRaw,
       memoCategory: memoCategoryRaw,
       forwardToHod: forwardToHodRaw,
+      draftId: incomingDraftId,
+      signatureMethod: incomingSignatureMethod,
+      initialPdfBase64,
     } = body as {
       to: string;
       toIsManual?: boolean;
@@ -319,6 +322,17 @@ export async function POST(req: NextRequest) {
       memoType?: "administrative" | "communicating";
       memoCategory?: "personal" | "departmental";
       forwardToHod?: boolean;
+      /** Draft id whose pre-signed DocuSign PDF should be attached as the
+       *  memo's primary file (initiator chose Digital signature on Step 2). */
+      draftId?: string;
+      /** "electronic" or "digital" — chosen on Step 2. Persisted so the
+       *  memo view can hide the "Sign with DocuSign" prompt when the
+       *  initiator already signed electronically. */
+      signatureMethod?: "electronic" | "digital";
+      /** Captured React MemoDocument bytes (base64 PDF). When present,
+       *  used as v1 so the memo view's Preview/Download Memo serves
+       *  the exact template the initiator approved at submission. */
+      initialPdfBase64?: string;
     };
 
     const memoType = memoTypeRaw ?? "administrative";
@@ -566,6 +580,7 @@ export async function POST(req: NextRequest) {
           status: memoType === "communicating" ? "COMPLETED" : "IN_PROGRESS",
           currentStepIndex: memoType === "communicating" ? 0 : 1,
           completedAt: memoType === "communicating" ? new Date() : undefined,
+          signatureMethod: incomingSignatureMethod ?? "electronic",
           formData: {
             body: memoBody.trim(),
             memoType,
@@ -758,6 +773,125 @@ export async function POST(req: NextRequest) {
 
       return { workflowInstance, document, tasks };
     });
+
+    // ---- v1 snapshot — every memo gets an initial PDF version, so
+    // Preview/Download Memo always has *something* to serve and the
+    // Versions panel starts non-empty. Prefer the client-captured
+    // MemoDocument bytes (byte-identical to what the user previewed)
+    // and fall back to the server-side render only if not provided.
+    // The "[sig]" marker tells the version endpoint this snapshot
+    // already loaded the signature so it doesn't trigger a refresh.
+    try {
+      if (incomingSignatureMethod === "electronic" && initialPdfBase64) {
+        const { recordMemoVersion } = await import("@/lib/memo-versions");
+        const pdfBytes = Uint8Array.from(Buffer.from(initialPdfBase64, "base64"));
+        await recordMemoVersion({
+          documentId: result.document.id,
+          pdfBytes,
+          changeNote: "[sig] Initial submission (rendered from preview)",
+          createdById: session.user.id,
+        });
+      } else {
+        const { snapshotMemoVersion } = await import("@/lib/memo-versions");
+        await snapshotMemoVersion(
+          result.workflowInstance.id,
+          "[sig] Initial submission",
+          session.user.id,
+        );
+      }
+    } catch (err) {
+      logger.error("Failed to record v1 memo version", err, {
+        memoId: result.workflowInstance.id,
+      });
+    }
+
+    // If the initiator pre-signed this memo with DocuSign in the
+    // composer, attach the signed PDF (combined with cert of completion)
+    // as the document's primary file and stamp the workflow instance so
+    // the memo view shows the green "Digitally signed" pill on first load.
+    if (incomingDraftId) {
+      try {
+        const draft = await db.memoDraft.findUnique({
+          where: { id: incomingDraftId },
+          select: {
+            userId: true,
+            signedPdfPath: true,
+            docusignEnvelopeId: true,
+            docusignSignedAt: true,
+          },
+        });
+        if (
+          draft &&
+          draft.userId === session.user.id &&
+          draft.signedPdfPath
+        ) {
+          const path = await import("path");
+          const fs = await import("fs/promises");
+          const srcAbs = path.resolve(process.cwd(), draft.signedPdfPath);
+          const destDir = path.join(
+            process.cwd(),
+            "uploads",
+            "memos",
+            result.document.id,
+          );
+          await fs.mkdir(destDir, { recursive: true });
+          const fileName = `${memoReference.replace(/[^A-Za-z0-9._-]/g, "_")}.signed.pdf`;
+          const destAbs = path.join(destDir, fileName);
+          const buf = await fs.readFile(srcAbs);
+          await fs.writeFile(destAbs, buf);
+          const relPath = path.posix.join(
+            "uploads",
+            "memos",
+            result.document.id,
+            fileName,
+          );
+
+          await db.documentFile.create({
+            data: {
+              documentId: result.document.id,
+              storagePath: relPath,
+              fileName,
+              mimeType: "application/pdf",
+              sizeBytes: BigInt(buf.length),
+            },
+          });
+
+          // Record the signed PDF as the latest memo version too.
+          try {
+            const { recordMemoVersion } = await import("@/lib/memo-versions");
+            await recordMemoVersion({
+              documentId: result.document.id,
+              pdfBytes: new Uint8Array(buf),
+              changeNote: "Digitally signed with DocuSign at submission",
+              createdById: session.user.id,
+              fileName: `${memoReference.replace(/[^A-Za-z0-9._-]/g, "_")}.v-signed.pdf`,
+            });
+          } catch (err) {
+            logger.error("Failed to record signed v-N memo version", err, {
+              memoId: result.workflowInstance.id,
+            });
+          }
+
+          await db.workflowInstance.update({
+            where: { id: result.workflowInstance.id },
+            data: {
+              docusignEnvelopeId: draft.docusignEnvelopeId,
+              docusignStatus: "completed",
+              docusignSignedAt: draft.docusignSignedAt ?? new Date(),
+              docusignSignedPdf: relPath,
+            },
+          });
+        }
+      } catch (err) {
+        // Don't fail the memo creation if the PDF copy hiccups — log
+        // and let the user re-attach if needed.
+        logger.error("Failed to attach pre-signed DocuSign PDF to memo", err, {
+          route: "/api/memos",
+          method: "POST",
+          draftId: incomingDraftId,
+        });
+      }
+    }
 
     // Audit log
     await writeAudit({

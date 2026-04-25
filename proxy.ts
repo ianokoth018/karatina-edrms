@@ -16,7 +16,15 @@ export async function proxy(req: NextRequest) {
     // Circulated memos: signed-token endpoint, no account required
     pathname.startsWith("/api/memos/public/") ||
     // Document share links: token already authenticates
-    pathname.startsWith("/api/shared/");
+    pathname.startsWith("/api/shared/") ||
+    // DocuSign Connect webhook — vendor signs the request
+    pathname === "/api/docusign/webhook" ||
+    // DocuSign embedded-signing return URLs — hit by the popup after
+    // signing. Calling auth() inside these races with the parent
+    // window's JWT refresh and corrupts the cookie. Verified via
+    // envelope ID server-side instead of session.
+    /^\/api\/memos\/drafts\/[^/]+\/docusign\/return$/.test(pathname) ||
+    /^\/api\/memos\/[^/]+\/docusign\/return$/.test(pathname);
 
   if (isPublicRoute) {
     return NextResponse.next();

@@ -37,11 +37,14 @@ const MemoDocument = forwardRef<HTMLDivElement, MemoPreviewProps>(
       bodyHtml,
       senderName,
       senderTitle,
+      senderSignatureUrl,
+      senderStampUrl,
       copyTo,
       isDraft = true,
       senderIsSuperior = true,
       recommenders,
       approver: _approver,
+      digitalSignatureMode = false,
     },
     refProp
   ) {
@@ -277,16 +280,87 @@ const MemoDocument = forwardRef<HTMLDivElement, MemoPreviewProps>(
 
           {/* ---- Initiator / Sender signature ---- */}
           {(senderName || senderTitle) && (
-            <div style={{ marginBottom: "6mm" }}>
-              <div
-                style={{
-                  borderBottom: "1px dashed #999",
-                  minWidth: "50mm",
-                  maxWidth: "60mm",
-                  height: "7mm",
-                  marginBottom: "1mm",
-                }}
-              />
+            <div style={{ marginBottom: "6mm", position: "relative" }}>
+              {/* Hidden DocuSign anchor — invisible to the eye (white,
+               *  1pt) but DocuSign extracts plain text from the PDF and
+               *  matches signHereTabs.anchorString="/sn1/" to drop the
+               *  signature box right where the dashed line / signature
+               *  image would have rendered. */}
+              {digitalSignatureMode && (
+                <span
+                  style={{
+                    position: "absolute",
+                    top: 0,
+                    left: 0,
+                    fontSize: "1px",
+                    color: "#fff",
+                    lineHeight: 1,
+                    pointerEvents: "none",
+                  }}
+                >
+                  /sn1/
+                </span>
+              )}
+              {/* Signature area:
+               *  - Electronic + has signature image → render the image.
+               *  - Electronic + no image → dashed placeholder line.
+               *  - Digital mode → empty space (DocuSign's signature box
+               *    is painted here on top); the dashed line is dropped
+               *    since the cryptographic signature replaces it.
+               */}
+              {!digitalSignatureMode && senderSignatureUrl ? (
+                <div
+                  style={{
+                    position: "relative",
+                    width: "70mm",
+                    height: "20mm",
+                    marginBottom: "1mm",
+                  }}
+                >
+                  {/* eslint-disable-next-line @next/next/no-img-element */}
+                  <img
+                    src={senderSignatureUrl}
+                    alt="Signature"
+                    style={{
+                      maxHeight: "20mm",
+                      maxWidth: "60mm",
+                      objectFit: "contain",
+                      objectPosition: "left center",
+                    }}
+                  />
+                  {senderStampUrl && (
+                    /* eslint-disable-next-line @next/next/no-img-element */
+                    <img
+                      src={senderStampUrl}
+                      alt="Stamp"
+                      style={{
+                        position: "absolute",
+                        left: "30mm",
+                        top: "0",
+                        maxHeight: "22mm",
+                        maxWidth: "30mm",
+                        opacity: 0.85,
+                        pointerEvents: "none",
+                      }}
+                    />
+                  )}
+                </div>
+              ) : digitalSignatureMode ? (
+                // Reserved space for DocuSign's signature box (anchored
+                // on the hidden /sn1/ marker above). No dashed line —
+                // DocuSign's signature replaces it.
+                <div style={{ height: "20mm", marginBottom: "1mm" }} />
+              ) : (
+                <div
+                  style={{
+                    borderBottom: "1px dashed #999",
+                    minWidth: "50mm",
+                    maxWidth: "60mm",
+                    height: "7mm",
+                    marginBottom: "1mm",
+                  }}
+                />
+              )}
               {senderName && (
                 <div style={{ fontWeight: "bold", fontSize: "12pt" }}>
                   {senderName}
@@ -303,6 +377,25 @@ const MemoDocument = forwardRef<HTMLDivElement, MemoPreviewProps>(
                 >
                   {senderTitle}
                 </div>
+              )}
+              {/* Hidden DocuSign envelope-id anchor — DocuSign matches
+                  envelopeIdTabs.anchorString="/envid/" and stamps the
+                  envelope id here, *below* the signature block instead
+                  of clobbering the header. We disable the default
+                  top-left auto-stamp via envelopeIdStamping=false. */}
+              {digitalSignatureMode && (
+                <span
+                  style={{
+                    display: "inline-block",
+                    marginTop: "6mm",
+                    fontSize: "1px",
+                    color: "#fff",
+                    lineHeight: 1,
+                    pointerEvents: "none",
+                  }}
+                >
+                  /envid/
+                </span>
               )}
             </div>
           )}

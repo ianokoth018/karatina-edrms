@@ -30,6 +30,31 @@ export interface MemoPdfData {
   approvedByName?: string;
   approvedByTitle?: string;
   approvedAt?: string;
+  /** PNG/JPEG bytes of the *initiator's* signature — appears above their
+   *  typed name in the From block (transparent background recommended). */
+  signerSignaturePng?: Uint8Array;
+  /** PNG/JPEG bytes of the *initiator's* office stamp/seal — overlays
+   *  the signature like a real circular stamp. */
+  signerStampPng?: Uint8Array;
+  /** @deprecated Kept for backward compatibility — same as signerSignaturePng. */
+  approverSignaturePng?: Uint8Array;
+  /** @deprecated Kept for backward compatibility — same as signerStampPng. */
+  approverStampPng?: Uint8Array;
+  /** Phone number rendered in the letterhead's TEL: row. */
+  phone?: string;
+  /** PO Box / address rendered on the right of the letterhead row. */
+  poBox?: string;
+  /** Layout hint: when the sender outranks the recipient, FROM is shown
+   *  before TO (matches Karatina memo convention). Defaults to true. */
+  senderIsSuperior?: boolean;
+  /** When true, the PDF is being prepared for DocuSign signing:
+   *  - Drop the typed initiator name + designation (DocuSign's signature
+   *    box already prints the signer's full name + email + envelope id).
+   *  - Insert a hidden "/sn1/" anchor so DocuSign places its signature
+   *    box at a deterministic spot.
+   *  - Reserve extra vertical space below the anchor so the signature
+   *    box and certificate strip don't collide with the department line. */
+  digitalSignatureMode?: boolean;
 }
 
 const KARU_GREEN = rgb(0x02 / 255, 0x77 / 255, 0x3b / 255);
@@ -41,15 +66,21 @@ const BORDER = rgb(0.9, 0.91, 0.93);
 const PAGE_W = 595.28;
 const PAGE_H = 841.89;
 const MARGIN_X = 56;
-const HEADER_H = 110;
-const FOOTER_H = 36;
-const BODY_TOP = HEADER_H + 30;
-const BODY_BOTTOM = FOOTER_H + 30;
+// Tight header: KARU title at the top, divider line ~70pt down. Matches
+// the React MemoPreview's compact letterhead — leaves more room for body.
+const HEADER_H = 78;
+const FOOTER_H = 0;
+const BODY_TOP = HEADER_H + 18;
+const BODY_BOTTOM = FOOTER_H + 24;
 
 function htmlToPlainText(html: string): string {
   return html
     .replace(/<br\s*\/?>/gi, "\n")
-    .replace(/<\/p>/gi, "\n\n")
+    // One newline per paragraph break — the React MemoPreview renders
+    // paragraphs back-to-back with no extra margin, so the PDF should
+    // match. Two newlines here would create the blown-out paragraph
+    // gaps we used to see in signed PDFs.
+    .replace(/<\/p>/gi, "\n")
     .replace(/<\/(div|h[1-6]|li)>/gi, "\n")
     .replace(/<li[^>]*>/gi, "  • ")
     .replace(/<[^>]+>/g, "")
@@ -93,87 +124,117 @@ function wrapText(
   return lines;
 }
 
-async function loadCrestPng(pdf: PDFDocument): Promise<ReturnType<PDFDocument["embedPng"]> | null> {
+/**
+ * Helper for callers: read a user's signature / stamp bytes off disk so
+ * they can be passed to generateMemoPdf. Returns null if the path is
+ * missing or the file can't be read.
+ */
+export async function loadUserAssetPng(
+  relativePath: string | null | undefined,
+): Promise<Uint8Array | undefined> {
+  if (!relativePath) return undefined;
   try {
-    const p = path.join(process.cwd(), "public", "karu-crest.png");
-    const bytes = await fs.readFile(p);
-    return await pdf.embedPng(bytes);
+    const normalised = path.normalize(relativePath);
+    if (
+      normalised.startsWith("..") ||
+      path.isAbsolute(normalised) ||
+      !normalised.startsWith(path.join("uploads", ""))
+    ) {
+      return undefined;
+    }
+    const buf = await fs.readFile(path.join(process.cwd(), normalised));
+    return new Uint8Array(buf);
   } catch {
-    return null;
+    return undefined;
   }
+}
+
+/**
+ * Splits "OFFICE OF THE REGISTRAR (ACADEMIC AFFAIRS)" into a two-line
+ * header — main + parenthetical sub. Mirrors the React MemoPreview
+ * component so the on-screen preview and the PDF render the same way.
+ */
+function splitOfficeTitle(office: string): { main: string; sub?: string } {
+  const m = office.match(/^([^(]+)\s*\((.*)\)\s*$/);
+  if (m) return { main: m[1].trim(), sub: m[2].trim() };
+  return { main: office };
 }
 
 function drawHeader(
   page: PDFPage,
   font: PDFFont,
   fontBold: PDFFont,
-  crest: { width: number; height: number; scale: (n: number) => { width: number; height: number } } | null,
-  crestRef: Awaited<ReturnType<PDFDocument["embedPng"]>> | null,
+  data: {
+    fromDepartment?: string;
+    phone?: string;
+    poBox?: string;
+  },
 ) {
-  // Green band
-  page.drawRectangle({
-    x: 0,
-    y: PAGE_H - HEADER_H,
-    width: PAGE_W,
-    height: HEADER_H,
-    color: KARU_GREEN,
-  });
+  // Plain-white letterhead matching the React MemoPreview component:
+  // no green band, no crest, just text + a solid divider underneath.
+  // Compact spacing — title near the top, divider ~70pt down.
 
-  // Crest (left)
-  if (crestRef && crest) {
-    const target = 56;
-    const aspect = crest.width / crest.height;
-    const w = target;
-    const h = target / aspect;
-    page.drawImage(crestRef, {
-      x: MARGIN_X,
-      y: PAGE_H - HEADER_H + (HEADER_H - h) / 2,
-      width: w,
-      height: h,
-    });
-  }
-
-  // University name (centered)
-  const titleSize = 18;
+  // ---- KARATINA UNIVERSITY (centered, bold) ----
+  const titleSize = 16;
   const title = "KARATINA UNIVERSITY";
   const titleW = fontBold.widthOfTextAtSize(title, titleSize);
   page.drawText(title, {
     x: (PAGE_W - titleW) / 2,
-    y: PAGE_H - 50,
+    y: PAGE_H - 22,
     size: titleSize,
     font: fontBold,
-    color: rgb(1, 1, 1),
+    color: TEXT_DARK,
   });
 
-  const sub = "Office of the Registrar — Academic, Research & Student Affairs";
-  const subSize = 9;
-  const subW = font.widthOfTextAtSize(sub, subSize);
-  page.drawText(sub, {
-    x: (PAGE_W - subW) / 2,
-    y: PAGE_H - 68,
-    size: subSize,
+  // ---- Office line (centered, bold) — main + optional sub ----
+  const office = data.fromDepartment || "OFFICE OF THE REGISTRAR";
+  const { main: officeMain, sub: officeSub } = splitOfficeTitle(office);
+  const officeSize = 12;
+  const officeW = fontBold.widthOfTextAtSize(officeMain, officeSize);
+  page.drawText(officeMain, {
+    x: (PAGE_W - officeW) / 2,
+    y: PAGE_H - 38,
+    size: officeSize,
+    font: fontBold,
+    color: TEXT_DARK,
+  });
+  if (officeSub) {
+    const subW = fontBold.widthOfTextAtSize(officeSub, officeSize);
+    page.drawText(officeSub, {
+      x: (PAGE_W - subW) / 2,
+      y: PAGE_H - 52,
+      size: officeSize,
+      font: fontBold,
+      color: TEXT_DARK,
+    });
+  }
+
+  // ---- TEL / P.O Box row (10pt, left/right) ----
+  const rowY = PAGE_H - (officeSub ? 65 : 53);
+  const phone = data.phone || "+254 0716135171/0723683150";
+  const poBox = data.poBox || "P.O Box 1957-10101, KARATINA";
+  page.drawText(`TEL: ${phone}`, {
+    x: MARGIN_X,
+    y: rowY,
+    size: 10,
     font,
-    color: rgb(0.92, 1, 0.95),
+    color: TEXT_DARK,
   });
-
-  const addr = "P.O Box 1957-10101, KARATINA  ·  +254 (0)716 135 171  ·  www.karu.ac.ke";
-  const addrSize = 8;
-  const addrW = font.widthOfTextAtSize(addr, addrSize);
-  page.drawText(addr, {
-    x: (PAGE_W - addrW) / 2,
-    y: PAGE_H - 84,
-    size: addrSize,
+  const poW = font.widthOfTextAtSize(poBox, 10);
+  page.drawText(poBox, {
+    x: PAGE_W - MARGIN_X - poW,
+    y: rowY,
+    size: 10,
     font,
-    color: rgb(0.85, 0.96, 0.9),
+    color: TEXT_DARK,
   });
 
-  // Gold accent line under header
-  page.drawRectangle({
-    x: 0,
-    y: PAGE_H - HEADER_H - 3,
-    width: PAGE_W,
-    height: 3,
-    color: KARU_GOLD,
+  // ---- Solid divider under the letterhead ----
+  page.drawLine({
+    start: { x: MARGIN_X, y: rowY - 6 },
+    end: { x: PAGE_W - MARGIN_X, y: rowY - 6 },
+    thickness: 1.5,
+    color: TEXT_DARK,
   });
 }
 
@@ -218,16 +279,17 @@ export async function generateMemoPdf(data: MemoPdfData): Promise<Uint8Array> {
   const fontBold = await pdf.embedFont(StandardFonts.HelveticaBold);
   const fontItalic = await pdf.embedFont(StandardFonts.HelveticaOblique);
 
-  const crestRef = await loadCrestPng(pdf);
-  const crest = crestRef
-    ? { width: crestRef.width, height: crestRef.height, scale: crestRef.scale }
-    : null;
+  const headerData = {
+    fromDepartment: data.fromDepartment,
+    phone: data.phone,
+    poBox: data.poBox,
+  };
 
   const pages: PDFPage[] = [];
   let page = pdf.addPage([PAGE_W, PAGE_H]);
   pages.push(page);
 
-  drawHeader(page, font, fontBold, crest, crestRef);
+  drawHeader(page, font, fontBold, headerData);
 
   let cursorY = PAGE_H - BODY_TOP;
   const contentX = MARGIN_X;
@@ -242,7 +304,7 @@ export async function generateMemoPdf(data: MemoPdfData): Promise<Uint8Array> {
     if (cursorY - size < BODY_BOTTOM) {
       page = pdf.addPage([PAGE_W, PAGE_H]);
       pages.push(page);
-      drawHeader(page, font, fontBold, crest, crestRef);
+      drawHeader(page, font, fontBold, headerData);
       cursorY = PAGE_H - BODY_TOP;
     }
     page.drawText(text, { x: contentX, y: cursorY, size, font: f, color });
@@ -261,7 +323,7 @@ export async function generateMemoPdf(data: MemoPdfData): Promise<Uint8Array> {
       if (cursorY - size < BODY_BOTTOM) {
         page = pdf.addPage([PAGE_W, PAGE_H]);
         pages.push(page);
-        drawHeader(page, font, fontBold, crest, crestRef);
+        drawHeader(page, font, fontBold, headerData);
         cursorY = PAGE_H - BODY_TOP;
       }
       page.drawText(ln, { x: contentX, y: cursorY, size, font: f, color });
@@ -269,94 +331,241 @@ export async function generateMemoPdf(data: MemoPdfData): Promise<Uint8Array> {
     }
   };
 
-  // ----- Document title strip -----
-  page.drawRectangle({
-    x: contentX,
-    y: cursorY - 18,
-    width: contentWidth,
-    height: 26,
-    color: rgb(0.95, 0.97, 0.95),
-  });
-  page.drawText("INTERNAL MEMORANDUM", {
-    x: contentX + 12,
-    y: cursorY - 12,
-    size: 11,
+  // ----- "INTERNAL MEMO" centered title -----
+  const memoTitleSize = 13;
+  const memoTitleW = fontBold.widthOfTextAtSize("INTERNAL MEMO", memoTitleSize);
+  page.drawText("INTERNAL MEMO", {
+    x: (PAGE_W - memoTitleW) / 2,
+    y: cursorY - memoTitleSize,
+    size: memoTitleSize,
     font: fontBold,
-    color: KARU_GREEN,
+    color: TEXT_DARK,
   });
-  cursorY -= 38;
+  cursorY -= memoTitleSize + 14;
 
-  // ----- Metadata table -----
-  const metaRows: { label: string; value: string }[] = [
-    { label: "To", value: data.to },
-    { label: "From", value: data.fromTitle ? `${data.from} (${data.fromTitle})` : data.from },
-    ...(data.fromDepartment ? [{ label: "Department", value: data.fromDepartment }] : []),
-    ...(data.cc ? [{ label: "CC", value: data.cc }] : []),
-    { label: "Reference", value: data.memoReference },
-    ...(data.workflowReference
-      ? [{ label: "Workflow", value: data.workflowReference }]
-      : []),
-    { label: "Date", value: data.date },
-    { label: "Subject", value: data.subject },
-  ];
+  // ----- FROM/TO with DATE/REF on the right (React MemoPreview parity) -----
+  const senderIsSuperior = data.senderIsSuperior !== false;
+  // Use the sender's name only — the React MemoPreview doesn't tack the
+  // designation in parens after the name. Designation lives in the
+  // signature block below the body, not in the FROM row.
+  const fromValue = data.from;
+  const rows: { label: string; value: string; rightLabel: string; rightValue: string }[] =
+    senderIsSuperior
+      ? [
+          { label: "FROM:", value: fromValue, rightLabel: "DATE:", rightValue: data.date },
+          { label: "TO:",   value: data.to,   rightLabel: "REF:",  rightValue: data.memoReference },
+        ]
+      : [
+          { label: "TO:",   value: data.to,   rightLabel: "DATE:", rightValue: data.date },
+          { label: "FROM:", value: fromValue, rightLabel: "REF:",  rightValue: data.memoReference },
+        ];
 
-  const labelW = 90;
-  const valueW = contentWidth - labelW - 8;
-  for (const row of metaRows) {
-    const valueLines = wrapText(row.value, font, 10, valueW);
-    const rowHeight = Math.max(16, valueLines.length * 13 + 4);
+  const rowFontSize = 11;
+  const labelGap = 8;       // px between label and value on the left
+  const rightColX = contentX + Math.floor(contentWidth * 0.6);
+  const leftColMaxValueW = rightColX - contentX - 60; // leaves room for the FROM/TO label
+
+  for (const row of rows) {
+    const valueLines = wrapText(row.value, font, rowFontSize, leftColMaxValueW);
+    const rowHeight = Math.max(16, valueLines.length * (rowFontSize + 3) + 4);
     if (cursorY - rowHeight < BODY_BOTTOM) {
       page = pdf.addPage([PAGE_W, PAGE_H]);
       pages.push(page);
-      drawHeader(page, font, fontBold, crest, crestRef);
+      drawHeader(page, font, fontBold, headerData);
       cursorY = PAGE_H - BODY_TOP;
     }
-    page.drawText(row.label.toUpperCase(), {
+    // Label (bold) + value
+    const labelW = fontBold.widthOfTextAtSize(row.label, rowFontSize);
+    page.drawText(row.label, {
       x: contentX,
-      y: cursorY - 11,
-      size: 8,
+      y: cursorY - rowFontSize,
+      size: rowFontSize,
       font: fontBold,
-      color: TEXT_MUTED,
+      color: TEXT_DARK,
     });
-    let valueY = cursorY - 11;
+    let valueY = cursorY - rowFontSize;
     for (const ln of valueLines) {
       page.drawText(ln, {
-        x: contentX + labelW,
+        x: contentX + labelW + labelGap,
         y: valueY,
-        size: 10,
-        font: row.label === "Subject" ? fontBold : font,
+        size: rowFontSize,
+        font,
         color: TEXT_DARK,
       });
-      valueY -= 13;
+      valueY -= rowFontSize + 3;
     }
-    cursorY -= rowHeight;
+    // Right column: label + value on the same line as the first row line
+    page.drawText(row.rightLabel, {
+      x: rightColX,
+      y: cursorY - rowFontSize,
+      size: rowFontSize,
+      font: fontBold,
+      color: TEXT_DARK,
+    });
+    const rightLabelW = fontBold.widthOfTextAtSize(row.rightLabel, rowFontSize);
+    page.drawText(row.rightValue, {
+      x: rightColX + rightLabelW + 4,
+      y: cursorY - rowFontSize,
+      size: rowFontSize,
+      font,
+      color: TEXT_DARK,
+    });
+
+    cursorY -= rowHeight + 4;
   }
 
-  // Divider
-  cursorY -= 6;
-  page.drawLine({
-    start: { x: contentX, y: cursorY },
-    end: { x: contentX + contentWidth, y: cursorY },
-    thickness: 0.5,
-    color: BORDER,
-  });
-  cursorY -= 18;
+  // ----- RE: subject (bold, underlined) -----
+  if (data.subject) {
+    cursorY -= 6;
+    const reSize = 11;
+    page.drawText("RE: ", {
+      x: contentX,
+      y: cursorY - reSize,
+      size: reSize,
+      font: fontBold,
+      color: TEXT_DARK,
+    });
+    const reLabelW = fontBold.widthOfTextAtSize("RE: ", reSize);
+    const subjUpper = data.subject.toUpperCase();
+    page.drawText(subjUpper, {
+      x: contentX + reLabelW,
+      y: cursorY - reSize,
+      size: reSize,
+      font: fontBold,
+      color: TEXT_DARK,
+    });
+    const subjW = fontBold.widthOfTextAtSize(subjUpper, reSize);
+    page.drawLine({
+      start: { x: contentX + reLabelW, y: cursorY - reSize - 1.5 },
+      end: { x: contentX + reLabelW + subjW, y: cursorY - reSize - 1.5 },
+      thickness: 0.7,
+      color: TEXT_DARK,
+    });
+    cursorY -= reSize + 14;
+  }
 
   // ----- Body -----
   const bodyText = htmlToPlainText(data.body);
-  writeWrapped(bodyText, font, 11, TEXT_DARK, 1.5);
+  writeWrapped(bodyText, font, 11, TEXT_DARK, 1.35);
 
   // ----- Signature block -----
   cursorY -= 24;
   writeLine("Yours faithfully,", font, 11);
-  cursorY -= 28;
+
+  // For DocuSign-signed PDFs: drop a hidden "/sn1/" anchor exactly
+  // where the user's electronic signature would have rendered, and
+  // reserve enough vertical room for DocuSign's signature box + cert
+  // strip so it doesn't collide with the typed name below. The rest
+  // of the signature block (typed name, designation, department) is
+  // unchanged — keeps the layout identical to the electronic preview.
+  if (data.digitalSignatureMode) {
+    const reservedHeight = 70;
+    if (cursorY - reservedHeight < BODY_BOTTOM + 20) {
+      page = pdf.addPage([PAGE_W, PAGE_H]);
+      pages.push(page);
+      drawHeader(page, font, fontBold, headerData);
+      cursorY = PAGE_H - BODY_TOP;
+    }
+    // Invisible anchor — white-on-white, tiny font. DocuSign reads it
+    // via signHereTabs.anchorString="/sn1/" and places its box here.
+    page.drawText("/sn1/", {
+      x: contentX,
+      y: cursorY - 6,
+      size: 6,
+      font,
+      color: rgb(1, 1, 1),
+    });
+    cursorY -= reservedHeight;
+  }
+
+  // Reserve space for the initiator's signature image (electronic mode
+  // only — for digital we skip this and DocuSign paints the signature).
+  const sigBytes = data.digitalSignatureMode
+    ? undefined
+    : (data.signerSignaturePng ?? data.approverSignaturePng);
+  const stampBytes = data.digitalSignatureMode
+    ? undefined
+    : (data.signerStampPng ?? data.approverStampPng);
+
+  if (sigBytes) {
+    try {
+      // Try PNG first then JPEG — PDFLib will throw if the format mismatches.
+      let img;
+      try {
+        img = await pdf.embedPng(sigBytes);
+      } catch {
+        img = await pdf.embedJpg(sigBytes);
+      }
+      // Render at a fixed height (~36pt = 0.5 inch); width scales naturally.
+      const sigH = 36;
+      const sigW = Math.min(180, (img.width / img.height) * sigH);
+      // If we're about to overflow into the footer, push to a new page first.
+      if (cursorY - sigH < BODY_BOTTOM + 20) {
+        page = pdf.addPage([PAGE_W, PAGE_H]);
+        pages.push(page);
+        drawHeader(page, font, fontBold, headerData);
+        cursorY = PAGE_H - BODY_TOP;
+      }
+      page.drawImage(img, {
+        x: contentX,
+        y: cursorY - sigH,
+        width: sigW,
+        height: sigH,
+      });
+
+      // Office stamp/seal (if any) — overlay so it sits on top of the signature
+      // the way real office stamps do on signed memos.
+      if (stampBytes) {
+        try {
+          let stamp;
+          try {
+            stamp = await pdf.embedPng(stampBytes);
+          } catch {
+            stamp = await pdf.embedJpg(stampBytes);
+          }
+          const stampH = 64;
+          const stampW = (stamp.width / stamp.height) * stampH;
+          // Position to the right of the signature, slightly overlapping —
+          // mimics the look in the sample memos.
+          const stampX = contentX + sigW * 0.55;
+          page.drawImage(stamp, {
+            x: stampX,
+            y: cursorY - stampH * 0.7,
+            width: stampW,
+            height: stampH,
+            opacity: 0.85,
+          });
+        } catch {
+          /* stamp embed failed — skip silently */
+        }
+      }
+
+      cursorY -= sigH + 6;
+    } catch {
+      // Signature embed failed — fall back to whitespace
+      cursorY -= 36;
+    }
+  } else {
+    cursorY -= 28;
+  }
+
+  // Always render the typed signature block (name + designation +
+  // department) regardless of signature method, so the digital and
+  // electronic PDFs share an identical layout. For digital signatures
+  // the DocuSign box sits in the reserved space *above* this block.
   writeLine(data.from.toUpperCase(), fontBold, 11);
   if (data.fromTitle) writeLine(data.fromTitle, font, 10, TEXT_MUTED);
   if (data.fromDepartment) writeLine(data.fromDepartment, font, 10, TEXT_MUTED);
 
-  // ----- Approval stamp -----
-  if (data.approvedByName) {
+  // ----- Approval acknowledgement strip (only if approver differs from author) -----
+  if (data.approvedByName && data.approvedByName !== data.from) {
     cursorY -= 18;
+    if (cursorY - 50 < BODY_BOTTOM) {
+      page = pdf.addPage([PAGE_W, PAGE_H]);
+      pages.push(page);
+      drawHeader(page, font, fontBold, headerData);
+      cursorY = PAGE_H - BODY_TOP;
+    }
     page.drawRectangle({
       x: contentX,
       y: cursorY - 36,

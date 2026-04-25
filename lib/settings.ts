@@ -12,6 +12,7 @@ import { encrypt, decrypt } from "@/lib/encryption";
  */
 
 const SMTP_KEY = "smtp";
+const DOCUSIGN_KEY = "docusign";
 
 export interface SmtpConfig {
   host: string;
@@ -148,6 +149,148 @@ export interface SmtpConfigSafe {
   hasPassword: boolean;
   fromAddress: string;
   source: "database" | "env" | "none";
+}
+
+// ===========================================================================
+// DocuSign
+// ===========================================================================
+
+export interface DocusignConfig {
+  /** Integration key (Client ID) from DocuSign Apps & Keys. */
+  integrationKey: string;
+  /** API account ID (GUID) — found at Settings → Apps and Keys → User ID. */
+  accountId: string;
+  /** Base URL: account-d.docusign.com (demo) or account.docusign.com (prod). */
+  oauthBasePath: "account-d.docusign.com" | "account.docusign.com";
+  /** REST base path: demo.docusign.net/restapi or www.docusign.net/restapi. */
+  restBasePath: string;
+  /** GUID of the DocuSign user the JWT is impersonating (the system "memo signer"). */
+  impersonationUserId: string;
+  /** PEM-encoded RSA private key bound to the integration key. */
+  privateKey: string;
+  /** Whether DocuSign signing is on. */
+  enabled: boolean;
+}
+
+interface StoredDocusign {
+  integrationKey: string;
+  accountId: string;
+  oauthBasePath: "account-d.docusign.com" | "account.docusign.com";
+  restBasePath: string;
+  impersonationUserId: string;
+  enabled: boolean;
+  privateKeyCipher?: { encrypted: string; iv: string; tag: string } | null;
+}
+
+export interface DocusignConfigSafe {
+  integrationKey: string;
+  accountId: string;
+  oauthBasePath: string;
+  restBasePath: string;
+  impersonationUserId: string;
+  enabled: boolean;
+  hasPrivateKey: boolean;
+  source: "database" | "none";
+}
+
+export async function getDocusignConfig(): Promise<DocusignConfig | null> {
+  const row = await db.appSetting.findUnique({ where: { key: DOCUSIGN_KEY } });
+  if (!row) return null;
+  const stored = row.value as unknown as StoredDocusign;
+  let privateKey = "";
+  if (stored.privateKeyCipher?.encrypted) {
+    try {
+      privateKey = decrypt(
+        Buffer.from(stored.privateKeyCipher.encrypted, "base64"),
+        stored.privateKeyCipher.iv,
+        stored.privateKeyCipher.tag,
+      ).toString("utf8");
+    } catch {
+      privateKey = "";
+    }
+  }
+  if (!privateKey) return null;
+  return {
+    integrationKey: stored.integrationKey,
+    accountId: stored.accountId,
+    oauthBasePath: stored.oauthBasePath,
+    restBasePath: stored.restBasePath,
+    impersonationUserId: stored.impersonationUserId,
+    privateKey,
+    enabled: stored.enabled,
+  };
+}
+
+export async function setDocusignConfig(
+  cfg: Omit<DocusignConfig, "privateKey"> & { privateKey?: string },
+  updatedById?: string,
+): Promise<void> {
+  let privateKeyCipher: StoredDocusign["privateKeyCipher"] | undefined;
+  if (cfg.privateKey && cfg.privateKey.trim().length > 0) {
+    const enc = encrypt(Buffer.from(cfg.privateKey, "utf8"));
+    privateKeyCipher = {
+      encrypted: enc.encrypted.toString("base64"),
+      iv: enc.iv,
+      tag: enc.tag,
+    };
+  } else {
+    const existing = await db.appSetting.findUnique({
+      where: { key: DOCUSIGN_KEY },
+    });
+    privateKeyCipher =
+      (existing?.value as unknown as StoredDocusign | undefined)
+        ?.privateKeyCipher ?? null;
+  }
+
+  const stored: StoredDocusign = {
+    integrationKey: cfg.integrationKey,
+    accountId: cfg.accountId,
+    oauthBasePath: cfg.oauthBasePath,
+    restBasePath: cfg.restBasePath,
+    impersonationUserId: cfg.impersonationUserId,
+    enabled: cfg.enabled,
+    privateKeyCipher,
+  };
+
+  await db.appSetting.upsert({
+    where: { key: DOCUSIGN_KEY },
+    create: {
+      key: DOCUSIGN_KEY,
+      value: stored as unknown as Prisma.InputJsonValue,
+      updatedById: updatedById ?? null,
+    },
+    update: {
+      value: stored as unknown as Prisma.InputJsonValue,
+      updatedById: updatedById ?? null,
+    },
+  });
+}
+
+export async function getDocusignConfigSafe(): Promise<DocusignConfigSafe> {
+  const row = await db.appSetting.findUnique({ where: { key: DOCUSIGN_KEY } });
+  if (!row) {
+    return {
+      integrationKey: "",
+      accountId: "",
+      oauthBasePath: "account-d.docusign.com",
+      restBasePath: "https://demo.docusign.net/restapi",
+      impersonationUserId: "",
+      enabled: false,
+      hasPrivateKey: false,
+      source: "none",
+    };
+  }
+  const stored = row.value as unknown as StoredDocusign;
+  return {
+    integrationKey: stored.integrationKey,
+    accountId: stored.accountId,
+    oauthBasePath: stored.oauthBasePath,
+    restBasePath: stored.restBasePath,
+    impersonationUserId: stored.impersonationUserId,
+    enabled: stored.enabled,
+    hasPrivateKey: !!stored.privateKeyCipher,
+    source: "database",
+  };
 }
 
 export async function getSmtpConfigSafe(): Promise<SmtpConfigSafe> {

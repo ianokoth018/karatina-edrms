@@ -2,9 +2,10 @@
 
 import { useState, useEffect, useCallback, useMemo, useRef } from "react";
 import { useSession } from "next-auth/react";
-import { useParams, useRouter } from "next/navigation";
+import { useParams, useRouter, useSearchParams } from "next/navigation";
 import Link from "next/link";
 import MemoDocument from "@/components/memo/memo-document";
+import MemoVersionsPanel from "@/components/memo/memo-versions-panel";
 import { MultiUserInput } from "@/components/shared/multi-user-input";
 
 /* ---------- types ---------- */
@@ -66,6 +67,14 @@ interface MemoDetail {
   } | null;
   initiatedById: string;
   isInitiator: boolean;
+  signatureMethod?: "electronic" | "digital" | null;
+  docusign?: {
+    status: string | null;
+    signedAt: string | null;
+    hasSignedPdf: boolean;
+    envelopeId: string | null;
+    available: boolean;
+  };
   originalInitiatedBy?: {
     id: string;
     name: string;
@@ -124,6 +133,7 @@ export default function MemoDetailPage() {
   const { data: session } = useSession();
   const params = useParams();
   const router = useRouter();
+  const searchParams = useSearchParams();
   const memoId = params.id as string;
 
   const [memo, setMemo] = useState<MemoDetail | null>(null);
@@ -246,6 +256,11 @@ export default function MemoDetailPage() {
     fetchMemo();
   }, [fetchMemo]);
 
+  // Note: previously had a ?docusign=auto auto-launcher that opened
+  // the DocuSign popup on memo view load. Removed — it raced with
+  // draft state and reopened the popup even when the user had already
+  // pre-signed. The "Sign with DocuSign" panel handles explicit sign.
+
   // Close clarify department dropdown on outside click (only while modal open)
   useEffect(() => {
     if (!showClarifyModal) return;
@@ -282,6 +297,98 @@ export default function MemoDetailPage() {
         .then((r) => r.json())
         .then((data) => setDepartments(data.departments ?? []))
         .catch(() => {});
+    }
+  }
+
+  // ---------- DocuSign signing (popup window — DocuSign sends X-Frame-Options
+  //            on its hosted signing page so iframes are blocked) ----------
+  const [isDocusignLaunching, setIsDocusignLaunching] = useState(false);
+  const [docusignEnvelopeId, setDocusignEnvelopeId] = useState<string | null>(null);
+  const [docusignEvent, setDocusignEvent] = useState<string | null>(null);
+
+  async function handleSignWithDocusign() {
+    if (!memo) return;
+    setIsDocusignLaunching(true);
+    setError(null);
+    setDocusignEvent(null);
+
+    // Open the popup *synchronously* in the click handler so browsers
+    // don't classify it as a blocked popup. We point it at about:blank
+    // first, then redirect once the signing URL is back from the server.
+    const popup = window.open(
+      "about:blank",
+      "docusign-signing",
+      "popup,width=1024,height=820,resizable=yes,scrollbars=yes",
+    );
+    if (!popup) {
+      setError(
+        "Your browser blocked the DocuSign signing popup. Allow popups for this site and try again.",
+      );
+      setIsDocusignLaunching(false);
+      return;
+    }
+
+    try {
+      const res = await fetch(`/api/memos/${memo.id}/docusign/sign`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({}),
+      });
+      if (!res.ok) {
+        popup.close();
+        const e = await res.json().catch(() => null);
+        setError(e?.error ?? "Failed to start DocuSign signing");
+        setIsDocusignLaunching(false);
+        return;
+      }
+      const data = (await res.json()) as { signingUrl?: string; envelopeId?: string };
+      if (!data.signingUrl || !data.envelopeId) {
+        popup.close();
+        setError("DocuSign returned no signing URL");
+        setIsDocusignLaunching(false);
+        return;
+      }
+
+      setDocusignEnvelopeId(data.envelopeId);
+      popup.location.replace(data.signingUrl);
+
+      // Poll the popup until it either closes or navigates back to our
+      // same-origin return URL. While on DocuSign's host the location
+      // read throws SecurityError — we just swallow and try again.
+      const startedAt = Date.now();
+      const interval = window.setInterval(() => {
+        // Hard timeout (15 min) so we never leak intervals.
+        if (Date.now() - startedAt > 15 * 60_000) {
+          window.clearInterval(interval);
+          if (!popup.closed) popup.close();
+          fetchMemo();
+          return;
+        }
+        if (popup.closed) {
+          window.clearInterval(interval);
+          // Refresh in case the signing completed via webhook.
+          fetchMemo();
+          return;
+        }
+        try {
+          const href = popup.location.href;
+          if (href.includes("/docusign/return")) {
+            const url = new URL(href);
+            const event = url.searchParams.get("event") ?? "signing_complete";
+            window.clearInterval(interval);
+            setDocusignEvent(event);
+            popup.close();
+            fetchMemo();
+          }
+        } catch {
+          // Cross-origin (still on DocuSign) — keep polling.
+        }
+      }, 600);
+    } catch {
+      if (!popup.closed) popup.close();
+      setError("Network error launching DocuSign");
+    } finally {
+      setIsDocusignLaunching(false);
     }
   }
 
@@ -363,10 +470,30 @@ export default function MemoDetailPage() {
 
     const { toPng } = await import("html-to-image");
     const { PDFDocument } = await import("pdf-lib");
-    const dataUrl = await toPng(el, { pixelRatio: 2, cacheBust: true });
-    Object.assign(wrapper.style, prev);
+    let dataUrl: string;
+    try {
+      dataUrl = await toPng(el, {
+        pixelRatio: 2,
+        // Don't cache-bust — our signature/stamp endpoints don't accept
+        // arbitrary query params and 404 turns into an HTML response that
+        // taints the canvas. Same-origin assets cache-bust naturally as
+        // the user uploads new versions.
+        cacheBust: false,
+      });
+    } finally {
+      Object.assign(wrapper.style, prev);
+    }
+    if (!dataUrl || !dataUrl.startsWith("data:image")) {
+      throw new Error("html-to-image returned no image data");
+    }
 
-    const imgBytes = await fetch(dataUrl).then((r) => r.arrayBuffer());
+    // Convert data URL → Uint8Array directly — fetch(dataUrl) is flaky in
+    // some browsers and throws an opaque "fetch" error on long data URIs.
+    const base64 = dataUrl.slice(dataUrl.indexOf(",") + 1);
+    const binary = atob(base64);
+    const imgBytes = new Uint8Array(binary.length);
+    for (let i = 0; i < binary.length; i++) imgBytes[i] = binary.charCodeAt(i);
+
     const pdfDoc = await PDFDocument.create();
     const img = await pdfDoc.embedPng(imgBytes);
     const pageW = 595.28;
@@ -397,16 +524,32 @@ export default function MemoDetailPage() {
     return URL.createObjectURL(blob);
   }
 
+  /**
+   * Single source of truth for the memo PDF — resolves to the latest
+   * server-stored version (one snapshot per state change: created,
+   * signed, recommended, approved, etc.). Used by both Preview Memo
+   * and Download Memo so the user always sees the freshest snapshot.
+   *
+   * Cache-busted with a timestamp so the iframe reloads each click —
+   * critical because consecutive previews after a sign / approval
+   * would otherwise serve the cached PDF.
+   */
+  async function getLatestMemoPdfUrl(): Promise<string> {
+    if (!memo) return await generatePdfBlobUrl();
+    return `/api/memos/${memo.id}/versions/latest?t=${Date.now()}`;
+  }
+
   async function handleDownloadPdf() {
-    if (!printRef.current || isDownloading) return;
+    if (isDownloading) return;
     setIsDownloading(true);
     try {
-      const url = await generatePdfBlobUrl();
+      const url = await getLatestMemoPdfUrl();
+      const isBlob = url.startsWith("blob:");
       const a = document.createElement("a");
       a.href = url;
       a.download = `${memo?.referenceNumber ?? "memo"}.pdf`;
       a.click();
-      setTimeout(() => URL.revokeObjectURL(url), 10000);
+      if (isBlob) setTimeout(() => URL.revokeObjectURL(url), 10000);
     } catch {
       window.print();
     } finally {
@@ -415,20 +558,26 @@ export default function MemoDetailPage() {
   }
 
   async function handlePreviewTemplate() {
-    if (!printRef.current || isGeneratingPreview) return;
+    if (isGeneratingPreview) return;
     setIsGeneratingPreview(true);
+    setError(null);
     try {
-      const url = await generatePdfBlobUrl();
+      const url = await getLatestMemoPdfUrl();
       setPreviewTemplateUrl(url);
-    } catch {
-      // ignore
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : "Failed to render memo preview";
+      setError(`Preview failed: ${msg}`);
     } finally {
       setIsGeneratingPreview(false);
     }
   }
 
   function closeTemplatePreview() {
-    if (previewTemplateUrl) URL.revokeObjectURL(previewTemplateUrl);
+    // Only revoke if it's a blob URL we created — the DocuSign signed
+    // PDF is a regular API path that must not be revoked.
+    if (previewTemplateUrl?.startsWith("blob:")) {
+      URL.revokeObjectURL(previewTemplateUrl);
+    }
     setPreviewTemplateUrl(null);
   }
 
@@ -762,7 +911,7 @@ export default function MemoDetailPage() {
                 <path strokeLinecap="round" strokeLinejoin="round" d="M3 16.5v2.25A2.25 2.25 0 0 0 5.25 21h13.5A2.25 2.25 0 0 0 21 18.75V16.5M16.5 12 12 16.5m0 0L7.5 12m4.5 4.5V3" />
               </svg>
             )}
-            {isDownloading ? "Generating..." : "Download PDF"}
+            {isDownloading ? "Generating..." : "Download Memo"}
           </button>
           <button
             onClick={handlePreviewTemplate}
@@ -777,9 +926,97 @@ export default function MemoDetailPage() {
                 <path strokeLinecap="round" strokeLinejoin="round" d="M15 12a3 3 0 1 1-6 0 3 3 0 0 1 6 0Z" />
               </svg>
             )}
-            {isGeneratingPreview ? "Generating..." : "Preview Template"}
+            {isGeneratingPreview ? "Generating..." : "Preview Memo"}
           </button>
         </div>
+      )}
+
+      {/* Electronic signature confirmation — for memos signed
+          electronically. Visible to anyone viewing the memo so the
+          signature method is clearly attributed (parallel to the
+          green "Digitally signed with DocuSign" badge below). */}
+      {memo.signatureMethod === "electronic" && (
+        <div className="rounded-xl border border-emerald-200 dark:border-emerald-800 bg-emerald-50 dark:bg-emerald-950/30 px-4 py-3 flex flex-wrap items-center gap-3">
+          <div className="w-9 h-9 rounded-lg bg-emerald-600 flex items-center justify-center shrink-0">
+            <svg className="w-5 h-5 text-white" fill="none" viewBox="0 0 24 24" strokeWidth={1.7} stroke="currentColor">
+              <path strokeLinecap="round" strokeLinejoin="round" d="M16.862 4.487l1.687-1.688a1.875 1.875 0 1 1 2.652 2.652L6.832 19.82a4.5 4.5 0 0 1-1.897 1.13l-2.685.8.8-2.685a4.5 4.5 0 0 1 1.13-1.897L16.863 4.487Zm0 0L19.5 7.125" />
+            </svg>
+          </div>
+          <div className="flex-1 min-w-0">
+            <p className="text-sm font-semibold text-emerald-900 dark:text-emerald-100">
+              Signed electronically
+            </p>
+            <p className="text-xs text-emerald-800 dark:text-emerald-300 mt-0.5">
+              The initiator&apos;s saved signature is embedded in the memo PDF.
+            </p>
+          </div>
+        </div>
+      )}
+
+      {/* DocuSign initiator panel — only the memo's own initiator sees this.
+          Signing here cryptographically claims ownership of the memo before
+          (or alongside) approval routing.
+          Hidden when the initiator signed electronically (signatureMethod
+          set at memo creation) — they've already claimed ownership and we
+          don't want to nag them to sign a second time. The panel still
+          shows for memos missing a signatureMethod (legacy data) so users
+          can opt in retroactively. */}
+      {memo.isInitiator &&
+        memo.docusign?.available &&
+        memo.signatureMethod !== "electronic" && (
+        memo.docusign.hasSignedPdf ? (
+          <div className="rounded-xl border border-emerald-200 dark:border-emerald-800 bg-emerald-50 dark:bg-emerald-950/30 px-4 py-3 flex flex-wrap items-center gap-3">
+            <div className="w-9 h-9 rounded-lg bg-emerald-600 flex items-center justify-center shrink-0">
+              <svg className="w-5 h-5 text-white" fill="none" viewBox="0 0 24 24" strokeWidth={2} stroke="currentColor">
+                <path strokeLinecap="round" strokeLinejoin="round" d="M9 12.75 11.25 15 15 9.75M21 12a9 9 0 1 1-18 0 9 9 0 0 1 18 0Z" />
+              </svg>
+            </div>
+            <div className="flex-1 min-w-0">
+              <p className="text-sm font-semibold text-emerald-900 dark:text-emerald-100">
+                Digitally signed with DocuSign
+              </p>
+              <p className="text-xs text-emerald-800 dark:text-emerald-300 mt-0.5">
+                Signed {memo.docusign.signedAt ? formatDateTime(memo.docusign.signedAt) : ""}
+                {memo.docusign.envelopeId ? ` · envelope ${memo.docusign.envelopeId.slice(0, 8)}…` : ""}
+              </p>
+            </div>
+            {/* No standalone "View signed PDF" — Preview Memo + Download
+                Memo at the top of the page resolve to the latest
+                version (signed PDF when present); the Versions panel
+                shows every prior snapshot. Two buttons, not three. */}
+          </div>
+        ) : (
+          <div className="rounded-xl border border-[#02773b]/30 bg-[#02773b]/5 dark:bg-[#02773b]/10 px-4 py-3 flex flex-wrap items-center gap-3">
+            <div className="w-9 h-9 rounded-lg bg-[#02773b] flex items-center justify-center shrink-0">
+              <svg className="w-5 h-5 text-white" fill="none" viewBox="0 0 24 24" strokeWidth={1.7} stroke="currentColor">
+                <path strokeLinecap="round" strokeLinejoin="round" d="M16.862 4.487l1.687-1.688a1.875 1.875 0 1 1 2.652 2.652L6.832 19.82a4.5 4.5 0 0 1-1.897 1.13l-2.685.8.8-2.685a4.5 4.5 0 0 1 1.13-1.897L16.863 4.487Zm0 0L19.5 7.125" />
+              </svg>
+            </div>
+            <div className="flex-1 min-w-0">
+              <p className="text-sm font-semibold text-gray-900 dark:text-gray-100">
+                Claim ownership with a digital signature
+              </p>
+              <p className="text-xs text-gray-600 dark:text-gray-400 mt-0.5">
+                As the initiator, you can cryptographically sign this memo via DocuSign.
+                The signed PDF (with certificate of completion) is filed back automatically.
+              </p>
+            </div>
+            <button
+              onClick={() => handleSignWithDocusign()}
+              disabled={isDocusignLaunching}
+              className="inline-flex items-center gap-2 h-9 px-4 rounded-lg bg-[#02773b] text-white font-medium text-sm transition-colors hover:bg-[#015e2e] disabled:opacity-50 disabled:cursor-not-allowed"
+            >
+              {isDocusignLaunching ? (
+                <div className="w-4 h-4 border-2 border-white/40 border-t-white rounded-full animate-spin" />
+              ) : (
+                <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" strokeWidth={1.7} stroke="currentColor">
+                  <path strokeLinecap="round" strokeLinejoin="round" d="M16.862 4.487l1.687-1.688a1.875 1.875 0 1 1 2.652 2.652L6.832 19.82a4.5 4.5 0 0 1-1.897 1.13l-2.685.8.8-2.685a4.5 4.5 0 0 1 1.13-1.897L16.863 4.487Zm0 0L19.5 7.125" />
+                </svg>
+              )}
+              {isDocusignLaunching ? "Opening DocuSign…" : "Sign with DocuSign"}
+            </button>
+          </div>
+        )
       )}
 
       {/* Clarification action — shown when this user is the clarification target */}
@@ -947,7 +1184,7 @@ export default function MemoDetailPage() {
                     <path strokeLinecap="round" strokeLinejoin="round" d="M3 16.5v2.25A2.25 2.25 0 0 0 5.25 21h13.5A2.25 2.25 0 0 0 21 18.75V16.5M16.5 12 12 16.5m0 0L7.5 12m4.5 4.5V3" />
                   </svg>
                 )}
-                {isDownloading ? "Generating..." : "Download PDF"}
+                {isDownloading ? "Generating..." : "Download Memo"}
               </button>
               <button
                 onClick={handlePreviewTemplate}
@@ -962,7 +1199,7 @@ export default function MemoDetailPage() {
                     <path strokeLinecap="round" strokeLinejoin="round" d="M15 12a3 3 0 1 1-6 0 3 3 0 0 1 6 0Z" />
                   </svg>
                 )}
-                {isGeneratingPreview ? "Generating..." : "Preview Template"}
+                {isGeneratingPreview ? "Generating..." : "Preview Memo"}
               </button>
             </div>
           </div>
@@ -1413,6 +1650,11 @@ export default function MemoDetailPage() {
             </div>
           </div>
         )}
+
+        {/* Versions panel — every memo state change snapshots a PDF
+            (initial submission, signing, recommendation, approval,
+            etc.). Latest is what Preview/Download Memo shows. */}
+        <MemoVersionsPanel memoId={memo.id} />
 
         {/* Activity Timeline */}
         <div className="bg-white dark:bg-gray-900 rounded-2xl border border-gray-200 dark:border-gray-800 overflow-hidden animate-slide-up delay-200">
@@ -2311,7 +2553,55 @@ export default function MemoDetailPage() {
         );
       })()}
 
-      {/* Template Preview — iframe viewer (same as file attachment viewer) */}
+      {/* DocuSign signing happens in a popup window (DocuSign blocks
+          iframes via X-Frame-Options on its hosted signing page). The
+          popup is opened in handleSignWithDocusign and closes itself
+          when DocuSign navigates back to our return URL. */}
+
+      {/* DocuSign post-sign banner */}
+      {docusignEvent && (
+        <div className="fixed bottom-6 right-6 z-40 max-w-sm rounded-xl shadow-lg border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-900 px-4 py-3 flex items-start gap-3">
+          {docusignEvent === "signing_complete" ? (
+            <>
+              <svg className="w-5 h-5 text-emerald-500 shrink-0 mt-0.5" fill="none" viewBox="0 0 24 24" strokeWidth={2} stroke="currentColor">
+                <path strokeLinecap="round" strokeLinejoin="round" d="M9 12.75 11.25 15 15 9.75M21 12a9 9 0 1 1-18 0 9 9 0 0 1 18 0Z" />
+              </svg>
+              <div className="flex-1 min-w-0">
+                <p className="text-sm font-semibold text-gray-900 dark:text-gray-100">
+                  Memo signed
+                </p>
+                <p className="text-xs text-gray-500 dark:text-gray-400 mt-0.5">
+                  Signed PDF + certificate of completion saved to the memo.
+                </p>
+              </div>
+            </>
+          ) : (
+            <>
+              <svg className="w-5 h-5 text-amber-500 shrink-0 mt-0.5" fill="none" viewBox="0 0 24 24" strokeWidth={2} stroke="currentColor">
+                <path strokeLinecap="round" strokeLinejoin="round" d="M12 9v3.75m-9.303 3.376c-.866 1.5.217 3.374 1.948 3.374h14.71c1.73 0 2.813-1.874 1.948-3.374L13.949 3.378c-.866-1.5-3.032-1.5-3.898 0L2.697 16.126ZM12 15.75h.007v.008H12v-.008Z" />
+              </svg>
+              <div className="flex-1 min-w-0">
+                <p className="text-sm font-semibold text-gray-900 dark:text-gray-100">
+                  Signing not completed
+                </p>
+                <p className="text-xs text-gray-500 dark:text-gray-400 mt-0.5">
+                  Event: {docusignEvent}. Reopen the memo and try again.
+                </p>
+              </div>
+            </>
+          )}
+          <button
+            onClick={() => setDocusignEvent(null)}
+            className="text-gray-400 hover:text-gray-700 dark:hover:text-gray-300 shrink-0"
+          >
+            <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" strokeWidth={2} stroke="currentColor">
+              <path strokeLinecap="round" strokeLinejoin="round" d="M6 18 18 6M6 6l12 12" />
+            </svg>
+          </button>
+        </div>
+      )}
+
+      {/* Memo Preview — iframe viewer (same as file attachment viewer) */}
       {previewTemplateUrl && (
         <div className="fixed top-16 left-0 lg:left-64 right-0 bottom-0 z-20 flex flex-col bg-white dark:bg-gray-950">
           {/* Toolbar */}
@@ -2321,7 +2611,7 @@ export default function MemoDetailPage() {
                 <path strokeLinecap="round" strokeLinejoin="round" d="M19.5 14.25v-2.625a3.375 3.375 0 0 0-3.375-3.375h-1.5A1.125 1.125 0 0 1 13.5 7.125v-1.5a3.375 3.375 0 0 0-3.375-3.375H8.25m2.25 0H5.625c-.621 0-1.125.504-1.125 1.125v17.25c0 .621.504 1.125 1.125 1.125h12.75c.621 0 1.125-.504 1.125-1.125V11.25a9 9 0 0 0-9-9Z" />
               </svg>
               <span className="text-sm font-medium text-gray-900 dark:text-gray-100 truncate">
-                {memo.referenceNumber} — Template Preview
+                {memo.referenceNumber} — Memo Preview
               </span>
             </div>
             <div className="flex items-center gap-2 shrink-0">
@@ -2337,7 +2627,7 @@ export default function MemoDetailPage() {
                     <path strokeLinecap="round" strokeLinejoin="round" d="M3 16.5v2.25A2.25 2.25 0 0 0 5.25 21h13.5A2.25 2.25 0 0 0 21 18.75V16.5M16.5 12 12 16.5m0 0L7.5 12m4.5 4.5V3" />
                   </svg>
                 )}
-                {isDownloading ? "Generating..." : "Download PDF"}
+                {isDownloading ? "Generating..." : "Download Memo"}
               </button>
               <button
                 onClick={closeTemplatePreview}
@@ -2355,7 +2645,7 @@ export default function MemoDetailPage() {
             <iframe
               src={`${previewTemplateUrl}#view=FitH&zoom=page-width&toolbar=1&navpanes=0`}
               className="w-full h-full border-0"
-              title="Template Preview"
+              title="Memo Preview"
             />
           </div>
         </div>

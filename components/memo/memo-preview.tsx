@@ -18,8 +18,19 @@ export interface MemoPreviewProps {
   bodyHtml: string; // Rich text HTML from editor
   senderName?: string; // e.g., "Dr. Wangari Gathuthi"
   senderTitle?: string; // e.g., "REGISTRAR (AA)"
+  /** URL to the sender's saved signature image (PNG/JPEG). Rendered above
+   *  the typed name in the preview & PDF. */
+  senderSignatureUrl?: string;
+  /** Optional URL to the sender's office stamp/seal — overlays the signature. */
+  senderStampUrl?: string;
   copyTo?: string[]; // e.g., ["Vice Chancellor", "Deputy Vice Chancellor (ARSA)", ...]
   isDraft?: boolean;
+  /** When true, hides the embedded signature image and inserts a tiny
+   *  invisible "/sn1/" anchor near the signature line so DocuSign can
+   *  place its signature box at exactly the right spot. Lets the PDF
+   *  sent to DocuSign be the *same* MemoDocument template as the
+   *  electronic-signed download — no second template to maintain. */
+  digitalSignatureMode?: boolean;
   /** When true (default), FROM row appears first; when false, TO row appears first. */
   senderIsSuperior?: boolean;
   recommenders?: {
@@ -65,6 +76,8 @@ export default function MemoPreview({
   bodyHtml,
   senderName,
   senderTitle,
+  senderSignatureUrl,
+  senderStampUrl,
   copyTo,
   isDraft = true,
   senderIsSuperior = true,
@@ -259,15 +272,54 @@ export default function MemoPreview({
         {/* ---- Initiator / Sender signature ---- */}
         {(senderName || senderTitle) && (
           <div style={{ marginBottom: "6mm" }}>
-            <div
-              style={{
-                borderBottom: "1px dashed #999",
-                minWidth: "50mm",
-                maxWidth: "60mm",
-                height: "7mm",
-                marginBottom: "1mm",
-              }}
-            />
+            {senderSignatureUrl ? (
+              <div
+                style={{
+                  position: "relative",
+                  width: "70mm",
+                  height: "20mm",
+                  marginBottom: "1mm",
+                }}
+              >
+                {/* eslint-disable-next-line @next/next/no-img-element */}
+                <img
+                  src={senderSignatureUrl}
+                  alt="Signature"
+                  style={{
+                    maxHeight: "20mm",
+                    maxWidth: "60mm",
+                    objectFit: "contain",
+                    objectPosition: "left center",
+                  }}
+                />
+                {senderStampUrl && (
+                  /* eslint-disable-next-line @next/next/no-img-element */
+                  <img
+                    src={senderStampUrl}
+                    alt="Stamp"
+                    style={{
+                      position: "absolute",
+                      left: "30mm",
+                      top: 0,
+                      maxHeight: "22mm",
+                      maxWidth: "30mm",
+                      opacity: 0.85,
+                      pointerEvents: "none",
+                    }}
+                  />
+                )}
+              </div>
+            ) : (
+              <div
+                style={{
+                  borderBottom: "1px dashed #999",
+                  minWidth: "50mm",
+                  maxWidth: "60mm",
+                  height: "7mm",
+                  marginBottom: "1mm",
+                }}
+              />
+            )}
             {senderName && (
               <div style={{ fontWeight: "bold", fontSize: "12pt" }}>
                 {senderName}

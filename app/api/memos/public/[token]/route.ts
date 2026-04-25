@@ -3,7 +3,7 @@ import { db } from "@/lib/db";
 import { logger } from "@/lib/logger";
 import { writeAudit } from "@/lib/audit";
 import { verifyMemoShareToken } from "@/lib/memo-share";
-import { generateMemoPdf } from "@/lib/memo-pdf";
+import { generateMemoPdf, loadUserAssetPng } from "@/lib/memo-pdf";
 
 /**
  * GET /api/memos/public/[token] — public memo viewer.
@@ -85,6 +85,21 @@ export async function GET(
       (t) => t.stepName === "Final Approval" && t.action === "APPROVED"
     );
 
+    // The visible signature is the INITIATOR's — the memo is from them.
+    // Approvers acknowledge in the "APPROVED" strip below the signature.
+    const formDataInitiatorId = (formData.fromId as string | undefined) ?? null;
+    const signerUserId = formDataInitiatorId ?? memo.initiatedById;
+    const signer = signerUserId
+      ? await db.user.findUnique({
+          where: { id: signerUserId },
+          select: { signatureImage: true, officeStamp: true },
+        })
+      : null;
+    const [approverSignaturePng, approverStampPng] = await Promise.all([
+      loadUserAssetPng(signer?.signatureImage),
+      loadUserAssetPng(signer?.officeStamp),
+    ]);
+
     const pdfBytes = await generateMemoPdf({
       memoReference,
       workflowReference: memo.referenceNumber,
@@ -105,6 +120,8 @@ export async function GET(
             year: "numeric",
           })
         : undefined,
+      approverSignaturePng,
+      approverStampPng,
     });
 
     // Audit access (anonymous viewer — userId omitted)

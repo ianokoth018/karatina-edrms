@@ -2,7 +2,7 @@
 
 import { useState, useEffect, useCallback } from "react";
 import Link from "next/link";
-import { useRouter } from "next/navigation";
+import { useRouter, useSearchParams } from "next/navigation";
 import { useSession } from "next-auth/react";
 import { Can } from "@/components/auth/can";
 
@@ -40,6 +40,13 @@ interface MemoRow {
   currentAssignee: MemoUser | null;
   awaitingClarification?: boolean;
   trail: TrailStep[];
+}
+
+interface DraftRow {
+  id: string;
+  subject: string;
+  createdAt: string;
+  updatedAt: string;
 }
 
 interface PaginationInfo {
@@ -87,6 +94,7 @@ const STATUS_LABELS: Record<string, string> = {
 
 export default function MemosPage() {
   const router = useRouter();
+  const searchParams = useSearchParams();
   const { data: session } = useSession();
 
   const [memos, setMemos] = useState<MemoRow[]>([]);
@@ -98,9 +106,21 @@ export default function MemosPage() {
   });
   const [isLoading, setIsLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
-  const [activeTab, setActiveTab] = useState<string>("all");
+  const [activeTab, setActiveTab] = useState<string>(
+    searchParams.get("tab") ?? "all",
+  );
+
+  // Keep activeTab in sync when the URL ?tab= changes (e.g. clicking the
+  // sidebar's "My Drafts" link from another tab on this page).
+  useEffect(() => {
+    const t = searchParams.get("tab");
+    if (t && t !== activeTab) setActiveTab(t);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [searchParams]);
   const [search, setSearch] = useState("");
   const [trailMemo, setTrailMemo] = useState<MemoRow | null>(null);
+  const [drafts, setDrafts] = useState<DraftRow[]>([]);
+  const [draftsLoading, setDraftsLoading] = useState(false);
 
   const fetchMemos = useCallback(
     async (page = 1) => {
@@ -133,6 +153,45 @@ export default function MemosPage() {
   useEffect(() => {
     fetchMemos(1);
   }, [fetchMemos]);
+
+  // Load the user's autosaved drafts whenever the Drafts tab is active.
+  // Re-fetches when the user navigates back to this tab so a freshly
+  // submitted memo's draft no longer lingers in the list.
+  useEffect(() => {
+    if (activeTab !== "drafts") return;
+    let cancelled = false;
+    setDraftsLoading(true);
+    (async () => {
+      try {
+        const res = await fetch("/api/memos/drafts");
+        if (!res.ok) return;
+        const data = await res.json();
+        if (!cancelled) setDrafts(data.drafts ?? []);
+      } finally {
+        if (!cancelled) setDraftsLoading(false);
+      }
+    })();
+    return () => { cancelled = true; };
+  }, [activeTab]);
+
+  async function handleDeleteDraft(id: string) {
+    if (!confirm("Discard this draft? This cannot be undone.")) return;
+    const res = await fetch(`/api/memos/drafts/${id}`, { method: "DELETE" });
+    if (res.ok) setDrafts((curr) => curr.filter((d) => d.id !== id));
+  }
+
+  function formatRelative(iso: string): string {
+    const d = new Date(iso);
+    const diffMs = Date.now() - d.getTime();
+    const mins = Math.floor(diffMs / 60_000);
+    if (mins < 1) return "just now";
+    if (mins < 60) return `${mins} min${mins === 1 ? "" : "s"} ago`;
+    const hours = Math.floor(mins / 60);
+    if (hours < 24) return `${hours} hour${hours === 1 ? "" : "s"} ago`;
+    const days = Math.floor(hours / 24);
+    if (days < 7) return `${days} day${days === 1 ? "" : "s"} ago`;
+    return d.toLocaleDateString("en-GB", { day: "2-digit", month: "short", year: "numeric" });
+  }
 
   function handleSearch(e: React.FormEvent) {
     e.preventDefault();
@@ -257,6 +316,77 @@ export default function MemosPage() {
             </svg>
             <p className="text-sm text-red-700 dark:text-red-400">{error}</p>
           </div>
+        </div>
+      )}
+
+      {/* In-progress drafts (Drafts tab only) — shows the user's
+          autosaved memo composer state. Resume picks up the draft in
+          /memos/new?draft=<id>; Discard deletes it. */}
+      {activeTab === "drafts" && (
+        <div className="bg-white dark:bg-gray-900 rounded-xl border border-gray-200 dark:border-gray-800 overflow-hidden">
+          <div className="px-4 py-3 border-b border-gray-200 dark:border-gray-800 flex items-center justify-between gap-3">
+            <div>
+              <h2 className="text-sm font-semibold text-gray-900 dark:text-gray-100">
+                Your in-progress drafts
+              </h2>
+              <p className="text-xs text-gray-500 dark:text-gray-400 mt-0.5">
+                Memos you started but haven&apos;t submitted yet — autosaved as you type.
+              </p>
+            </div>
+            <Link
+              href="/memos/new"
+              className="inline-flex items-center gap-1.5 h-8 px-3 rounded-lg border border-karu-green/30 text-karu-green text-xs font-medium hover:bg-karu-green/5 transition-colors"
+            >
+              <svg className="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" strokeWidth={2} stroke="currentColor">
+                <path strokeLinecap="round" strokeLinejoin="round" d="M12 4.5v15m7.5-7.5h-15" />
+              </svg>
+              Start new
+            </Link>
+          </div>
+          {draftsLoading ? (
+            <div className="px-4 py-6 text-xs text-gray-500 dark:text-gray-400">Loading drafts…</div>
+          ) : drafts.length === 0 ? (
+            <div className="px-4 py-6 text-xs text-gray-500 dark:text-gray-400">
+              No saved drafts. Anything you type in the composer is autosaved here.
+            </div>
+          ) : (
+            <ul className="divide-y divide-gray-100 dark:divide-gray-800">
+              {drafts.map((d) => (
+                <li
+                  key={d.id}
+                  className="px-4 py-3 flex flex-wrap items-center gap-3 hover:bg-gray-50 dark:hover:bg-gray-800/40 transition-colors"
+                >
+                  <div className="flex-1 min-w-[200px]">
+                    <p className="text-sm font-medium text-gray-900 dark:text-gray-100 break-words">
+                      {d.subject || "Untitled draft"}
+                    </p>
+                    <p className="text-xs text-gray-500 dark:text-gray-400 mt-0.5">
+                      Last edited {formatRelative(d.updatedAt)}
+                    </p>
+                  </div>
+                  <Link
+                    href={`/memos/new?draft=${d.id}`}
+                    className="inline-flex items-center gap-1.5 h-8 px-3 rounded-lg bg-karu-green text-white text-xs font-medium hover:bg-karu-green-dark transition-colors"
+                  >
+                    <svg className="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" strokeWidth={2} stroke="currentColor">
+                      <path strokeLinecap="round" strokeLinejoin="round" d="M16.862 4.487l1.687-1.688a1.875 1.875 0 1 1 2.652 2.652L6.832 19.82a4.5 4.5 0 0 1-1.897 1.13l-2.685.8.8-2.685a4.5 4.5 0 0 1 1.13-1.897L16.863 4.487Zm0 0L19.5 7.125" />
+                    </svg>
+                    Resume
+                  </Link>
+                  <button
+                    onClick={() => handleDeleteDraft(d.id)}
+                    className="inline-flex items-center gap-1 h-8 px-3 rounded-lg border border-red-200 dark:border-red-800 text-red-600 dark:text-red-400 text-xs font-medium hover:bg-red-50 dark:hover:bg-red-950/30 transition-colors"
+                    title="Discard draft"
+                  >
+                    <svg className="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" strokeWidth={2} stroke="currentColor">
+                      <path strokeLinecap="round" strokeLinejoin="round" d="m14.74 9-.346 9m-4.788 0L9.26 9m9.968-3.21c.342.052.682.107 1.022.166m-1.022-.165L18.16 19.673a2.25 2.25 0 0 1-2.244 2.077H8.084a2.25 2.25 0 0 1-2.244-2.077L4.772 5.79m14.456 0a48.108 48.108 0 0 0-3.478-.397m-12 .562c.34-.059.68-.114 1.022-.165m0 0a48.11 48.11 0 0 1 3.478-.397m7.5 0v-.916c0-1.18-.91-2.164-2.09-2.201a51.964 51.964 0 0 0-3.32 0c-1.18.037-2.09 1.022-2.09 2.201v.916m7.5 0a48.667 48.667 0 0 0-7.5 0" />
+                    </svg>
+                    Discard
+                  </button>
+                </li>
+              ))}
+            </ul>
+          )}
         </div>
       )}
 

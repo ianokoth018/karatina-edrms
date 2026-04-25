@@ -7,7 +7,7 @@ import { logger } from "@/lib/logger";
 import { renderEmail, renderEmailText } from "@/lib/mailer";
 import { getSmtpConfig } from "@/lib/settings";
 import { createMemoShareToken } from "@/lib/memo-share";
-import { generateMemoPdf } from "@/lib/memo-pdf";
+import { generateMemoPdf, loadUserAssetPng } from "@/lib/memo-pdf";
 import MemoCirculatedEmail from "@/emails/memo-circulated";
 import nodemailer from "nodemailer";
 
@@ -119,6 +119,22 @@ export async function POST(
         })
       : undefined;
 
+    // The signature on a memo belongs to the INITIATOR (the person it's
+    // from), not the approver — that matches how official Karatina memos
+    // are signed. Approvers acknowledge in the "APPROVED" strip below.
+    const formDataInitiatorId = (formData.fromId as string | undefined) ?? null;
+    const signerUserId = formDataInitiatorId ?? memo.initiatedById;
+    const signer = signerUserId
+      ? await db.user.findUnique({
+          where: { id: signerUserId },
+          select: { signatureImage: true, officeStamp: true },
+        })
+      : null;
+    const [approverSignaturePng, approverStampPng] = await Promise.all([
+      loadUserAssetPng(signer?.signatureImage),
+      loadUserAssetPng(signer?.officeStamp),
+    ]);
+
     const pdfBytes = await generateMemoPdf({
       memoReference: memoRef,
       workflowReference: memo.referenceNumber,
@@ -142,6 +158,8 @@ export async function POST(
       approvedByName,
       approvedByTitle: approverTask?.assignee?.jobTitle ?? undefined,
       approvedAt,
+      approverSignaturePng,
+      approverStampPng,
     });
 
     // Public share token + URLs

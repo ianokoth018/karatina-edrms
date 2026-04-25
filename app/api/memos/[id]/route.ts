@@ -3,6 +3,7 @@ import { auth } from "@/lib/auth";
 import { db } from "@/lib/db";
 import { writeAudit } from "@/lib/audit";
 import { logger } from "@/lib/logger";
+import { getDocusignConfig } from "@/lib/settings";
 
 // ---------------------------------------------------------------------------
 // GET /api/memos/[id] -- fetch a single memo with full details
@@ -237,6 +238,16 @@ export async function GET(
       initiatedById: memo.initiatedById,
       isInitiator: memo.initiatedById === userId,
       originalInitiatedBy,
+      signatureMethod: memo.signatureMethod ?? null,
+      docusign: {
+        status: memo.docusignStatus ?? null,
+        signedAt: memo.docusignSignedAt?.toISOString() ?? null,
+        hasSignedPdf: Boolean(memo.docusignSignedPdf),
+        envelopeId: memo.docusignEnvelopeId ?? null,
+        available: await getDocusignConfig()
+          .then((c) => Boolean(c?.enabled))
+          .catch(() => false),
+      },
       departmentOffice: (formData?.departmentOffice as string) ?? "",
       designation: (formData?.designation as string) ?? "",
       cc: resolvedCc,
@@ -804,6 +815,25 @@ export async function PATCH(
         comment: comment?.trim(),
       },
     });
+
+    // Snapshot a new memo version so the action is captured as a
+    // distinct PDF in the Versions panel (one row per state change).
+    try {
+      const { snapshotMemoVersion } = await import("@/lib/memo-versions");
+      const verb =
+        action === "APPROVE" ? "Approved"
+        : action === "RECOMMEND" ? "Recommended"
+        : action === "REJECT" ? "Rejected"
+        : action === "RETURN" ? "Returned for revision"
+        : action === "SEEK_CLARIFICATION" ? "Clarification requested"
+        : "Updated";
+      const note = comment?.trim()
+        ? `${verb} at "${currentTask.stepName}" by ${session.user.name ?? "user"} — ${comment.trim()}`
+        : `${verb} at "${currentTask.stepName}" by ${session.user.name ?? "user"}`;
+      await snapshotMemoVersion(memo.id, note, session.user.id);
+    } catch (err) {
+      logger.error("Failed to record action memo version", err, { memoId: memo.id, action });
+    }
 
     if (currentTask.stepName === "HOD Endorsement" && taskAction === "APPROVED") {
       await writeAudit({

@@ -17,9 +17,9 @@ export const metadata: Metadata = {
   title: "Karatina University EDRMS",
   description:
     "Electronic Document and Records Management System for Karatina University",
-  icons: {
-    icon: "/favicon.ico",
-  },
+  // Favicons + apple-touch-icon are auto-discovered from app/icon.png and
+  // app/apple-icon.png — explicit overrides removed so Next.js handles
+  // size variants automatically.
 };
 
 export default function RootLayout({
