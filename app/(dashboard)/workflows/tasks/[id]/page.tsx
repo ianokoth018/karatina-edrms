@@ -1239,7 +1239,7 @@ function DocumentViewer({
       {/* Viewer */}
       <div className="flex-1 min-h-0 bg-gray-100 dark:bg-gray-900">
         {isPdf(file.mimeType) ? (
-          <iframe src={fileUrl(file.storagePath)} className="w-full h-full border-0" title={file.fileName} />
+          <iframe src={`${fileUrl(file.storagePath)}#view=FitH&zoom=page-width&toolbar=1&navpanes=0`} className="w-full h-full border-0" title={file.fileName} />
         ) : isImage(file.mimeType) ? (
           <div className="w-full h-full flex items-center justify-center p-6 overflow-auto">
             {/* eslint-disable-next-line @next/next/no-img-element */}

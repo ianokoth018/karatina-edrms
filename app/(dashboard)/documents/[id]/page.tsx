@@ -668,12 +668,18 @@ export default function DocumentDetailPage({
   const isPdf = primaryFile?.mimeType === "application/pdf";
   const hasRendition = primaryFile?.renditionStatus === "DONE" && !!primaryFile?.renditionPath;
   const canPreview = isPdf || hasRendition;
+  // Append PDF.js viewer hints (#view=FitH&zoom=page-width) so narrow
+  // viewports auto-scale the page to the iframe width instead of forcing
+  // horizontal scroll inside the viewer.
+  const PDF_VIEW_HINTS = "#view=FitH&zoom=page-width&toolbar=1&navpanes=0";
   const previewSrc = isPdf
-    ? `/api/files?path=${encodeURIComponent(primaryFile.storagePath)}`
+    ? `/api/files?path=${encodeURIComponent(primaryFile.storagePath)}${PDF_VIEW_HINTS}`
     : hasRendition
-    ? `/api/files?path=${encodeURIComponent(primaryFile.storagePath)}&rendition=1`
+    ? `/api/files?path=${encodeURIComponent(primaryFile.storagePath)}&rendition=1${PDF_VIEW_HINTS}`
     : null;
-  const watermarkedSrc = previewSrc ? `${previewSrc}&watermark=1` : null;
+  const watermarkedSrc = previewSrc
+    ? `/api/files?path=${encodeURIComponent(primaryFile.storagePath)}${hasRendition && !isPdf ? "&rendition=1" : ""}&watermark=1${PDF_VIEW_HINTS}`
+    : null;
   const perms = doc.effectivePermissions ?? VIEW_ONLY_PERMISSIONS;
 
   // Watch/subscribe state (lazy-loaded)

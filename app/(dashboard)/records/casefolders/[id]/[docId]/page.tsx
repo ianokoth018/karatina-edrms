@@ -707,16 +707,33 @@ function DocumentViewer({
         </div>
       </div>
 
-      {/* Viewer area */}
-      <div className="flex-1 min-h-0 bg-gray-100 dark:bg-gray-900">
+      {/* Viewer area — explicit viewport-relative height on small screens
+       *  so the iframe renders even when its flex parent has no pixel height
+       *  (which collapses h-full to 0). lg+ falls back to flex-fill. */}
+      <div className="flex-1 min-h-0 bg-gray-100 dark:bg-gray-900 relative">
         {isPdf(file.mimeType) ? (
-          <iframe
-            src={fileUrl(file.storagePath)}
-            className="w-full h-full border-0"
-            title={file.fileName}
-          />
+          <>
+            <iframe
+              src={`${fileUrl(file.storagePath)}#view=FitH&zoom=page-width&toolbar=1&navpanes=0`}
+              className="w-full h-[calc(100vh-12rem)] lg:h-full block border-0"
+              title={file.fileName}
+            />
+            {/* Mobile-friendly "open full screen" pill — hands the user off to
+             *  the browser's native PDF viewer where they can pinch-zoom. */}
+            <a
+              href={fileUrl(file.storagePath)}
+              target="_blank"
+              rel="noopener noreferrer"
+              className="lg:hidden absolute bottom-3 right-3 inline-flex items-center gap-1.5 px-3 py-2 rounded-full text-xs font-semibold bg-[#02773b] text-white shadow-lg hover:bg-[#025f2f] transition-colors"
+            >
+              <svg className="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" strokeWidth={2} stroke="currentColor">
+                <path strokeLinecap="round" strokeLinejoin="round" d="M3.75 3.75v4.5m0-4.5h4.5m-4.5 0L9 9M3.75 20.25v-4.5m0 4.5h4.5m-4.5 0L9 15M20.25 3.75h-4.5m4.5 0v4.5m0-4.5L15 9m5.25 11.25h-4.5m4.5 0v-4.5m0 4.5L15 15" />
+              </svg>
+              Open full screen
+            </a>
+          </>
         ) : isImage(file.mimeType) ? (
-          <div className="w-full h-full flex items-center justify-center p-6 overflow-auto">
+          <div className="w-full h-[calc(100vh-12rem)] lg:h-full flex items-center justify-center p-6 overflow-auto">
             {/* eslint-disable-next-line @next/next/no-img-element */}
             <img
               src={fileUrl(file.storagePath)}
@@ -726,7 +743,7 @@ function DocumentViewer({
           </div>
         ) : (
           /* Unsupported type — download prompt */
-          <div className="w-full h-full flex flex-col items-center justify-center text-center px-6">
+          <div className="w-full h-[calc(100vh-12rem)] lg:h-full flex flex-col items-center justify-center text-center px-6">
             <div className="w-20 h-20 rounded-2xl bg-[#dd9f42]/10 flex items-center justify-center mb-5">
               <IconFile className="w-10 h-10 text-[#dd9f42]" />
             </div>
@@ -841,6 +858,8 @@ export default function CasefolderDocumentViewerPage({
   const [saveError, setSaveError] = useState<string | null>(null);
   const [saveSuccess, setSaveSuccess] = useState(false);
   const [selectedFileIndex, setSelectedFileIndex] = useState(0);
+  /** Mobile-only: which pane is showing. Ignored on lg+ where both are visible. */
+  const [mobilePane, setMobilePane] = useState<"viewer" | "details">("viewer");
 
   /* ---- Sibling docs (folder navigation) ---- */
   const [folderDocs, setFolderDocs] = useState<{ id: string; title: string; referenceNumber: string; status: string; metadata: Record<string, unknown> }[]>([]);
@@ -978,11 +997,59 @@ export default function CasefolderDocumentViewerPage({
   /* ================================================================ */
 
   return (
-    <div className="flex flex-col lg:flex-row h-[calc(100vh-4rem)]">
+    <div className="flex flex-col lg:flex-row lg:h-[calc(100vh-4rem)]">
+      {/* ============================================================ */}
+      {/*  Mobile-only tab switcher: Viewer ↔ Details                  */}
+      {/*  Hidden on lg+ where both panels render side-by-side         */}
+      {/* ============================================================ */}
+      <div className="lg:hidden sticky top-0 z-10 flex items-stretch border-b border-gray-200 dark:border-gray-800 bg-white dark:bg-gray-950">
+        {(
+          [
+            {
+              key: "viewer" as const,
+              label: "Document",
+              icon: (
+                <svg className="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" strokeWidth={1.7} stroke="currentColor">
+                  <path strokeLinecap="round" strokeLinejoin="round" d="M19.5 14.25v-2.625a3.375 3.375 0 0 0-3.375-3.375h-1.5A1.125 1.125 0 0 1 13.5 7.125v-1.5a3.375 3.375 0 0 0-3.375-3.375H8.25m2.25 0H5.625c-.621 0-1.125.504-1.125 1.125v17.25c0 .621.504 1.125 1.125 1.125h12.75c.621 0 1.125-.504 1.125-1.125V11.25a9 9 0 0 0-9-9Z" />
+                </svg>
+              ),
+            },
+            {
+              key: "details" as const,
+              label: "Details",
+              icon: (
+                <svg className="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" strokeWidth={1.7} stroke="currentColor">
+                  <path strokeLinecap="round" strokeLinejoin="round" d="M11.25 11.25l.041-.02a.75.75 0 0 1 1.063.852l-.708 2.836a.75.75 0 0 0 1.063.853l.041-.021M21 12a9 9 0 1 1-18 0 9 9 0 0 1 18 0Zm-9-3.75h.008v.008H12V8.25Z" />
+                </svg>
+              ),
+            },
+          ] as const
+        ).map((t) => (
+          <button
+            key={t.key}
+            onClick={() => setMobilePane(t.key)}
+            className={`flex-1 inline-flex items-center justify-center gap-1.5 py-3 text-sm font-medium transition-colors border-b-2 -mb-px ${
+              mobilePane === t.key
+                ? "border-[#02773b] text-[#02773b]"
+                : "border-transparent text-gray-500 dark:text-gray-400 hover:text-gray-700 dark:hover:text-gray-200"
+            }`}
+          >
+            {t.icon}
+            {t.label}
+          </button>
+        ))}
+      </div>
+
       {/* ============================================================ */}
       {/*  LEFT PANEL — Metadata                                        */}
+      {/*  Mobile: full width, only visible when "details" tab is active */}
+      {/*  Desktop: fixed-width side column                             */}
       {/* ============================================================ */}
-      <aside className="w-full lg:w-[35%] lg:min-w-[340px] lg:max-w-[480px] border-b lg:border-b-0 lg:border-r border-gray-200 dark:border-gray-800 bg-white dark:bg-gray-950 flex flex-col overflow-hidden">
+      <aside
+        className={`w-full lg:w-[35%] lg:min-w-[340px] lg:max-w-[480px] border-b lg:border-b-0 lg:border-r border-gray-200 dark:border-gray-800 bg-white dark:bg-gray-950 flex flex-col overflow-hidden lg:flex ${
+          mobilePane === "details" ? "flex" : "hidden"
+        }`}
+      >
         <div className="flex-1 overflow-y-auto p-5 space-y-5">
           {/* ---- Back + casefolder badge ---- */}
           <div className="flex items-center gap-2 flex-wrap">
@@ -1355,8 +1422,13 @@ export default function CasefolderDocumentViewerPage({
 
       {/* ============================================================ */}
       {/*  RIGHT PANEL — Document Viewer                                */}
+      {/*  Mobile: visible only when "viewer" tab is active             */}
       {/* ============================================================ */}
-      <main className="flex-1 flex flex-col min-h-0 bg-gray-50 dark:bg-gray-900">
+      <main
+        className={`flex-1 flex-col min-h-0 bg-gray-50 dark:bg-gray-900 lg:flex h-[calc(100vh-8rem)] lg:h-auto ${
+          mobilePane === "viewer" ? "flex" : "hidden"
+        }`}
+      >
         <DocumentViewer
           files={doc.files}
           selectedFileIndex={selectedFileIndex}

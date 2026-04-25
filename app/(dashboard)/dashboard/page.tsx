@@ -1041,15 +1041,15 @@ export default function DashboardPage() {
         </section>
       </Can>
 
-      {/* My Memo Centre + Pending Tasks (side by side on xl) */}
+      {/* My Memo Centre + Pending Tasks (side by side on lg+) */}
       {(showMemosPanel || showTasksPanel) && (
         <div
           className={`grid grid-cols-1 gap-6 animate-slide-up delay-400 ${
-            showMemosPanel && showTasksPanel ? "xl:grid-cols-3" : ""
+            showMemosPanel && showTasksPanel ? "lg:grid-cols-3" : ""
           }`}
         >
           {showMemosPanel && (
-            <div className={showTasksPanel ? "xl:col-span-2" : ""}>
+            <div className={showTasksPanel ? "lg:col-span-2" : ""}>
               <MyMemoCentre
                 recent={memos}
                 pending={pendingMyAction}
@@ -1189,13 +1189,13 @@ function MyMemoCentre({
         )}
       </div>
 
-      {/* Tabs */}
-      <div className="flex items-center gap-0 px-5 border-b border-gray-200 dark:border-gray-800 overflow-x-auto">
+      {/* Tabs — equal-width on mobile so they always fit, natural width on sm+ */}
+      <div className="flex items-stretch px-2 sm:px-5 border-b border-gray-200 dark:border-gray-800">
         {tabs.map((t) => (
           <button
             key={t.key}
             onClick={() => setTab(t.key)}
-            className={`flex items-center gap-1.5 py-2.5 px-3 -mb-px border-b-2 text-sm font-medium transition-colors whitespace-nowrap ${
+            className={`flex-1 sm:flex-initial flex items-center justify-center gap-1.5 py-2.5 px-2 sm:px-3 -mb-px border-b-2 text-sm font-medium transition-colors whitespace-nowrap ${
               tab === t.key
                 ? "border-karu-green text-karu-green"
                 : "border-transparent text-gray-500 dark:text-gray-400 hover:text-gray-700 dark:hover:text-gray-200"

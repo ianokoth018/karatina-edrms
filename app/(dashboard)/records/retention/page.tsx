@@ -610,16 +610,16 @@ export default function RetentionSchedulesPage() {
                 <th className="text-left px-4 py-3 font-medium text-gray-500 dark:text-gray-400">
                   Classification
                 </th>
-                <th className="text-left px-4 py-3 font-medium text-gray-500 dark:text-gray-400 whitespace-nowrap">
+                <th className="text-left px-4 py-3 font-medium text-gray-500 dark:text-gray-400 whitespace-nowrap hidden md:table-cell">
                   Active Yrs
                 </th>
-                <th className="text-left px-4 py-3 font-medium text-gray-500 dark:text-gray-400 whitespace-nowrap">
+                <th className="text-left px-4 py-3 font-medium text-gray-500 dark:text-gray-400 whitespace-nowrap hidden md:table-cell">
                   Inactive Yrs
                 </th>
                 <th className="text-left px-4 py-3 font-medium text-gray-500 dark:text-gray-400 whitespace-nowrap">
                   Total Yrs
                 </th>
-                <th className="text-left px-4 py-3 font-medium text-gray-500 dark:text-gray-400 whitespace-nowrap">
+                <th className="text-left px-4 py-3 font-medium text-gray-500 dark:text-gray-400 whitespace-nowrap hidden sm:table-cell">
                   Disposal Action
                 </th>
                 <th className="text-left px-4 py-3 font-medium text-gray-500 dark:text-gray-400 hidden lg:table-cell">
@@ -675,17 +675,29 @@ export default function RetentionSchedulesPage() {
                           {schedule.classificationNode.title}
                         </span>
                       </div>
+                      {/* Mobile-only: show all year breakdown + disposal action under title */}
+                      <div className="md:hidden flex flex-wrap items-center gap-x-3 gap-y-1 mt-1.5 text-[11px] text-gray-500 dark:text-gray-400">
+                        <span>Active: <strong className="text-gray-700 dark:text-gray-300">{schedule.activeYears}y</strong></span>
+                        <span>Inactive: <strong className="text-gray-700 dark:text-gray-300">{schedule.inactiveYears}y</strong></span>
+                        <span className="sm:hidden">
+                          <span
+                            className={`inline-flex items-center px-2 py-0.5 rounded-full text-[10px] font-medium ${ACTION_BADGE[schedule.disposalAction]}`}
+                          >
+                            {ACTION_LABEL[schedule.disposalAction]}
+                          </span>
+                        </span>
+                      </div>
                     </td>
-                    <td className="px-4 py-3 text-gray-700 dark:text-gray-300 tabular-nums">
+                    <td className="px-4 py-3 text-gray-700 dark:text-gray-300 tabular-nums hidden md:table-cell">
                       {schedule.activeYears}
                     </td>
-                    <td className="px-4 py-3 text-gray-700 dark:text-gray-300 tabular-nums">
+                    <td className="px-4 py-3 text-gray-700 dark:text-gray-300 tabular-nums hidden md:table-cell">
                       {schedule.inactiveYears}
                     </td>
                     <td className="px-4 py-3 font-semibold text-gray-900 dark:text-gray-100 tabular-nums">
                       {schedule.totalYears}
                     </td>
-                    <td className="px-4 py-3">
+                    <td className="px-4 py-3 hidden sm:table-cell">
                       <span
                         className={`inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-medium ${ACTION_BADGE[schedule.disposalAction]}`}
                       >

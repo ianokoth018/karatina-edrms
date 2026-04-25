@@ -369,35 +369,48 @@ export default function TraceMyMemosPage() {
           )}
         </div>
       ) : (
-        <div className="rounded-xl border border-gray-200 dark:border-gray-800 bg-white dark:bg-gray-900 overflow-hidden animate-slide-up delay-100">
-          <div className="overflow-x-auto">
-            <table className="w-full text-sm min-w-[960px]">
-              <thead>
-                <tr className="bg-gray-50 dark:bg-gray-800/50 border-b border-gray-200 dark:border-gray-800">
-                  <th className="text-left px-4 py-3 text-[10px] font-semibold text-gray-500 dark:text-gray-400 uppercase tracking-wider whitespace-nowrap">Memo Ref</th>
-                  <th className="text-left px-4 py-3 text-[10px] font-semibold text-gray-500 dark:text-gray-400 uppercase tracking-wider">Subject</th>
-                  <th className="text-left px-4 py-3 text-[10px] font-semibold text-gray-500 dark:text-gray-400 uppercase tracking-wider whitespace-nowrap hidden lg:table-cell">From</th>
-                  <th className="text-left px-4 py-3 text-[10px] font-semibold text-gray-500 dark:text-gray-400 uppercase tracking-wider whitespace-nowrap">To</th>
-                  <th className="text-left px-4 py-3 text-[10px] font-semibold text-gray-500 dark:text-gray-400 uppercase tracking-wider whitespace-nowrap">Currently With</th>
-                  <th className="text-left px-4 py-3 text-[10px] font-semibold text-gray-500 dark:text-gray-400 uppercase tracking-wider whitespace-nowrap">Status</th>
-                  <th className="text-left px-4 py-3 text-[10px] font-semibold text-gray-500 dark:text-gray-400 uppercase tracking-wider whitespace-nowrap hidden xl:table-cell">Trail</th>
-                  <th className="text-left px-4 py-3 text-[10px] font-semibold text-gray-500 dark:text-gray-400 uppercase tracking-wider whitespace-nowrap hidden md:table-cell">Submitted</th>
-                  <th className="text-right px-4 py-3 text-[10px] font-semibold text-gray-500 dark:text-gray-400 uppercase tracking-wider whitespace-nowrap">Actions</th>
-                </tr>
-              </thead>
-              <tbody className="divide-y divide-gray-100 dark:divide-gray-800/50">
-                {filteredMemos.map((memo) => (
-                  <MemoRowItem
-                    key={memo.id}
-                    memo={memo}
-                    onViewTrail={() => setTrailMemo(memo)}
-                    onOpen={() => router.push(`/memos/${memo.id}`)}
-                  />
-                ))}
-              </tbody>
-            </table>
+        <>
+          {/* Mobile: card list (no horizontal scroll). md+ = full table. */}
+          <div className="md:hidden space-y-3 animate-slide-up delay-100">
+            {filteredMemos.map((memo) => (
+              <MemoCardItem
+                key={memo.id}
+                memo={memo}
+                onViewTrail={() => setTrailMemo(memo)}
+                onOpen={() => router.push(`/memos/${memo.id}`)}
+              />
+            ))}
           </div>
-        </div>
+          <div className="hidden md:block rounded-xl border border-gray-200 dark:border-gray-800 bg-white dark:bg-gray-900 overflow-hidden animate-slide-up delay-100">
+            <div className="overflow-x-auto">
+              <table className="w-full text-sm">
+                <thead>
+                  <tr className="bg-gray-50 dark:bg-gray-800/50 border-b border-gray-200 dark:border-gray-800">
+                    <th className="text-left px-4 py-3 text-[10px] font-semibold text-gray-500 dark:text-gray-400 uppercase tracking-wider whitespace-nowrap">Memo Ref</th>
+                    <th className="text-left px-4 py-3 text-[10px] font-semibold text-gray-500 dark:text-gray-400 uppercase tracking-wider">Subject</th>
+                    <th className="text-left px-4 py-3 text-[10px] font-semibold text-gray-500 dark:text-gray-400 uppercase tracking-wider whitespace-nowrap hidden lg:table-cell">From</th>
+                    <th className="text-left px-4 py-3 text-[10px] font-semibold text-gray-500 dark:text-gray-400 uppercase tracking-wider whitespace-nowrap">To</th>
+                    <th className="text-left px-4 py-3 text-[10px] font-semibold text-gray-500 dark:text-gray-400 uppercase tracking-wider whitespace-nowrap">Currently With</th>
+                    <th className="text-left px-4 py-3 text-[10px] font-semibold text-gray-500 dark:text-gray-400 uppercase tracking-wider whitespace-nowrap">Status</th>
+                    <th className="text-left px-4 py-3 text-[10px] font-semibold text-gray-500 dark:text-gray-400 uppercase tracking-wider whitespace-nowrap hidden xl:table-cell">Trail</th>
+                    <th className="text-left px-4 py-3 text-[10px] font-semibold text-gray-500 dark:text-gray-400 uppercase tracking-wider whitespace-nowrap hidden md:table-cell">Submitted</th>
+                    <th className="text-right px-4 py-3 text-[10px] font-semibold text-gray-500 dark:text-gray-400 uppercase tracking-wider whitespace-nowrap">Actions</th>
+                  </tr>
+                </thead>
+                <tbody className="divide-y divide-gray-100 dark:divide-gray-800/50">
+                  {filteredMemos.map((memo) => (
+                    <MemoRowItem
+                      key={memo.id}
+                      memo={memo}
+                      onViewTrail={() => setTrailMemo(memo)}
+                      onOpen={() => router.push(`/memos/${memo.id}`)}
+                    />
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          </div>
+        </>
       )}
 
       {/* Memo Trail Modal */}
@@ -572,6 +585,124 @@ function StatPill({
     >
       <span className="opacity-80">{label}</span>
       <span className="text-sm font-bold tabular-nums">{value}</span>
+    </div>
+  );
+}
+
+/**
+ * Mobile-only card representation of a memo. Shown below the `md` breakpoint
+ * in place of the table — avoids forcing horizontal scrolling on phones.
+ */
+function MemoCardItem({
+  memo,
+  onViewTrail,
+  onOpen,
+}: {
+  memo: MemoRow;
+  onViewTrail: () => void;
+  onOpen: () => void;
+}) {
+  const currentStep = memo.trail.find(
+    (s) => s.status === "PENDING" && s.assignee
+  );
+  const fromName = memo.from.displayName || memo.from.name || "—";
+  const toName = memo.to.displayName || memo.to.name || "—";
+
+  return (
+    <div
+      onClick={onOpen}
+      className="bg-white dark:bg-gray-900 border border-gray-200 dark:border-gray-800 rounded-xl p-4 cursor-pointer hover:border-karu-green hover:shadow-sm transition-all space-y-3"
+    >
+      {/* Header: ref + status */}
+      <div className="flex items-start justify-between gap-2">
+        <div className="min-w-0 flex-1">
+          <span className="text-[11px] font-mono font-medium text-[#dd9f42] uppercase tracking-wide">
+            {memo.memoReferenceNumber ?? "—"}
+          </span>
+          <span className="block text-[10px] font-mono text-gray-400 dark:text-gray-500 mt-0.5">
+            {memo.referenceNumber}
+          </span>
+        </div>
+        <span
+          className={`inline-flex items-center px-2 py-0.5 rounded-full text-[10px] font-medium whitespace-nowrap shrink-0 ${
+            STATUS_STYLES[memo.status] ?? STATUS_STYLES.DRAFT
+          }`}
+        >
+          {STATUS_LABELS[memo.status] ?? memo.status}
+        </span>
+      </div>
+
+      {/* Subject */}
+      <p className="text-sm font-semibold text-gray-900 dark:text-gray-100 line-clamp-2">
+        {memo.subject}
+      </p>
+
+      {/* People */}
+      <div className="grid grid-cols-2 gap-x-3 gap-y-1.5 text-xs">
+        <div className="min-w-0">
+          <div className="text-[10px] uppercase tracking-wider text-gray-400 dark:text-gray-500">
+            From
+          </div>
+          <div className="text-gray-700 dark:text-gray-300 font-medium truncate">
+            {fromName}
+          </div>
+        </div>
+        <div className="min-w-0">
+          <div className="text-[10px] uppercase tracking-wider text-gray-400 dark:text-gray-500">
+            To
+          </div>
+          <div className="text-gray-700 dark:text-gray-300 font-medium truncate">
+            {toName}
+          </div>
+        </div>
+        {currentStep && (
+          <div className="col-span-2 min-w-0">
+            <div className="text-[10px] uppercase tracking-wider text-gray-400 dark:text-gray-500">
+              Currently with
+            </div>
+            <div className="text-gray-700 dark:text-gray-300 font-medium truncate">
+              {currentStep.assignee?.displayName || currentStep.assignee?.name}
+              <span className="text-gray-400 dark:text-gray-500 font-normal">
+                {" "}
+                · {currentStep.stepName}
+              </span>
+            </div>
+          </div>
+        )}
+      </div>
+
+      {/* Mini progress trail */}
+      <MiniProgress trail={memo.trail} />
+
+      {/* Footer: date + actions */}
+      <div className="flex items-center justify-between gap-2 pt-1">
+        <span className="text-[11px] text-gray-400 dark:text-gray-500">
+          Submitted {formatDate(memo.startedAt)}
+        </span>
+        <div className="flex items-center gap-1.5">
+          <button
+            onClick={(e) => {
+              e.stopPropagation();
+              onViewTrail();
+            }}
+            className="inline-flex items-center h-7 px-2.5 rounded-md text-[11px] font-medium text-gray-700 dark:text-gray-300 bg-gray-100 dark:bg-gray-800 hover:bg-gray-200 dark:hover:bg-gray-700 transition-colors"
+          >
+            Trail
+          </button>
+          <button
+            onClick={(e) => {
+              e.stopPropagation();
+              onOpen();
+            }}
+            className="inline-flex items-center gap-0.5 h-7 px-2.5 rounded-md text-[11px] font-medium text-white bg-karu-green hover:bg-karu-green-dark transition-colors"
+          >
+            Open
+            <svg className="w-3 h-3" fill="none" viewBox="0 0 24 24" strokeWidth={2} stroke="currentColor">
+              <path strokeLinecap="round" strokeLinejoin="round" d="M13.5 4.5 21 12m0 0-7.5 7.5M21 12H3" />
+            </svg>
+          </button>
+        </div>
+      </div>
     </div>
   );
 }

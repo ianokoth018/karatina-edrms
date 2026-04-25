@@ -737,16 +737,16 @@ export default function PhysicalRecordsPage() {
             <thead>
               <tr className="border-b border-gray-200 dark:border-gray-800 bg-gray-50 dark:bg-gray-800/50">
                 <th className="w-8 px-2 py-3" />
-                <th className="text-left px-4 py-3 font-medium text-gray-500 dark:text-gray-400">
+                <th className="text-left px-4 py-3 font-medium text-gray-500 dark:text-gray-400 hidden sm:table-cell">
                   Ref #
                 </th>
                 <th className="text-left px-4 py-3 font-medium text-gray-500 dark:text-gray-400">
                   Title
                 </th>
-                <th className="text-left px-4 py-3 font-medium text-gray-500 dark:text-gray-400">
+                <th className="text-left px-4 py-3 font-medium text-gray-500 dark:text-gray-400 hidden md:table-cell">
                   Box / Shelf
                 </th>
-                <th className="text-left px-4 py-3 font-medium text-gray-500 dark:text-gray-400">
+                <th className="text-left px-4 py-3 font-medium text-gray-500 dark:text-gray-400 hidden lg:table-cell">
                   Barcode
                 </th>
                 <th className="text-left px-4 py-3 font-medium text-gray-500 dark:text-gray-400">
@@ -805,7 +805,7 @@ export default function PhysicalRecordsPage() {
                       </td>
 
                       {/* Ref # */}
-                      <td className="px-4 py-3 font-mono text-xs text-gray-600 dark:text-gray-400 whitespace-nowrap">
+                      <td className="px-4 py-3 font-mono text-xs text-gray-600 dark:text-gray-400 whitespace-nowrap hidden sm:table-cell">
                         {rec.referenceNumber}
                       </td>
 
@@ -817,6 +817,10 @@ export default function PhysicalRecordsPage() {
                         >
                           {rec.title}
                         </button>
+                        {/* Mobile-only: show ref under title since the column is hidden */}
+                        <p className="text-[11px] font-mono text-gray-400 dark:text-gray-500 sm:hidden mt-0.5">
+                          {rec.referenceNumber}
+                        </p>
                         {rec.checkedOutTo && (
                           <p className="text-xs text-amber-600 dark:text-amber-400 mt-0.5">
                             Out to: {rec.checkedOutTo}
@@ -825,7 +829,7 @@ export default function PhysicalRecordsPage() {
                       </td>
 
                       {/* Box / Shelf */}
-                      <td className="px-4 py-3 text-gray-600 dark:text-gray-400 whitespace-nowrap text-xs">
+                      <td className="px-4 py-3 text-gray-600 dark:text-gray-400 whitespace-nowrap text-xs hidden md:table-cell">
                         <div>
                           {rec.boxNumber && (
                             <span>
@@ -850,7 +854,7 @@ export default function PhysicalRecordsPage() {
                       </td>
 
                       {/* Barcode */}
-                      <td className="px-4 py-3 font-mono text-xs text-gray-600 dark:text-gray-400 whitespace-nowrap">
+                      <td className="px-4 py-3 font-mono text-xs text-gray-600 dark:text-gray-400 whitespace-nowrap hidden lg:table-cell">
                         {rec.barcode ?? (
                           <span className="text-gray-300 dark:text-gray-600">&mdash;</span>
                         )}

@@ -1773,7 +1773,7 @@ export default function NewMemoPage() {
                 // eslint-disable-next-line @next/next/no-img-element
                 <img src={previewFile.url} alt={previewFile.name} className="max-w-full max-h-[75vh] mx-auto object-contain rounded" />
               ) : previewFile.type === "application/pdf" ? (
-                <iframe src={previewFile.url} title={previewFile.name} className="w-full h-[75vh] rounded" />
+                <iframe src={`${previewFile.url}#view=FitH&zoom=page-width&toolbar=1&navpanes=0`} title={previewFile.name} className="w-full h-[75vh] rounded" />
               ) : (
                 <div className="flex flex-col items-center justify-center h-64 text-gray-400">
                   <svg className="w-12 h-12 mb-3" fill="none" viewBox="0 0 24 24" strokeWidth={1} stroke="currentColor">

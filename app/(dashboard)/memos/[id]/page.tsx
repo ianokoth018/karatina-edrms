@@ -2353,7 +2353,7 @@ export default function MemoDetailPage() {
           {/* Viewer area — iframe, same as file attachment viewer */}
           <div className="flex-1 min-h-0 bg-gray-100 dark:bg-gray-900">
             <iframe
-              src={previewTemplateUrl}
+              src={`${previewTemplateUrl}#view=FitH&zoom=page-width&toolbar=1&navpanes=0`}
               className="w-full h-full border-0"
               title="Template Preview"
             />
@@ -2398,7 +2398,7 @@ export default function MemoDetailPage() {
           <div className="flex-1 min-h-0 bg-gray-100 dark:bg-gray-900">
             {previewFile.mimeType === "application/pdf" ? (
               <iframe
-                src={`/api/files?path=${encodeURIComponent(previewFile.storagePath)}`}
+                src={`/api/files?path=${encodeURIComponent(previewFile.storagePath)}#view=FitH&zoom=page-width&toolbar=1&navpanes=0`}
                 className="w-full h-full border-0"
                 title={previewFile.fileName}
               />

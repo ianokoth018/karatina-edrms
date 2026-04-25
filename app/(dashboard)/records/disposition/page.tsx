@@ -546,11 +546,11 @@ export default function DispositionPage() {
                     className="w-4 h-4 rounded border-gray-300 dark:border-gray-600 text-[#02773b] focus:ring-[#02773b]/20 disabled:opacity-40 cursor-pointer disabled:cursor-not-allowed"
                   />
                 </th>
-                <th className="text-left px-4 py-3 font-medium text-gray-500 dark:text-gray-400">Ref #</th>
+                <th className="text-left px-4 py-3 font-medium text-gray-500 dark:text-gray-400 hidden sm:table-cell">Ref #</th>
                 <th className="text-left px-4 py-3 font-medium text-gray-500 dark:text-gray-400">Title</th>
-                <th className="text-left px-4 py-3 font-medium text-gray-500 dark:text-gray-400">Department</th>
-                <th className="text-left px-4 py-3 font-medium text-gray-500 dark:text-gray-400">Classification</th>
-                <th className="text-left px-4 py-3 font-medium text-gray-500 dark:text-gray-400">Expired Date</th>
+                <th className="text-left px-4 py-3 font-medium text-gray-500 dark:text-gray-400 hidden lg:table-cell">Department</th>
+                <th className="text-left px-4 py-3 font-medium text-gray-500 dark:text-gray-400 hidden lg:table-cell">Classification</th>
+                <th className="text-left px-4 py-3 font-medium text-gray-500 dark:text-gray-400 hidden md:table-cell">Expired Date</th>
                 <th className="text-left px-4 py-3 font-medium text-gray-500 dark:text-gray-400">Recommended</th>
                 <th className="w-10 px-4 py-3" />
               </tr>
@@ -623,11 +623,11 @@ export default function DispositionPage() {
                           />
                         )}
                       </td>
-                      <td className="px-4 py-3 font-mono text-xs text-gray-600 dark:text-gray-400 whitespace-nowrap">
+                      <td className="px-4 py-3 font-mono text-xs text-gray-600 dark:text-gray-400 whitespace-nowrap hidden sm:table-cell">
                         {doc.referenceNumber}
                       </td>
                       <td className="px-4 py-3">
-                        <div className="flex items-center gap-2">
+                        <div className="flex items-center gap-2 flex-wrap">
                           <span className="font-medium text-gray-900 dark:text-gray-100 truncate max-w-[220px]">
                             {doc.title}
                           </span>
@@ -638,11 +638,17 @@ export default function DispositionPage() {
                             </span>
                           )}
                         </div>
+                        {/* Mobile-only: surface ref + dept + expiry under title */}
+                        <div className="sm:hidden mt-1 flex flex-wrap gap-x-3 gap-y-0.5 text-[11px] text-gray-500 dark:text-gray-400">
+                          <span className="font-mono">{doc.referenceNumber}</span>
+                          <span>{doc.department}</span>
+                          <span>Exp: {formatDate(doc.retentionExpiresAt)}</span>
+                        </div>
                       </td>
-                      <td className="px-4 py-3 text-gray-600 dark:text-gray-400 whitespace-nowrap">
+                      <td className="px-4 py-3 text-gray-600 dark:text-gray-400 whitespace-nowrap hidden lg:table-cell">
                         {doc.department}
                       </td>
-                      <td className="px-4 py-3">
+                      <td className="px-4 py-3 hidden lg:table-cell">
                         {doc.classificationNode ? (
                           <div>
                             <span className="text-xs font-mono text-gray-500 dark:text-gray-400">
@@ -657,7 +663,7 @@ export default function DispositionPage() {
                           <span className="text-xs text-gray-400 dark:text-gray-500 italic">Unclassified</span>
                         )}
                       </td>
-                      <td className="px-4 py-3 text-gray-500 dark:text-gray-400 whitespace-nowrap text-xs">
+                      <td className="px-4 py-3 text-gray-500 dark:text-gray-400 whitespace-nowrap text-xs hidden md:table-cell">
                         {formatDate(doc.retentionExpiresAt)}
                       </td>
                       <td className="px-4 py-3">
