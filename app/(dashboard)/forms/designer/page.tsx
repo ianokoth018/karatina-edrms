@@ -463,6 +463,7 @@ function FormDesignerInner() {
   const [existingId, setExistingId] = useState<string | null>(formId);
   const [workflowTemplateId, setWorkflowTemplateId] = useState<string | null>(null);
   const [workflowTemplates, setWorkflowTemplates] = useState<{ id: string; name: string }[]>([]);
+  const [formDataSchemas, setFormDataSchemas] = useState<{ id: string; name: string; slug: string }[]>([]);
 
   // ---- Local draft (auto-save) ----
   const [draftBanner, setDraftBanner] = useState<{ savedAt: string; key: string } | null>(null);
@@ -533,6 +534,20 @@ function FormDesignerInner() {
         );
       } catch {
         // Silently ignore -- workflow templates are optional
+      }
+    })();
+  }, []);
+
+  useEffect(() => {
+    (async () => {
+      try {
+        const res = await fetch("/api/admin/form-data");
+        if (!res.ok) return;
+        const data = await res.json();
+        const schemas = (data.schemas ?? []) as { id: string; name: string; slug: string }[];
+        setFormDataSchemas(schemas);
+      } catch {
+        // Silently ignore
       }
     })();
   }, []);
@@ -1397,6 +1412,7 @@ function FormDesignerInner() {
             <PropertiesPanel
               field={selectedField}
               allFields={fields}
+              formDataSchemas={formDataSchemas}
               onUpdate={(patch) => updateField(selectedField.id, patch)}
               onDelete={() => deleteField(selectedField.id)}
             />
@@ -1428,11 +1444,13 @@ function FormDesignerInner() {
 function PropertiesPanel({
   field,
   allFields,
+  formDataSchemas,
   onUpdate,
   onDelete,
 }: {
   field: FormField;
   allFields: FormField[];
+  formDataSchemas: { id: string; name: string; slug: string }[];
   onUpdate: (patch: Partial<FormField>) => void;
   onDelete: () => void;
 }) {
@@ -2028,13 +2046,26 @@ function PropertiesPanel({
           {field.lookupFormData && (
             <>
               <div>
-                <PropLabel>Dataset Slug</PropLabel>
-                <PropInput
-                  value={field.lookupFormData.slug}
-                  onChange={(v) => onUpdate({ lookupFormData: { ...field.lookupFormData!, slug: v } })}
-                  placeholder="e.g. leave_balances"
-                />
-                <p className="text-[10px] text-gray-400 dark:text-gray-500 mt-1">The slug of the Form Data dataset to query.</p>
+                <PropLabel>Dataset</PropLabel>
+                {formDataSchemas.length > 0 ? (
+                  <select
+                    value={field.lookupFormData.slug}
+                    onChange={(e) => onUpdate({ lookupFormData: { ...field.lookupFormData!, slug: e.target.value } })}
+                    className="w-full h-8 rounded-md border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-800 px-2 text-xs text-gray-900 dark:text-gray-100 focus:border-[#02773b] focus:ring-1 focus:ring-[#02773b]/30 outline-none"
+                  >
+                    <option value="">— select dataset —</option>
+                    {formDataSchemas.map((s) => (
+                      <option key={s.id} value={s.slug}>{s.name} ({s.slug})</option>
+                    ))}
+                  </select>
+                ) : (
+                  <PropInput
+                    value={field.lookupFormData.slug}
+                    onChange={(v) => onUpdate({ lookupFormData: { ...field.lookupFormData!, slug: v } })}
+                    placeholder="e.g. leave_balances"
+                  />
+                )}
+                <p className="text-[10px] text-gray-400 dark:text-gray-500 mt-1">The Form Data dataset to query.</p>
               </div>
               <div>
                 <PropLabel>Trigger Field</PropLabel>
