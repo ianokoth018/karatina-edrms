@@ -463,7 +463,7 @@ function FormDesignerInner() {
   const [existingId, setExistingId] = useState<string | null>(formId);
   const [workflowTemplateId, setWorkflowTemplateId] = useState<string | null>(null);
   const [workflowTemplates, setWorkflowTemplates] = useState<{ id: string; name: string }[]>([]);
-  const [formDataSchemas, setFormDataSchemas] = useState<{ id: string; name: string; slug: string }[]>([]);
+  const [formDataSchemas, setFormDataSchemas] = useState<{ id: string; name: string; slug: string; fields: { name: string; label: string }[] }[]>([]);
 
   // ---- Local draft (auto-save) ----
   const [draftBanner, setDraftBanner] = useState<{ savedAt: string; key: string } | null>(null);
@@ -544,8 +544,16 @@ function FormDesignerInner() {
         const res = await fetch("/api/admin/form-data");
         if (!res.ok) return;
         const data = await res.json();
-        const schemas = (data.schemas ?? []) as { id: string; name: string; slug: string }[];
-        setFormDataSchemas(schemas);
+        const schemas = (data.schemas ?? []) as {
+          id: string; name: string; slug: string;
+          fields?: { name: string; label: string }[];
+        }[];
+        setFormDataSchemas(schemas.map((s) => ({
+          id: s.id,
+          name: s.name,
+          slug: s.slug,
+          fields: s.fields ?? [],
+        })));
       } catch {
         // Silently ignore
       }
@@ -1450,7 +1458,7 @@ function PropertiesPanel({
 }: {
   field: FormField;
   allFields: FormField[];
-  formDataSchemas: { id: string; name: string; slug: string }[];
+  formDataSchemas: { id: string; name: string; slug: string; fields: { name: string; label: string }[] }[];
   onUpdate: (patch: Partial<FormField>) => void;
   onDelete: () => void;
 }) {
@@ -2029,102 +2037,190 @@ function PropertiesPanel({
       )}
 
       {/* Form Data Lookup (number + text fields) */}
-      {(isNumber || field.type === "text") && (
-        <CollapsibleSection title="Form Data Lookup">
-          <PropCheckbox
-            label="Auto-populate from a Form Data dataset"
-            checked={!!field.lookupFormData}
-            onChange={(v) =>
-              onUpdate({
-                lookupFormData: v
-                  ? { slug: "", returnField: "", matchField: "", matchDatasetField: "", extraFilters: { employee_id: "user.employeeId", year: "currentYear" } }
-                  : undefined,
-                readOnly: v ? true : field.readOnly,
-              })
-            }
-          />
-          {field.lookupFormData && (
-            <>
-              <div>
-                <PropLabel>Dataset</PropLabel>
-                {formDataSchemas.length > 0 ? (
+      {(isNumber || field.type === "text") && (() => {
+        const selSchema = formDataSchemas.find((s) => s.slug === field.lookupFormData?.slug);
+        const dsFields = selSchema?.fields ?? [];
+
+        // Token options for filter values
+        const TOKEN_OPTIONS = [
+          { value: "user.employeeId", label: "Current user — Employee ID" },
+          { value: "user.department",  label: "Current user — Department" },
+          { value: "currentYear",      label: "Current year" },
+        ];
+
+        const SELECT_CLS =
+          "w-full h-8 rounded-md border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-800 px-2 text-xs text-gray-900 dark:text-gray-100 focus:border-[#02773b] focus:ring-1 focus:ring-[#02773b]/30 outline-none";
+
+        return (
+          <CollapsibleSection title="Form Data Lookup">
+            <PropCheckbox
+              label="Auto-populate from a Form Data dataset"
+              checked={!!field.lookupFormData}
+              onChange={(v) =>
+                onUpdate({
+                  lookupFormData: v
+                    ? { slug: "", returnField: "", matchField: "", matchDatasetField: "", extraFilters: { employee_id: "user.employeeId", year: "currentYear" } }
+                    : undefined,
+                  readOnly: v ? true : field.readOnly,
+                })
+              }
+            />
+            {field.lookupFormData && (
+              <>
+                {/* ── Dataset ── */}
+                <div>
+                  <PropLabel>Dataset</PropLabel>
                   <select
                     value={field.lookupFormData.slug}
-                    onChange={(e) => onUpdate({ lookupFormData: { ...field.lookupFormData!, slug: e.target.value } })}
-                    className="w-full h-8 rounded-md border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-800 px-2 text-xs text-gray-900 dark:text-gray-100 focus:border-[#02773b] focus:ring-1 focus:ring-[#02773b]/30 outline-none"
+                    onChange={(e) => onUpdate({ lookupFormData: { ...field.lookupFormData!, slug: e.target.value, returnField: "", matchDatasetField: "", extraFilters: {} } })}
+                    className={SELECT_CLS}
                   >
                     <option value="">— select dataset —</option>
                     {formDataSchemas.map((s) => (
                       <option key={s.id} value={s.slug}>{s.name} ({s.slug})</option>
                     ))}
                   </select>
-                ) : (
-                  <PropInput
-                    value={field.lookupFormData.slug}
-                    onChange={(v) => onUpdate({ lookupFormData: { ...field.lookupFormData!, slug: v } })}
-                    placeholder="e.g. leave_balances"
-                  />
-                )}
-                <p className="text-[10px] text-gray-400 dark:text-gray-500 mt-1">The Form Data dataset to query.</p>
-              </div>
-              <div>
-                <PropLabel>Trigger Field</PropLabel>
-                <select
-                  value={field.lookupFormData.matchField}
-                  onChange={(e) => onUpdate({ lookupFormData: { ...field.lookupFormData!, matchField: e.target.value } })}
-                  className="w-full h-8 rounded-md border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-800 px-2 text-xs text-gray-900 dark:text-gray-100 focus:border-[#02773b] focus:ring-1 focus:ring-[#02773b]/30 outline-none"
-                >
-                  <option value="">— pick a field —</option>
-                  {allFields
-                    .filter((f) => f.id !== field.id)
-                    .map((f) => (
-                      <option key={f.id} value={f.name}>{f.label} ({f.name})</option>
+                </div>
+
+                {/* ── Trigger Field (form field that fires the lookup) ── */}
+                <div>
+                  <PropLabel>Trigger Field</PropLabel>
+                  <select
+                    value={field.lookupFormData.matchField}
+                    onChange={(e) => onUpdate({ lookupFormData: { ...field.lookupFormData!, matchField: e.target.value } })}
+                    className={SELECT_CLS}
+                  >
+                    <option value="">— pick a form field —</option>
+                    {allFields
+                      .filter((f) => f.id !== field.id)
+                      .map((f) => (
+                        <option key={f.id} value={f.name}>{f.label} ({f.name})</option>
+                      ))}
+                  </select>
+                  <p className="text-[10px] text-gray-400 dark:text-gray-500 mt-1">When this field changes the lookup fires.</p>
+                </div>
+
+                {/* ── Dataset Field to Match ── */}
+                <div>
+                  <PropLabel>Dataset Field to Match</PropLabel>
+                  <select
+                    value={field.lookupFormData.matchDatasetField ?? ""}
+                    onChange={(e) => onUpdate({ lookupFormData: { ...field.lookupFormData!, matchDatasetField: e.target.value || undefined } })}
+                    className={SELECT_CLS}
+                    disabled={dsFields.length === 0}
+                  >
+                    <option value="">{dsFields.length === 0 ? "— select dataset first —" : "— same as trigger field name —"}</option>
+                    {dsFields.map((f) => (
+                      <option key={f.name} value={f.name}>{f.label || f.name} ({f.name})</option>
                     ))}
-                </select>
-                <p className="text-[10px] text-gray-400 dark:text-gray-500 mt-1">When this field changes the lookup fires.</p>
-              </div>
-              <div>
-                <PropLabel>Dataset Field to Match</PropLabel>
-                <PropInput
-                  value={field.lookupFormData.matchDatasetField ?? ""}
-                  onChange={(v) => onUpdate({ lookupFormData: { ...field.lookupFormData!, matchDatasetField: v || undefined } })}
-                  placeholder={`defaults to trigger field name`}
-                />
-                <p className="text-[10px] text-gray-400 dark:text-gray-500 mt-1">The column in the dataset to compare the trigger value against (leave blank if same name).</p>
-              </div>
-              <div>
-                <PropLabel>Return Field</PropLabel>
-                <PropInput
-                  value={field.lookupFormData.returnField}
-                  onChange={(v) => onUpdate({ lookupFormData: { ...field.lookupFormData!, returnField: v } })}
-                  placeholder="e.g. days_remaining"
-                />
-                <p className="text-[10px] text-gray-400 dark:text-gray-500 mt-1">The dataset column whose value is written into this field.</p>
-              </div>
-              <div>
-                <PropLabel>Extra Filters (JSON)</PropLabel>
-                <textarea
-                  rows={4}
-                  value={JSON.stringify(field.lookupFormData.extraFilters ?? {}, null, 2)}
-                  onChange={(e) => {
-                    try {
-                      const parsed = JSON.parse(e.target.value);
-                      onUpdate({ lookupFormData: { ...field.lookupFormData!, extraFilters: parsed } });
-                    } catch {
-                      // ignore parse errors while typing
-                    }
-                  }}
-                  className="w-full rounded-md border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-800 px-2 py-1.5 text-xs font-mono text-gray-900 dark:text-gray-100 focus:border-[#02773b] focus:ring-1 focus:ring-[#02773b]/30 outline-none resize-none"
-                  spellCheck={false}
-                />
-                <p className="text-[10px] text-gray-400 dark:text-gray-500 mt-1 leading-relaxed">
-                  <strong>Keys</strong>: dataset field names. <strong>Values</strong>: <code>user.employeeId</code>, <code>user.department</code>, <code>currentYear</code>, or any form field name.
-                </p>
-              </div>
-            </>
-          )}
-        </CollapsibleSection>
-      )}
+                  </select>
+                  <p className="text-[10px] text-gray-400 dark:text-gray-500 mt-1">Dataset column compared against the trigger value.</p>
+                </div>
+
+                {/* ── Return Field ── */}
+                <div>
+                  <PropLabel>Return Field</PropLabel>
+                  <select
+                    value={field.lookupFormData.returnField}
+                    onChange={(e) => onUpdate({ lookupFormData: { ...field.lookupFormData!, returnField: e.target.value } })}
+                    className={SELECT_CLS}
+                    disabled={dsFields.length === 0}
+                  >
+                    <option value="">{dsFields.length === 0 ? "— select dataset first —" : "— pick a column —"}</option>
+                    {dsFields.map((f) => (
+                      <option key={f.name} value={f.name}>{f.label || f.name} ({f.name})</option>
+                    ))}
+                  </select>
+                  <p className="text-[10px] text-gray-400 dark:text-gray-500 mt-1">The dataset column whose value is written into this field.</p>
+                </div>
+
+                {/* ── Extra Filters ── */}
+                <div>
+                  <PropLabel>Extra Filters</PropLabel>
+                  <div className="space-y-1.5">
+                    {Object.entries(field.lookupFormData.extraFilters ?? {}).map(([dsField, valToken]) => (
+                      <div key={dsField} className="flex gap-1 items-center">
+                        {/* Key — dataset field */}
+                        <select
+                          value={dsField}
+                          onChange={(e) => {
+                            const next = { ...field.lookupFormData!.extraFilters };
+                            delete next[dsField];
+                            next[e.target.value] = valToken;
+                            onUpdate({ lookupFormData: { ...field.lookupFormData!, extraFilters: next } });
+                          }}
+                          className="flex-1 h-7 rounded-md border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-800 px-1.5 text-xs text-gray-900 dark:text-gray-100 focus:border-[#02773b] outline-none"
+                        >
+                          <option value={dsField}>{dsField}</option>
+                          {dsFields
+                            .filter((f) => !(f.name in (field.lookupFormData!.extraFilters ?? {})) || f.name === dsField)
+                            .map((f) => (
+                              <option key={f.name} value={f.name}>{f.label || f.name}</option>
+                            ))}
+                        </select>
+                        <span className="text-gray-400 text-xs">=</span>
+                        {/* Value — token or form field */}
+                        <select
+                          value={valToken}
+                          onChange={(e) => {
+                            const next = { ...field.lookupFormData!.extraFilters, [dsField]: e.target.value };
+                            onUpdate({ lookupFormData: { ...field.lookupFormData!, extraFilters: next } });
+                          }}
+                          className="flex-1 h-7 rounded-md border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-800 px-1.5 text-xs text-gray-900 dark:text-gray-100 focus:border-[#02773b] outline-none"
+                        >
+                          <optgroup label="Built-in tokens">
+                            {TOKEN_OPTIONS.map((t) => (
+                              <option key={t.value} value={t.value}>{t.label}</option>
+                            ))}
+                          </optgroup>
+                          <optgroup label="Form fields">
+                            {allFields
+                              .filter((f) => f.id !== field.id)
+                              .map((f) => (
+                                <option key={f.id} value={f.name}>{f.label} ({f.name})</option>
+                              ))}
+                          </optgroup>
+                        </select>
+                        {/* Remove */}
+                        <button
+                          type="button"
+                          onClick={() => {
+                            const next = { ...field.lookupFormData!.extraFilters };
+                            delete next[dsField];
+                            onUpdate({ lookupFormData: { ...field.lookupFormData!, extraFilters: next } });
+                          }}
+                          className="p-1 text-gray-400 hover:text-red-500 transition-colors"
+                        >
+                          <svg className="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" strokeWidth={2} stroke="currentColor">
+                            <path strokeLinecap="round" strokeLinejoin="round" d="M6 18 18 6M6 6l12 12" />
+                          </svg>
+                        </button>
+                      </div>
+                    ))}
+                    {/* Add filter row */}
+                    <button
+                      type="button"
+                      onClick={() => {
+                        const existing = Object.keys(field.lookupFormData!.extraFilters ?? {});
+                        const nextField = dsFields.find((f) => !existing.includes(f.name));
+                        const key = nextField?.name ?? `field_${existing.length + 1}`;
+                        onUpdate({ lookupFormData: { ...field.lookupFormData!, extraFilters: { ...(field.lookupFormData!.extraFilters ?? {}), [key]: "user.employeeId" } } });
+                      }}
+                      className="flex items-center gap-1 text-[11px] text-[#02773b] hover:text-[#02773b]/80 font-medium transition-colors"
+                    >
+                      <svg className="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" strokeWidth={2.5} stroke="currentColor">
+                        <path strokeLinecap="round" strokeLinejoin="round" d="M12 4.5v15m7.5-7.5h-15" />
+                      </svg>
+                      Add filter
+                    </button>
+                  </div>
+                  <p className="text-[10px] text-gray-400 dark:text-gray-500 mt-1.5">Additional dataset columns to narrow the lookup to a single record.</p>
+                </div>
+              </>
+            )}
+          </CollapsibleSection>
+        );
+      })()}
 
       {/* Validation for user pickers (just Required) */}
       {isAnyUserPicker && (
