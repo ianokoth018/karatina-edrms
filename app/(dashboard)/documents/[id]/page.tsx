@@ -1735,7 +1735,7 @@ export default function DocumentDetailPage({
                             value={grantSearch}
                             onChange={(e) => searchGrantTarget(e.target.value)}
                             placeholder={grantType === "user" ? "Search by name or email..." : "Search role name..."}
-                            className="w-full h-10 rounded-lg border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-800 px-3 text-sm outline-none focus:border-[#02773b] focus:ring-1 focus:ring-[#02773b]/20"
+                            className="w-full h-10 rounded-lg border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-800 px-3 text-sm text-gray-900 dark:text-gray-100 placeholder:text-gray-400 outline-none focus:border-[#02773b] focus:ring-1 focus:ring-[#02773b]/20"
                           />
                           {grantSearchResults.length > 0 && (
                             <div className="absolute z-10 mt-1 w-full max-h-40 overflow-y-auto rounded-lg border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-900 shadow-lg">

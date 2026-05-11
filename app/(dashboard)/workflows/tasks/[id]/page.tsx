@@ -4,6 +4,7 @@ import { use, useState, useEffect, useCallback, useMemo, useRef } from "react";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { useSession } from "next-auth/react";
+import { FormField, FormRenderer } from "@/components/forms/form-renderer";
 
 /* ================================================================== */
 /*  Types                                                              */
@@ -116,16 +117,6 @@ interface WorkflowTask {
   completedAt: string | null;
   instance: TaskInstance;
   assignee: TaskAssignee;
-}
-
-interface FormField {
-  id?: string;
-  name: string;
-  label: string;
-  type: string;
-  required?: boolean;
-  options?: string[];
-  placeholder?: string;
 }
 
 interface FormTemplate {
@@ -942,7 +933,7 @@ function LoadingSkeleton() {
         </div>
       </div>
       {/* Content */}
-      <div className="grid grid-cols-2 gap-6">
+      <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
         <div className="rounded-2xl border border-gray-200 dark:border-gray-800 bg-white dark:bg-gray-950 p-6 space-y-4">
           {Array.from({ length: 5 }).map((_, i) => (
             <div key={i} className="space-y-1.5">
@@ -1055,106 +1046,6 @@ function FormFieldDisplay({ field, value }: { field: FormField; value: unknown }
           <span className="text-gray-300 dark:text-gray-600">&mdash;</span>
         )}
       </dd>
-    </div>
-  );
-}
-
-function FormFieldEditable({
-  field,
-  value,
-  onChange,
-}: {
-  field: FormField;
-  value: string;
-  onChange: (val: string) => void;
-}) {
-  const inputCls =
-    "w-full rounded-lg border border-gray-300 dark:border-gray-700 bg-white dark:bg-gray-900 text-sm text-gray-900 dark:text-gray-100 px-3 py-2 focus:outline-none focus:ring-2 focus:ring-[#02773b]/40 focus:border-[#02773b] transition-colors placeholder-gray-400 dark:placeholder-gray-500";
-
-  if (field.type === "select" && field.options?.length) {
-    return (
-      <div className="space-y-1">
-        <label className="text-[11px] font-semibold uppercase tracking-wider text-gray-400 dark:text-gray-500">
-          {field.label || field.name}
-          {field.required && <span className="text-red-500 ml-0.5">*</span>}
-        </label>
-        <select value={value} onChange={(e) => onChange(e.target.value)} className={inputCls}>
-          <option value="">Select...</option>
-          {field.options.map((opt) => (
-            <option key={opt} value={opt}>{opt}</option>
-          ))}
-        </select>
-      </div>
-    );
-  }
-
-  if (field.type === "textarea") {
-    return (
-      <div className="space-y-1">
-        <label className="text-[11px] font-semibold uppercase tracking-wider text-gray-400 dark:text-gray-500">
-          {field.label || field.name}
-          {field.required && <span className="text-red-500 ml-0.5">*</span>}
-        </label>
-        <textarea
-          value={value}
-          onChange={(e) => onChange(e.target.value)}
-          rows={3}
-          placeholder={field.placeholder || ""}
-          className={inputCls}
-        />
-      </div>
-    );
-  }
-
-  if (field.type === "date") {
-    return (
-      <div className="space-y-1">
-        <label className="text-[11px] font-semibold uppercase tracking-wider text-gray-400 dark:text-gray-500">
-          {field.label || field.name}
-          {field.required && <span className="text-red-500 ml-0.5">*</span>}
-        </label>
-        <input type="date" value={value} onChange={(e) => onChange(e.target.value)} className={inputCls} />
-      </div>
-    );
-  }
-
-  if (field.type === "number") {
-    return (
-      <div className="space-y-1">
-        <label className="text-[11px] font-semibold uppercase tracking-wider text-gray-400 dark:text-gray-500">
-          {field.label || field.name}
-          {field.required && <span className="text-red-500 ml-0.5">*</span>}
-        </label>
-        <input type="number" value={value} onChange={(e) => onChange(e.target.value)} className={inputCls} />
-      </div>
-    );
-  }
-
-  if (field.type === "email") {
-    return (
-      <div className="space-y-1">
-        <label className="text-[11px] font-semibold uppercase tracking-wider text-gray-400 dark:text-gray-500">
-          {field.label || field.name}
-          {field.required && <span className="text-red-500 ml-0.5">*</span>}
-        </label>
-        <input type="email" value={value} onChange={(e) => onChange(e.target.value)} placeholder={field.placeholder || ""} className={inputCls} />
-      </div>
-    );
-  }
-
-  return (
-    <div className="space-y-1">
-      <label className="text-[11px] font-semibold uppercase tracking-wider text-gray-400 dark:text-gray-500">
-        {field.label || field.name}
-        {field.required && <span className="text-red-500 ml-0.5">*</span>}
-      </label>
-      <input
-        type="text"
-        value={value}
-        onChange={(e) => onChange(e.target.value)}
-        placeholder={field.placeholder || ""}
-        className={inputCls}
-      />
     </div>
   );
 }
@@ -1613,7 +1504,7 @@ export default function WorkflowTaskExecutionPage({
   const [sla, setSla] = useState<SlaEntry | null>(null);
 
   /* ---- Edit state (for editable fields) ---- */
-  const [editValues, setEditValues] = useState<Record<string, string>>({});
+  const [editValues, setEditValues] = useState<Record<string, unknown>>({});
 
   /* ---- Document viewer ---- */
   const [selectedFileIndex, setSelectedFileIndex] = useState(0);
@@ -1623,6 +1514,7 @@ export default function WorkflowTaskExecutionPage({
 
   /* ---- Split layout tab ---- */
   const [splitTab, setSplitTab] = useState<"form" | "comments" | "attachments">("form");
+  const [hasFormErrors, setHasFormErrors] = useState(false);
 
   /* ---- Success state ---- */
   const [actionSuccess, setActionSuccess] = useState<string | null>(null);
@@ -1733,6 +1625,7 @@ export default function WorkflowTaskExecutionPage({
     const meta = task?.instance.document?.metadata;
     if (!meta || typeof meta !== "object") return [];
     return Object.keys(meta).map((key) => ({
+      id: key,
       name: key,
       label: key
         .replace(/([A-Z])/g, " $1")
@@ -1768,11 +1661,10 @@ export default function WorkflowTaskExecutionPage({
 
   /** Initialize edit values for editable fields. */
   useEffect(() => {
-    const vals: Record<string, string> = {};
+    const vals: Record<string, unknown> = {};
     for (const { field, visibility } of visibleFields) {
       if (visibility === "editable") {
-        const raw = fieldValues[field.name];
-        vals[field.name] = raw !== null && raw !== undefined ? String(raw) : "";
+        vals[field.name] = fieldValues[field.name] ?? "";
       }
     }
     setEditValues(vals);
@@ -1785,6 +1677,26 @@ export default function WorkflowTaskExecutionPage({
     }
     return DEFAULT_ACTION_BUTTONS;
   }, [nodeConfig]);
+
+  /** Per-field visibility config for FormRenderer. */
+  const formRendererConfig = useMemo((): Record<string, "hidden" | "readonly" | "editable" | "visible"> => {
+    const config = nodeConfig?.fieldConfig;
+    if (!config || config.length === 0) {
+      return Object.fromEntries(resolvedFields.map((f) => [f.name, "readonly"]));
+    }
+    const result: Record<string, "hidden" | "readonly" | "editable" | "visible"> = {};
+    for (const f of resolvedFields) {
+      const cfg = config.find((c) => c.fieldName === f.name);
+      result[f.name] = (cfg?.visibility ?? "readonly") as "hidden" | "readonly" | "editable" | "visible";
+    }
+    return result;
+  }, [resolvedFields, nodeConfig]);
+
+  /** Merged form data: persisted values overlaid with in-progress edits. */
+  const mergedFormData = useMemo(
+    () => ({ ...fieldValues, ...editValues }),
+    [fieldValues, editValues]
+  );
 
   /** Document files. */
   const docFiles = task?.instance.document?.files ?? [];
@@ -1810,7 +1722,7 @@ export default function WorkflowTaskExecutionPage({
     }, 2000);
   }
 
-  function handleEditChange(fieldName: string, value: string) {
+  function handleEditChange(fieldName: string, value: unknown) {
     setEditValues((prev) => ({ ...prev, [fieldName]: value }));
   }
 
@@ -2038,7 +1950,7 @@ export default function WorkflowTaskExecutionPage({
           </div>
 
           {/* Form fields */}
-          {visibleFields.length > 0 && (
+          {resolvedFields.length > 0 && (
             <div className="rounded-2xl border border-gray-200 dark:border-gray-800 bg-white dark:bg-gray-950 shadow-sm overflow-hidden">
               <div className="px-6 py-4 border-b border-gray-200 dark:border-gray-800">
                 <h2 className="text-sm font-semibold text-gray-900 dark:text-gray-100 flex items-center gap-2">
@@ -2049,26 +1961,15 @@ export default function WorkflowTaskExecutionPage({
                   <p className="text-xs text-gray-500 dark:text-gray-400 mt-1">{formTemplate.description}</p>
                 )}
               </div>
-              <div className="p-6 grid grid-cols-1 sm:grid-cols-2 gap-x-6 gap-y-4">
-                {visibleFields.map(({ field, visibility }) => {
-                  if (visibility === "editable" && isPending) {
-                    return (
-                      <FormFieldEditable
-                        key={field.name}
-                        field={field}
-                        value={editValues[field.name] ?? ""}
-                        onChange={(val) => handleEditChange(field.name, val)}
-                      />
-                    );
-                  }
-                  return (
-                    <FormFieldDisplay
-                      key={field.name}
-                      field={field}
-                      value={fieldValues[field.name]}
-                    />
-                  );
-                })}
+              <div className="p-6">
+                <FormRenderer
+                  fields={resolvedFields}
+                  formData={mergedFormData}
+                  onChange={handleEditChange}
+                  fieldConfig={formRendererConfig}
+                  readOnly={!isPending}
+                  onValidationChange={setHasFormErrors}
+                />
               </div>
             </div>
           )}
@@ -2094,13 +1995,17 @@ export default function WorkflowTaskExecutionPage({
           {isPending && (
             <div className="sticky bottom-0 z-10 -mx-4 sm:-mx-6 px-4 sm:px-6 py-4 bg-gray-50/80 dark:bg-gray-950/80 backdrop-blur-md border-t border-gray-200 dark:border-gray-800">
               <div className="max-w-4xl mx-auto flex flex-wrap gap-3 justify-end">
+                {hasFormErrors && (
+                  <p className="text-xs text-red-600 dark:text-red-400 self-center mr-2">Fix validation errors before submitting.</p>
+                )}
                 {actionButtons.map((btn) => {
                   const c = BUTTON_COLORS[btn.color] ?? BUTTON_COLORS.green;
                   return (
                     <button
                       key={btn.id}
                       onClick={() => handleActionClick(btn)}
-                      className={`inline-flex items-center gap-2 px-5 py-2.5 rounded-xl text-sm font-semibold ${c.bg} ${c.hover} ${c.text} shadow-sm transition-all hover:shadow-md active:scale-[0.98]`}
+                      disabled={hasFormErrors}
+                      className={`inline-flex items-center gap-2 px-5 py-2.5 rounded-xl text-sm font-semibold ${c.bg} ${c.hover} ${c.text} shadow-sm transition-all hover:shadow-md active:scale-[0.98] disabled:opacity-50 disabled:cursor-not-allowed disabled:pointer-events-none`}
                     >
                       {actionIcon(btn.action)}
                       {btn.label}
@@ -2220,9 +2125,9 @@ export default function WorkflowTaskExecutionPage({
       </div>
 
       {/* Split panels */}
-      <div className="flex-1 flex min-h-0">
-        {/* Left panel: Tabbed (40%) */}
-        <div className="w-[40%] min-w-[320px] max-w-[520px] border-r border-gray-200 dark:border-gray-800 bg-white dark:bg-gray-950 flex flex-col min-h-0">
+      <div className="flex-1 flex flex-col md:flex-row min-h-0 overflow-hidden">
+        {/* Left panel: Tabbed (full on mobile, 40% on desktop) */}
+        <div className="w-full md:w-[40%] md:min-w-[320px] md:max-w-[520px] max-h-[55vh] md:max-h-none border-b md:border-b-0 md:border-r border-gray-200 dark:border-gray-800 bg-white dark:bg-gray-950 flex flex-col min-h-0 overflow-hidden">
           {/* Tab bar */}
           <div className="shrink-0 flex border-b border-gray-200 dark:border-gray-800 px-2 pt-2 gap-1">
             {(["form", "comments", "attachments"] as const).map((tab) => (
@@ -2258,8 +2163,8 @@ export default function WorkflowTaskExecutionPage({
               </div>
 
               {/* Fields */}
-              <div className="flex-1 overflow-y-auto px-5 py-4 space-y-4">
-                {visibleFields.length === 0 ? (
+              <div className="flex-1 overflow-y-auto px-5 py-4">
+                {resolvedFields.length === 0 ? (
                   <div className="text-center py-8">
                     <IconDocument className="w-10 h-10 text-gray-200 dark:text-gray-700 mx-auto mb-3" />
                     <p className="text-sm text-gray-500 dark:text-gray-400">
@@ -2267,25 +2172,14 @@ export default function WorkflowTaskExecutionPage({
                     </p>
                   </div>
                 ) : (
-                  visibleFields.map(({ field, visibility }) => {
-                    if (visibility === "editable" && isPending) {
-                      return (
-                        <FormFieldEditable
-                          key={field.name}
-                          field={field}
-                          value={editValues[field.name] ?? ""}
-                          onChange={(val) => handleEditChange(field.name, val)}
-                        />
-                      );
-                    }
-                    return (
-                      <FormFieldDisplay
-                        key={field.name}
-                        field={field}
-                        value={fieldValues[field.name]}
-                      />
-                    );
-                  })
+                  <FormRenderer
+                    fields={resolvedFields}
+                    formData={mergedFormData}
+                    onChange={handleEditChange}
+                    fieldConfig={formRendererConfig}
+                    readOnly={!isPending}
+                    onValidationChange={setHasFormErrors}
+                  />
                 )}
               </div>
             </>
@@ -2306,13 +2200,17 @@ export default function WorkflowTaskExecutionPage({
           {/* Action buttons at bottom of left panel */}
           {isPending && (
             <div className="shrink-0 px-5 py-4 border-t border-gray-200 dark:border-gray-800 bg-gray-50 dark:bg-gray-900/50 flex flex-wrap gap-2 justify-end">
+              {hasFormErrors && (
+                <p className="text-xs text-red-600 dark:text-red-400 w-full text-right mb-1">Fix validation errors before submitting.</p>
+              )}
               {actionButtons.map((btn) => {
                 const c = BUTTON_COLORS[btn.color] ?? BUTTON_COLORS.green;
                 return (
                   <button
                     key={btn.id}
                     onClick={() => handleActionClick(btn)}
-                    className={`inline-flex items-center gap-1.5 px-4 py-2 rounded-xl text-sm font-semibold ${c.bg} ${c.hover} ${c.text} shadow-sm transition-all hover:shadow-md active:scale-[0.98]`}
+                    disabled={hasFormErrors}
+                    className={`inline-flex items-center gap-1.5 px-4 py-2 rounded-xl text-sm font-semibold ${c.bg} ${c.hover} ${c.text} shadow-sm transition-all hover:shadow-md active:scale-[0.98] disabled:opacity-50 disabled:cursor-not-allowed disabled:pointer-events-none`}
                   >
                     {actionIcon(btn.action)}
                     {btn.label}
@@ -2323,7 +2221,7 @@ export default function WorkflowTaskExecutionPage({
           )}
         </div>
 
-        {/* Right panel: Document viewer (60%) */}
+        {/* Right panel: Document viewer (full on mobile, 60% on desktop) */}
         <div className="flex-1 min-w-0 flex flex-col min-h-0 bg-gray-100 dark:bg-gray-900">
           <DocumentViewer
             files={docFiles}

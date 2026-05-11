@@ -235,6 +235,33 @@ export async function GET(req: NextRequest) {
         reachRate: total > 0 ? Math.round((data.reached / total) * 100) : 0,
       }));
 
+    // ----------------------------------------------------------------
+    // 7. Daily trend — instance creation counts per day
+    // ----------------------------------------------------------------
+    const allInstances = await db.workflowInstance.findMany({
+      where: instanceWhere,
+      select: { startedAt: true, status: true },
+    });
+
+    const dayMap = new Map<string, { created: number; completed: number }>();
+    for (const inst of allInstances) {
+      const day = inst.startedAt.toISOString().slice(0, 10);
+      const entry = dayMap.get(day) ?? { created: 0, completed: 0 };
+      entry.created++;
+      if (inst.status === "COMPLETED") entry.completed++;
+      dayMap.set(day, entry);
+    }
+
+    // Fill in all days in the range with zeroes for missing days
+    const dailyTrend: { date: string; created: number; completed: number }[] = [];
+    const cursor = new Date(from);
+    while (cursor <= to) {
+      const key = cursor.toISOString().slice(0, 10);
+      const entry = dayMap.get(key) ?? { created: 0, completed: 0 };
+      dailyTrend.push({ date: key, ...entry });
+      cursor.setDate(cursor.getDate() + 1);
+    }
+
     return NextResponse.json(
       serialise({
         period: { from, to },
@@ -252,6 +279,7 @@ export async function GET(req: NextRequest) {
         slaBreachRate,
         peakLoad,
         funnelCompletion: funnelSteps,
+        dailyTrend,
       })
     );
   } catch (error) {

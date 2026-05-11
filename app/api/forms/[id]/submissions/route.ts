@@ -3,6 +3,8 @@ import { auth } from "@/lib/auth";
 import { db } from "@/lib/db";
 import { writeAudit } from "@/lib/audit";
 import { logger } from "@/lib/logger";
+import { generateWorkflowReference } from "@/lib/reference";
+import { bootstrapWorkflow } from "@/lib/workflow-engine";
 
 // ---------------------------------------------------------------------------
 // GET /api/forms/[id]/submissions -- List submissions for a form template
@@ -174,14 +176,77 @@ export async function POST(
       );
     }
 
+    const resolvedWorkflowInstanceId = workflowInstanceId?.trim() || null;
+
     const submission = await db.formSubmission.create({
       data: {
         templateId: id,
         submittedById: session.user.id,
         data: data as never,
-        workflowInstanceId: workflowInstanceId?.trim() || null,
+        workflowInstanceId: resolvedWorkflowInstanceId,
       },
     });
+
+    // Auto-start a workflow if this form template is linked to one
+    let autoWorkflowInstanceId: string | null = null;
+    if (!resolvedWorkflowInstanceId && template.workflowTemplateId) {
+      try {
+        const wfTemplate = await db.workflowTemplate.findUnique({
+          where: { id: template.workflowTemplateId },
+        });
+        if (wfTemplate?.isActive) {
+          const referenceNumber = await generateWorkflowReference();
+          const dueAt = new Date(Date.now() + 30 * 24 * 60 * 60 * 1000);
+          const instance = await db.workflowInstance.create({
+            data: {
+              referenceNumber,
+              templateId: wfTemplate.id,
+              templateVersion: wfTemplate.version,
+              initiatedById: session.user.id,
+              subject: template.name,
+              status: "IN_PROGRESS",
+              currentStepIndex: 0,
+              formData: data as object,
+              dueAt,
+              events: {
+                create: {
+                  eventType: "WORKFLOW_STARTED",
+                  actorId: session.user.id,
+                  data: {
+                    subject: template.name,
+                    templateName: wfTemplate.name,
+                    templateVersion: wfTemplate.version,
+                    formSubmissionId: submission.id,
+                  } as object,
+                },
+              },
+            },
+          });
+          await bootstrapWorkflow({
+            instanceId: instance.id,
+            initiatorId: session.user.id,
+            formData: data,
+          });
+          // Link the submission to the new instance
+          await db.formSubmission.update({
+            where: { id: submission.id },
+            data: { workflowInstanceId: instance.id },
+          });
+          autoWorkflowInstanceId = instance.id;
+
+          await writeAudit({
+            userId: session.user.id,
+            action: "WORKFLOW_STARTED",
+            resourceType: "workflow_instance",
+            resourceId: instance.id,
+            metadata: { referenceNumber, templateId: wfTemplate.id, formSubmissionId: submission.id },
+          });
+        }
+      } catch (wfErr) {
+        logger.error("Failed to auto-start workflow from form submission", wfErr);
+        // Don't fail the submission if workflow start fails
+      }
+    }
 
     await writeAudit({
       userId: session.user.id,
@@ -191,11 +256,14 @@ export async function POST(
       metadata: {
         templateId: id,
         templateName: template.name,
-        workflowInstanceId: workflowInstanceId || null,
+        workflowInstanceId: autoWorkflowInstanceId ?? resolvedWorkflowInstanceId ?? null,
       },
     });
 
-    return NextResponse.json(submission, { status: 201 });
+    return NextResponse.json(
+      { ...submission, workflowInstanceId: autoWorkflowInstanceId ?? submission.workflowInstanceId },
+      { status: 201 },
+    );
   } catch (error) {
     logger.error("Failed to create form submission", error, {
       route: "/api/forms/[id]/submissions",

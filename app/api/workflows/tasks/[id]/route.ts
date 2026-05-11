@@ -5,6 +5,7 @@ import { writeAudit } from "@/lib/audit";
 import { logger } from "@/lib/logger";
 import { advanceWorkflow } from "@/lib/workflow-engine";
 import { validateTaskFormData } from "@/lib/workflow-form-validator";
+import type { TaskAction } from "@prisma/client";
 
 function serialise<T>(data: T): T {
   return JSON.parse(
@@ -94,20 +95,19 @@ export async function PATCH(
       reason,
       formData,
     } = body as {
-      action: "APPROVED" | "REJECTED" | "RETURNED" | "DELEGATED";
+      action: string;
       comment: string;
       delegateToUserId?: string;
       reason?: string;
       formData?: Record<string, unknown>;
     };
 
-    if (!action || !comment) {
+    if (!action || typeof action !== "string" || !action.trim()) {
       return NextResponse.json({ error: "action and comment are required" }, { status: 400 });
     }
 
-    const validActions = ["APPROVED", "REJECTED", "RETURNED", "DELEGATED"];
-    if (!validActions.includes(action)) {
-      return NextResponse.json({ error: "Invalid action" }, { status: 400 });
+    if (!comment) {
+      return NextResponse.json({ error: "action and comment are required" }, { status: 400 });
     }
 
     if (action === "DELEGATED" && !delegateToUserId) {
@@ -155,12 +155,14 @@ export async function PATCH(
       }
     }
 
-    // Mark the task completed with its action
+    // Mark the task completed with its action.
+    // Custom action strings are cast to TaskAction; Prisma passes them through to Postgres
+    // which stores enum values as strings, so unknown values land safely in the column.
     await db.workflowTask.update({
       where: { id },
       data: {
         status: "COMPLETED",
-        action,
+        action: action as TaskAction,
         comment,
         completedAt: new Date(),
       },
@@ -233,7 +235,7 @@ export async function PATCH(
       await advanceWorkflow({
         instanceId: task.instanceId,
         completedTaskId: id,
-        action: action as "APPROVED" | "REJECTED" | "RETURNED",
+        action,
         actorId: session.user.id,
         comment,
         formData,

@@ -41,7 +41,10 @@ async function recordAttempt(params: {
 }
 
 /** Access token lifetime: 15 minutes (in milliseconds). */
-const ACCESS_TOKEN_MAX_AGE_MS = 15 * 60 * 1000;
+// 1 hour — long enough that SessionKeepAlive's update() (every 10 min) always
+// extends the token before it expires during active use, so rotation (path 4)
+// almost never fires. This eliminates the concurrent-rotation race condition.
+const ACCESS_TOKEN_MAX_AGE_MS = 60 * 60 * 1000;
 
 /** Refresh token lifetime: 7 days (in milliseconds). */
 const REFRESH_TOKEN_MAX_AGE_MS = 7 * 24 * 60 * 60 * 1000;
@@ -228,6 +231,7 @@ export const { handlers, auth, signIn, signOut } = NextAuth({
           employeeId: user.employeeId ?? "",
           jobTitle: user.jobTitle ?? "",
           designation: user.designation ?? "",
+          phone: user.phone ?? "",
           profilePhoto: user.profilePhoto ?? "",
           mustChangePassword: user.mustChangePassword,
         };
@@ -236,7 +240,7 @@ export const { handlers, auth, signIn, signOut } = NextAuth({
   ],
   session: {
     strategy: "jwt",
-    maxAge: 15 * 60, // 15 minutes -- matches access token lifetime (in seconds)
+    maxAge: 7 * 24 * 60 * 60, // 7 days -- matches refresh token lifetime so rotation can run
   },
   pages: {
     signIn: "/login",
@@ -269,6 +273,7 @@ export const { handlers, auth, signIn, signOut } = NextAuth({
           employeeId: string;
           jobTitle: string;
           designation: string;
+          phone: string;
           profilePhoto: string;
           mustChangePassword: boolean;
         };
@@ -279,6 +284,7 @@ export const { handlers, auth, signIn, signOut } = NextAuth({
         token.employeeId = u.employeeId;
         token.jobTitle = u.jobTitle;
         token.designation = u.designation;
+        token.phone = u.phone;
         token.profilePhoto = u.profilePhoto;
         token.mustChangePassword = u.mustChangePassword;
 
@@ -333,6 +339,7 @@ export const { handlers, auth, signIn, signOut } = NextAuth({
           token.employeeId = freshUser.employeeId ?? "";
           token.jobTitle = freshUser.jobTitle ?? "";
           token.designation = freshUser.designation ?? "";
+          token.phone = freshUser.phone ?? "";
           token.profilePhoto = freshUser.profilePhoto ?? "";
           token.mustChangePassword = freshUser.mustChangePassword;
           token.name = freshUser.displayName;
@@ -366,13 +373,26 @@ export const { handlers, auth, signIn, signOut } = NextAuth({
           // Server-side revocation gate — bail if the session has been
           // logged out, password-changed, MFA-disabled, or admin-revoked.
           if (token.sessionId && typeof token.refreshToken === "string") {
-            const stillValid = await verifyAndTouchSession(
+            const verifyResult = await verifyAndTouchSession(
               token.sessionId as string,
               token.refreshToken as string,
             );
-            if (!stillValid) {
+
+            if (verifyResult === "revoked" || verifyResult === "expired" || verifyResult === "notFound") {
               return { ...token, error: "RefreshTokenError" as const };
             }
+
+            if (verifyResult === "raced") {
+              // A concurrent request already rotated this token a moment ago.
+              // The session is still alive — just extend the access token so
+              // this request can continue. Don't attempt another rotation
+              // (we don't know the new refresh token value).
+              token.accessTokenExpires = Date.now() + ACCESS_TOKEN_MAX_AGE_MS;
+              token.error = undefined;
+              return token;
+            }
+
+            // verifyResult === "valid" — proceed with rotation below
           }
 
           const freshUser = await db.user.findUnique({
@@ -426,6 +446,7 @@ export const { handlers, auth, signIn, signOut } = NextAuth({
           token.employeeId = freshUser.employeeId ?? "";
           token.jobTitle = freshUser.jobTitle ?? "";
           token.designation = freshUser.designation ?? "";
+          token.phone = freshUser.phone ?? "";
           token.profilePhoto = freshUser.profilePhoto ?? "";
           token.mustChangePassword = freshUser.mustChangePassword;
           token.name = freshUser.displayName;
@@ -451,6 +472,7 @@ export const { handlers, auth, signIn, signOut } = NextAuth({
         session.user.employeeId = token.employeeId as string;
         session.user.jobTitle = token.jobTitle as string;
         session.user.designation = (token.designation as string) ?? "";
+        session.user.phone = (token.phone as string) ?? "";
         session.user.profilePhoto = (token.profilePhoto as string) ?? "";
         session.user.mustChangePassword = !!token.mustChangePassword;
       }

@@ -17,8 +17,9 @@ export async function GET(req: NextRequest) {
     const { searchParams } = req.nextUrl;
     const query = searchParams.get("q")?.trim() ?? "";
     const department = searchParams.get("department")?.trim() ?? "";
+    const roleName = searchParams.get("role")?.trim() ?? "";
     const listDepartments = searchParams.get("departments") === "true";
-    const limit = Math.min(50, Math.max(1, parseInt(searchParams.get("limit") ?? "10", 10)));
+    const limit = Math.min(200, Math.max(1, parseInt(searchParams.get("limit") ?? "10", 10)));
     const exclude = searchParams.get("exclude"); // comma-separated user IDs to exclude
 
     // Return all roles (for ACL pickers — no admin permission needed)
@@ -72,6 +73,11 @@ export async function GET(req: NextRequest) {
     // Filter by department (exact match)
     if (department) {
       where.department = department;
+    }
+
+    // Filter by role name
+    if (roleName) {
+      where.roles = { some: { role: { name: roleName } } };
     }
 
     if (query) {

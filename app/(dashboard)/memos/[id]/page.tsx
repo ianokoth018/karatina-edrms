@@ -208,6 +208,9 @@ export default function MemoDetailPage() {
   const [clarifyDeptDropdownOpen, setClarifyDeptDropdownOpen] = useState(false);
   const [clarifySearchQuery, setClarifySearchQuery] = useState("");
   const [clarifySearchResults, setClarifySearchResults] = useState<UserOption[]>([]);
+  const [clarifyUserDropdownOpen, setClarifyUserDropdownOpen] = useState(false);
+  const [clarifyDeptUsers, setClarifyDeptUsers] = useState<UserOption[]>([]);
+  const [isLoadingDeptUsers, setIsLoadingDeptUsers] = useState(false);
   const [isSearchingClarify, setIsSearchingClarify] = useState(false);
   const [isClarifying, setIsClarifying] = useState(false);
 
@@ -273,6 +276,17 @@ export default function MemoDetailPage() {
     return () => document.removeEventListener("mousedown", handleClick);
   }, [showClarifyModal]);
 
+  // Pre-load user list when clarify modal opens in user mode
+  useEffect(() => {
+    if (!showClarifyModal || clarifyMode !== "user") return;
+    setIsSearchingClarify(true);
+    fetch("/api/users/search?limit=20")
+      .then((r) => (r.ok ? r.json() : null))
+      .then((data) => { if (data?.users) setClarifySearchResults(data.users); })
+      .catch(() => {})
+      .finally(() => setIsSearchingClarify(false));
+  }, [showClarifyModal, clarifyMode]);
+
   // Fetch departments lazily when clarify modal opens or switches to department mode
   useEffect(() => {
     if (!showClarifyModal) return;
@@ -283,6 +297,19 @@ export default function MemoDetailPage() {
       .then((data) => data?.departments && setDepartments(data.departments))
       .catch(() => {});
   }, [showClarifyModal, clarifyMode, departments.length]);
+
+  // Load users for selected department (step 2 of dept mode)
+  useEffect(() => {
+    if (!clarifyDepartment || clarifyMode !== "department") return;
+    setClarifyTarget(null);
+    setClarifyDeptUsers([]);
+    setIsLoadingDeptUsers(true);
+    fetch(`/api/users/search?department=${encodeURIComponent(clarifyDepartment)}&limit=50`)
+      .then((r) => (r.ok ? r.json() : null))
+      .then((data) => { if (data?.users) setClarifyDeptUsers(data.users); })
+      .catch(() => {})
+      .finally(() => setIsLoadingDeptUsers(false));
+  }, [clarifyDepartment, clarifyMode]);
 
   function openActionModal(type: string) {
     setActionType(type);
@@ -627,11 +654,14 @@ export default function MemoDetailPage() {
   function searchClarifyUsers(value: string) {
     setClarifySearchQuery(value);
     if (clarifyDebounce.current) clearTimeout(clarifyDebounce.current);
-    if (!value.trim()) { setClarifySearchResults([]); return; }
     clarifyDebounce.current = setTimeout(async () => {
       setIsSearchingClarify(true);
       try {
-        const res = await fetch(`/api/users/search?q=${encodeURIComponent(value.trim())}&limit=10`);
+        const q = value.trim();
+        const url = q
+          ? `/api/users/search?q=${encodeURIComponent(q)}&limit=10`
+          : `/api/users/search?limit=20`;
+        const res = await fetch(url);
         if (res.ok) {
           const data = await res.json();
           setClarifySearchResults(data.users ?? []);
@@ -642,8 +672,7 @@ export default function MemoDetailPage() {
   }
 
   async function handleSeekClarification() {
-    const hasTarget = clarifyMode === "user" ? !!clarifyTarget : !!clarifyDepartment;
-    if (!hasTarget || !clarifyQuestion.trim()) return;
+    if (!clarifyTarget || !clarifyQuestion.trim()) return;
     setIsClarifying(true);
     try {
       const res = await fetch(`/api/memos/${memoId}`, {
@@ -652,9 +681,7 @@ export default function MemoDetailPage() {
         body: JSON.stringify({
           action: "SEEK_CLARIFICATION",
           comment: clarifyQuestion.trim(),
-          ...(clarifyMode === "user"
-            ? { clarifyUserId: clarifyTarget!.id }
-            : { clarifyDepartment }),
+          clarifyUserId: clarifyTarget.id,
         }),
       });
       if (!res.ok) {
@@ -665,6 +692,7 @@ export default function MemoDetailPage() {
       setClarifyQuestion("");
       setClarifyTarget(null);
       setClarifyDepartment(null);
+      setClarifyDeptUsers([]);
       setClarifyMode("user");
       fetchMemo();
     } catch (err) {
@@ -1213,18 +1241,19 @@ export default function MemoDetailPage() {
       <div className="xl:col-span-3 bg-white dark:bg-gray-900 rounded-xl border border-gray-200 dark:border-gray-800 overflow-hidden animate-slide-up">
         <div className="p-4 sm:p-6">
           <div className="border-2 border-gray-300 dark:border-gray-600 rounded-lg overflow-hidden bg-white dark:bg-gray-950">
-            {/* Header bar */}
-            <div className="bg-[#02773b] px-6 py-3 flex items-center justify-center gap-3">
-              <img
-                src="/karu-crest.png"
-                alt="KarU Crest"
-                className="h-12 w-12 object-contain"
-              />
-              <div className="text-center">
-                <h3 className="text-white text-lg font-bold tracking-wide">
-                  KARATINA UNIVERSITY
-                </h3>
-                <p className="text-white/80 text-sm font-medium tracking-widest mt-0.5">
+            {/* Header bar — white letterhead area + green "Internal Memo" band */}
+            <div>
+              {/* Logo on white — mirrors the sidebar display */}
+              <div className="bg-white px-6 py-4 flex items-center justify-center border-b border-gray-100">
+                <img
+                  src="/karu-logo-v2.png"
+                  alt="Karatina University Logo"
+                  className="h-14 w-auto object-contain"
+                />
+              </div>
+              {/* Green band — document type label only */}
+              <div className="bg-[#02773b] px-6 py-2 text-center">
+                <p className="text-white text-sm font-semibold tracking-widest uppercase">
                   Internal Memo
                 </p>
               </div>
@@ -2254,6 +2283,7 @@ export default function MemoDetailPage() {
                         setClarifyTarget(null);
                         setClarifySearchQuery("");
                         setClarifySearchResults([]);
+                        setClarifyUserDropdownOpen(false);
                       }}
                       className={`px-3 py-1.5 text-xs font-medium border-l border-gray-200 dark:border-gray-700 transition-colors ${
                         clarifyMode === "department"
@@ -2293,7 +2323,9 @@ export default function MemoDetailPage() {
                           type="text"
                           value={clarifySearchQuery}
                           onChange={(e) => searchClarifyUsers(e.target.value)}
-                          placeholder="Or search for another user..."
+                          onFocus={() => setClarifyUserDropdownOpen(true)}
+                          onBlur={() => setTimeout(() => setClarifyUserDropdownOpen(false), 150)}
+                          placeholder="Search for a user..."
                           className="w-full h-9 rounded-lg border border-gray-200 dark:border-gray-700 bg-gray-50 dark:bg-gray-800 px-3 text-sm text-gray-900 dark:text-gray-100 placeholder:text-gray-400 outline-none focus:border-[#02773b] focus:ring-1 focus:ring-[#02773b]/20"
                         />
                         {isSearchingClarify && (
@@ -2301,7 +2333,7 @@ export default function MemoDetailPage() {
                             <div className="w-4 h-4 border-2 border-gray-300 border-t-gray-600 rounded-full animate-spin" />
                           </div>
                         )}
-                        {clarifySearchResults.length > 0 && (
+                        {clarifyUserDropdownOpen && clarifySearchResults.length > 0 && (
                           <div className="absolute z-10 mt-1 w-full bg-white dark:bg-gray-900 border border-gray-200 dark:border-gray-700 rounded-lg shadow-lg max-h-40 overflow-y-auto">
                             {clarifySearchResults.map((user) => (
                               <button
@@ -2311,6 +2343,7 @@ export default function MemoDetailPage() {
                                   setClarifyTarget(user);
                                   setClarifySearchQuery("");
                                   setClarifySearchResults([]);
+                                  setClarifyUserDropdownOpen(false);
                                 }}
                                 className="w-full text-left px-3 py-2 text-sm hover:bg-gray-50 dark:hover:bg-gray-800 transition-colors"
                               >
@@ -2334,6 +2367,8 @@ export default function MemoDetailPage() {
 
                   {clarifyMode === "department" && (
                     <>
+                      {/* Step 1 — pick department */}
+                      <p className="text-xs font-medium text-gray-500 dark:text-gray-400 mb-1.5">Step 1 — Select department</p>
                       <div className="relative" ref={clarifyDeptRef}>
                         <input
                           type="text"
@@ -2382,7 +2417,45 @@ export default function MemoDetailPage() {
                             </svg>
                             {clarifyDepartment}
                           </span>
-                          <button onClick={() => setClarifyDepartment(null)} className="text-xs text-gray-400 hover:text-gray-600">clear</button>
+                          <button
+                            onClick={() => { setClarifyDepartment(null); setClarifyDeptUsers([]); setClarifyTarget(null); }}
+                            className="text-xs text-gray-400 hover:text-gray-600"
+                          >
+                            change
+                          </button>
+                        </div>
+                      )}
+
+                      {/* Step 2 — pick person from dept */}
+                      {clarifyDepartment && (
+                        <div className="mt-3">
+                          <p className="text-xs font-medium text-gray-500 dark:text-gray-400 mb-1.5">Step 2 — Select person</p>
+                          {isLoadingDeptUsers ? (
+                            <div className="flex items-center gap-2 py-2 text-sm text-gray-500">
+                              <div className="w-4 h-4 border-2 border-gray-300 border-t-gray-600 rounded-full animate-spin flex-shrink-0" />
+                              Loading staff…
+                            </div>
+                          ) : clarifyDeptUsers.length === 0 ? (
+                            <p className="text-sm text-gray-400 py-1">No users found in this department.</p>
+                          ) : (
+                            <div className="space-y-1 max-h-44 overflow-y-auto pr-1">
+                              {clarifyDeptUsers.map((user) => (
+                                <button
+                                  key={user.id}
+                                  type="button"
+                                  onClick={() => setClarifyTarget(user)}
+                                  className={`w-full text-left px-3 py-2 rounded-lg text-sm transition-colors border ${
+                                    clarifyTarget?.id === user.id
+                                      ? "bg-purple-100 dark:bg-purple-900/30 text-purple-700 dark:text-purple-300 border-purple-300 dark:border-purple-700"
+                                      : "bg-white dark:bg-gray-800 border-gray-200 dark:border-gray-700 text-gray-700 dark:text-gray-300 hover:bg-gray-50 dark:hover:bg-gray-700"
+                                  }`}
+                                >
+                                  <span className="font-medium">{user.displayName}</span>
+                                  {user.jobTitle && <span className="text-xs text-gray-400 ml-2">{user.jobTitle}</span>}
+                                </button>
+                              ))}
+                            </div>
+                          )}
                         </div>
                       )}
                     </>
@@ -2414,7 +2487,7 @@ export default function MemoDetailPage() {
               </button>
               <button
                 onClick={handleSeekClarification}
-                disabled={isClarifying || !clarifyQuestion.trim() || (clarifyMode === "user" ? !clarifyTarget : !clarifyDepartment)}
+                disabled={isClarifying || !clarifyQuestion.trim() || !clarifyTarget}
                 className="h-9 px-4 rounded-lg bg-purple-600 text-white text-sm font-medium hover:bg-purple-700 transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
               >
                 {isClarifying ? "Sending..." : "Send Request"}

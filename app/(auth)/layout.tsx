@@ -51,11 +51,11 @@ export default function AuthLayout({
           {/* Logo */}
           <div className="flex-shrink-0">
             <Image
-              src="/karu-logo.png"
+              src="/karu-logo-v2.png"
               alt="Karatina University Logo"
               width={200}
               height={80}
-              className="w-[160px] h-auto brightness-0 invert drop-shadow-lg"
+              className="w-[200px] h-auto drop-shadow-lg"
               priority
             />
           </div>

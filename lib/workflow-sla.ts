@@ -21,6 +21,13 @@ interface TaskNodeConfig {
   escalationDays?: number;
   reminderDays?: number;
   escalateTo?: string;
+  // Deadline
+  deadlineType?: string;
+  deadlineNotifyBefore?: boolean;
+  deadlineNotifyBeforeValue?: number;
+  deadlineNotifyBeforeUnit?: string;
+  deadlineNotifyOverdue?: boolean;
+  deadlineNotifyOverdueRole?: string;
 }
 
 interface DefinitionNode {
@@ -95,17 +102,29 @@ function getNodeConfigForStep(
 
   if (!node) return {};
 
+  // Deadline notification config (common to all nodes)
+  const deadlineConfig: Pick<TaskNodeConfig, "deadlineType" | "deadlineNotifyBefore" | "deadlineNotifyBeforeValue" | "deadlineNotifyBeforeUnit" | "deadlineNotifyOverdue" | "deadlineNotifyOverdueRole"> = {
+    deadlineType: (node.data.deadlineType as string) || "none",
+    deadlineNotifyBefore: !!(node.data.deadlineNotifyBefore),
+    deadlineNotifyBeforeValue: (node.data.deadlineNotifyBeforeValue as number) || 1,
+    deadlineNotifyBeforeUnit: (node.data.deadlineNotifyBeforeUnit as string) || "days",
+    deadlineNotifyOverdue: !!(node.data.deadlineNotifyOverdue),
+    deadlineNotifyOverdueRole: (node.data.deadlineNotifyOverdueRole as string) || "",
+  };
+
   // Multi-level escalation config
   const levels = node.data.escalationLevels as EscalationLevel[] | undefined;
   if (levels?.length) {
-    return { escalationLevels: levels };
+    return { escalationLevels: levels, ...deadlineConfig };
   }
 
-  // Legacy single-level
+  // Legacy single-level — read both field names for compatibility
+  const escalateTo = (node.data.escalateTo as string) || (node.data.escalationTo as string) || undefined;
   return {
     escalationDays: (node.data.escalationDays as number) || undefined,
     reminderDays: (node.data.reminderDays as number) || undefined,
-    escalateTo: (node.data.escalateTo as string) || undefined,
+    escalateTo,
+    ...deadlineConfig,
   };
 }
 
@@ -115,6 +134,37 @@ function daysElapsed(since: Date): number {
 
 async function resolveEscalationUser(assigneeRule?: string, assigneeValue?: string): Promise<string | null> {
   if (!assigneeValue) return null;
+
+  // Handle prefixed values: "user:<id>", "role:<name>", "pool:<id>", "department:<dept>"
+  if (assigneeValue.startsWith("user:")) {
+    const userId = assigneeValue.slice(5);
+    const user = await db.user.findUnique({ where: { id: userId }, select: { id: true } });
+    return user?.id ?? null;
+  }
+  if (assigneeValue.startsWith("role:")) {
+    const roleName = assigneeValue.slice(5);
+    const byRole = await db.userRole.findFirst({
+      where: { role: { name: roleName }, user: { isActive: true } },
+      include: { user: { select: { id: true } } },
+    });
+    return byRole?.user.id ?? null;
+  }
+  if (assigneeValue.startsWith("pool:")) {
+    const poolId = assigneeValue.slice(5);
+    const member = await db.workflowPoolMember.findFirst({
+      where: { poolId, user: { isActive: true } },
+      include: { user: { select: { id: true } } },
+    });
+    return member?.user.id ?? null;
+  }
+  if (assigneeValue.startsWith("department:")) {
+    const dept = assigneeValue.slice(11);
+    const user = await db.user.findFirst({
+      where: { department: dept, isActive: true },
+      select: { id: true },
+    });
+    return user?.id ?? null;
+  }
 
   if (assigneeRule === "specific_user") {
     const user = await db.user.findUnique({ where: { id: assigneeValue }, select: { id: true } });
@@ -383,6 +433,107 @@ export async function checkAndEscalateOverdueTasks(): Promise<{
           },
         });
         reminded++;
+      }
+    }
+
+    // ------------------------------------------------------------------
+    // Deadline notifications (approaching + overdue)
+    // ------------------------------------------------------------------
+    if (!task.dueAt || config.deadlineType === "none") continue;
+
+    const now = new Date();
+    const msUntilDeadline = task.dueAt.getTime() - now.getTime();
+    const isOverdue = msUntilDeadline <= 0;
+    const todayStart = new Date();
+    todayStart.setHours(0, 0, 0, 0);
+
+    // Approaching deadline reminder
+    if (
+      !isOverdue &&
+      config.deadlineNotifyBefore &&
+      task.assigneeId
+    ) {
+      const notifyBeforeMs = config.deadlineNotifyBeforeUnit === "hours"
+        ? (config.deadlineNotifyBeforeValue ?? 1) * 3600000
+        : (config.deadlineNotifyBeforeValue ?? 1) * 86400000;
+
+      if (msUntilDeadline <= notifyBeforeMs) {
+        const alreadyNotified = await db.notification.findFirst({
+          where: {
+            userId: task.assigneeId,
+            type: "DEADLINE_APPROACHING",
+            createdAt: { gte: todayStart },
+            body: { contains: task.id },
+          },
+        });
+        if (!alreadyNotified) {
+          const hoursLeft = Math.ceil(msUntilDeadline / 3600000);
+          const timeLabel = hoursLeft >= 24 ? `${Math.ceil(hoursLeft / 24)} day(s)` : `${hoursLeft} hour(s)`;
+          await db.notification.create({
+            data: {
+              userId: task.assigneeId,
+              type: "DEADLINE_APPROACHING",
+              title: "Deadline approaching",
+              body: `"${task.stepName}" for "${task.instance.subject}" is due in ${timeLabel}. [${task.id}]`,
+              linkUrl: "/workflows",
+            },
+          });
+          reminded++;
+        }
+      }
+    }
+
+    // Overdue notification
+    if (isOverdue && config.deadlineNotifyOverdue) {
+      const hoursOverdue = Math.ceil(Math.abs(msUntilDeadline) / 3600000);
+
+      // Notify assignee
+      if (task.assigneeId) {
+        const alreadyNotified = await db.notification.findFirst({
+          where: {
+            userId: task.assigneeId,
+            type: "DEADLINE_MISSED",
+            createdAt: { gte: todayStart },
+            body: { contains: task.id },
+          },
+        });
+        if (!alreadyNotified) {
+          await db.notification.create({
+            data: {
+              userId: task.assigneeId,
+              type: "DEADLINE_MISSED",
+              title: "Task deadline missed",
+              body: `"${task.stepName}" for "${task.instance.subject}" is ${hoursOverdue} hour(s) overdue. [${task.id}]`,
+              linkUrl: "/workflows",
+            },
+          });
+        }
+      }
+
+      // Notify overdue role if configured
+      if (config.deadlineNotifyOverdueRole) {
+        const roleUser = await resolveEscalationUser(undefined, config.deadlineNotifyOverdueRole);
+        if (roleUser) {
+          const alreadyNotified = await db.notification.findFirst({
+            where: {
+              userId: roleUser,
+              type: "DEADLINE_MISSED",
+              createdAt: { gte: todayStart },
+              body: { contains: task.id },
+            },
+          });
+          if (!alreadyNotified) {
+            await db.notification.create({
+              data: {
+                userId: roleUser,
+                type: "DEADLINE_MISSED",
+                title: "Workflow task overdue",
+                body: `"${task.stepName}" for "${task.instance.subject}" missed its deadline by ${hoursOverdue} hour(s). Assignee: ${task.assignee?.displayName ?? task.assignee?.name ?? "unassigned"}. [${task.id}]`,
+                linkUrl: "/workflows",
+              },
+            });
+          }
+        }
       }
     }
   }

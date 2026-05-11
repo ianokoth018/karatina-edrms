@@ -202,3 +202,101 @@ export async function workingHoursRemaining(
   const cal = calendarConfig ?? (await getDefaultCalendar());
   return workingHoursBetween(new Date(), deadline, cal);
 }
+
+/**
+ * Returns true if `date` falls within working hours on a working day.
+ */
+export function isWithinWorkingHours(date: Date, cal: CalendarConfig): boolean {
+  const local = toLocalDate(date, cal.timezone);
+  if (!isWorkDay(local, cal)) return false;
+  const h = local.getHours() + local.getMinutes() / 60;
+  return h >= cal.workdayStart && h < cal.workdayEnd;
+}
+
+/**
+ * Returns the next datetime that falls within working hours.
+ * If `date` is already within working hours, returns `date` unchanged.
+ */
+export function getNextWorkingTime(date: Date, cal: CalendarConfig): Date {
+  const cursor = new Date(date);
+  // Safety limit: don't loop beyond 30 days
+  const limit = new Date(date.getTime() + 30 * 24 * 60 * 60 * 1000);
+
+  while (cursor < limit) {
+    const local = toLocalDate(cursor, cal.timezone);
+    const utcOffset = cursor.getTime() - local.getTime();
+
+    if (!isWorkDay(local, cal)) {
+      // Jump to midnight of next local day
+      const nextMidnight = new Date(local);
+      nextMidnight.setHours(24, 0, 0, 0);
+      cursor.setTime(nextMidnight.getTime() + utcOffset);
+      continue;
+    }
+
+    const h = local.getHours() + local.getMinutes() / 60;
+    if (h < cal.workdayStart) {
+      // Jump to start of working day
+      const dayStart = new Date(local);
+      dayStart.setHours(cal.workdayStart, 0, 0, 0);
+      cursor.setTime(dayStart.getTime() + utcOffset);
+      continue;
+    }
+    if (h >= cal.workdayEnd) {
+      // Past end of day — jump to next day midnight
+      const nextMidnight = new Date(local);
+      nextMidnight.setHours(24, 0, 0, 0);
+      cursor.setTime(nextMidnight.getTime() + utcOffset);
+      continue;
+    }
+
+    return cursor;
+  }
+
+  return cursor;
+}
+
+/**
+ * Add `days` working days to `from`, landing at the start of that working day.
+ */
+export function addWorkingDays(from: Date, days: number, cal: CalendarConfig): Date {
+  if (days <= 0) return from;
+  let remaining = days;
+  const cursor = new Date(from);
+
+  while (remaining > 0) {
+    cursor.setTime(cursor.getTime() + 24 * 60 * 60 * 1000);
+    const local = toLocalDate(cursor, cal.timezone);
+    if (isWorkDay(local, cal)) remaining--;
+  }
+
+  // Land at start of working day
+  const local = toLocalDate(cursor, cal.timezone);
+  const utcOffset = cursor.getTime() - local.getTime();
+  const dayStart = new Date(local);
+  dayStart.setHours(cal.workdayStart, 0, 0, 0);
+  return new Date(dayStart.getTime() + utcOffset);
+}
+
+/**
+ * Count the number of working days (full days) between `from` and `to`.
+ */
+export function workingDaysBetween(from: Date, to: Date, cal: CalendarConfig): number {
+  if (to <= from) return 0;
+  let count = 0;
+  const cursor = new Date(from);
+  cursor.setHours(0, 0, 0, 0);
+
+  while (cursor < to) {
+    const local = toLocalDate(cursor, cal.timezone);
+    if (isWorkDay(local, cal)) count++;
+    cursor.setTime(cursor.getTime() + 24 * 60 * 60 * 1000);
+  }
+  return count;
+}
+
+/** Invalidate the in-memory calendar cache (call after admin saves new settings). */
+export function invalidateCalendarCache(): void {
+  _defaultCalendarCache = null;
+  _cacheExpiry = 0;
+}

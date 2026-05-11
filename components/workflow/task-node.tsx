@@ -3,6 +3,27 @@
 import { memo } from "react";
 import { Handle, Position, type NodeProps } from "reactflow";
 
+const actionHandleColors: Record<string, string> = {
+  APPROVED: "!bg-green-500",
+  REJECTED: "!bg-red-500",
+  RETURNED: "!bg-amber-500",
+};
+
+const pillColorClasses: Record<string, string> = {
+  green:  "bg-green-100 text-green-700",
+  red:    "bg-red-100 text-red-700",
+  amber:  "bg-amber-100 text-amber-700",
+  blue:   "bg-blue-100 text-blue-700",
+  purple: "bg-purple-100 text-purple-700",
+  gray:   "bg-gray-100 text-gray-600",
+  orange: "bg-orange-100 text-orange-700",
+  teal:   "bg-teal-100 text-teal-700",
+  pink:   "bg-pink-100 text-pink-700",
+  indigo: "bg-indigo-100 text-indigo-700",
+  cyan:   "bg-cyan-100 text-cyan-700",
+  yellow: "bg-yellow-100 text-yellow-700",
+};
+
 export interface FieldConfig {
   fieldName: string;
   visibility: "visible" | "hidden" | "readonly" | "editable";
@@ -12,7 +33,7 @@ export interface ActionButton {
   id: string;
   label: string;          // e.g., "Recommend", "Approve", "Circulate"
   action: string;         // APPROVED, REJECTED, RETURNED, DELEGATED, or custom
-  color: "green" | "red" | "amber" | "blue" | "purple" | "gray";
+  color: "green" | "red" | "amber" | "blue" | "purple" | "gray" | "orange" | "teal" | "pink" | "indigo" | "cyan" | "yellow";
   requiresComment: boolean;
   requiresUserSelect: boolean; // e.g., for delegation or circulation
   icon?: string;
@@ -141,13 +162,41 @@ function TaskNodeComponent({ data, selected }: NodeProps<TaskNodeData>) {
             Escalate after {data.escalationDays}d
           </div>
         )}
+
+        {/* Action outcome pills */}
+        {data.actionButtons && data.actionButtons.length > 0 && (
+          <div className="flex flex-wrap gap-1 pt-1">
+            {data.actionButtons.map((btn) => (
+              <span
+                key={btn.id}
+                className={`inline-block px-1.5 py-0.5 rounded text-[9px] font-medium leading-tight ${pillColorClasses[btn.color] ?? "bg-gray-100 text-gray-600"}`}
+              >
+                {btn.label}
+              </span>
+            ))}
+          </div>
+        )}
       </div>
 
-      <Handle
-        type="source"
-        position={Position.Bottom}
-        className="!w-3 !h-3 !bg-karu-green !border-2 !border-white dark:!border-gray-900"
-      />
+      {/* Per-action source handles — one per action button, or a single default */}
+      {data.actionButtons && data.actionButtons.length > 0 ? (
+        data.actionButtons.map((btn, idx, arr) => (
+          <Handle
+            key={btn.action}
+            id={btn.action}
+            type="source"
+            position={Position.Bottom}
+            style={{ left: `${((idx + 1) / (arr.length + 1)) * 100}%` }}
+            className={`!w-3 !h-3 !border-2 !border-white dark:!border-gray-900 ${actionHandleColors[btn.action] ?? "!bg-blue-500"}`}
+          />
+        ))
+      ) : (
+        <Handle
+          type="source"
+          position={Position.Bottom}
+          className="!w-3 !h-3 !bg-karu-green !border-2 !border-white dark:!border-gray-900"
+        />
+      )}
     </div>
   );
 }

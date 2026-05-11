@@ -349,17 +349,30 @@ enum OcrStatus {
 
 // === Workflow Engine ===
 model WorkflowTemplate {
-  id          String @id @default(cuid())
-  name        String @unique
-  description String?
-  definition  Json   // serialized node graph
-  isActive    Boolean @default(true)
-  version     Int     @default(1)
-  createdById String
-  createdAt   DateTime @default(now())
-  updatedAt   DateTime @updatedAt
-  instances   WorkflowInstance[]
-  triggers    WorkflowTrigger[]
+  id           String   @id @default(cuid())
+  name         String   @unique
+  description  String?
+  definition   Json     // serialized node graph
+  isActive     Boolean  @default(true)
+  version      Int      @default(1)
+  /// URL-safe slug used as the sidebar module route (e.g. "leave-request").
+  /// When set, a published template appears as a standalone sidebar module.
+  slug         String?  @unique
+  /// Human label for a single instance (e.g. "Leave Request", "Purchase Order").
+  instanceName String?
+  /// Icon name from the workflow icon set shown in the sidebar.
+  sidebarIcon  String?  @default("document")
+  /// Ordering position among workflow sidebar modules (lower = higher).
+  sidebarOrder Int      @default(0)
+  /// Array of custom sub-view definitions shown in the sidebar module.
+  /// Each entry: { id, label, description?, filter }
+  /// filter values: "all" | "mine" | "mine_pending" | "overdue" | "step:<name>"
+  customQueries Json    @default("[]")
+  createdById  String
+  createdAt    DateTime @default(now())
+  updatedAt    DateTime @updatedAt
+  instances    WorkflowInstance[]
+  triggers     WorkflowTrigger[]
 
   @@map("workflow_templates")
 }
@@ -437,6 +450,7 @@ model WorkflowTask {
   completedAt     DateTime?
   comments        TaskComment[]
   attachments     TaskAttachment[]
+  escalationLogs  TaskEscalationLog[]
 
   /// DocuSign envelope id when this task has been routed for digital
   /// signature. Used to look up signing status + download the signed PDF.
@@ -555,9 +569,64 @@ model Delegation {
   startsAt     DateTime
   endsAt       DateTime
   isActive     Boolean  @default(true)
+  /// Source that created this delegation: "manual" | "leave_workflow" | "system"
+  source       String   @default("manual")
+  /// For leave-sourced delegations, the workflow instance that created it
+  workflowInstanceId String?
   createdAt    DateTime @default(now())
 
+  @@index([delegatorId, isActive])
+  @@index([workflowInstanceId])
   @@map("delegations")
+}
+
+/// Per-user/role/department escalation chain configuration.
+/// When a task assigned to a user exceeds the SLA, the engine walks
+/// these levels to notify or reassign.
+model EscalationMatrix {
+  id          String   @id @default(cuid())
+  name        String   @unique
+  description String?
+  /// The subject this matrix applies to. At most one of these will be set.
+  userId      String?  // specific user
+  roleId      String?  // all users with this role
+  department  String?  // all users in this department
+  poolId      String?  // all tasks assigned to this workflow pool
+  /// JSON array of escalation levels (ordered by level number):
+  /// [{
+  ///   level: 1,
+  ///   afterHours: 24,            // wall-clock hours after task assignment (or prev level fire)
+  ///   action: "notify"|"reassign"|"both",
+  ///   escalateTo: "supervisor"|"user:{id}"|"role:{name}"|"department:{name}",
+  ///   notifyOriginal: true,      // also remind the original assignee
+  ///   message: "custom escalation message (optional)",
+  /// }]
+  levels      Json     @default("[]")
+  isActive    Boolean  @default(true)
+  createdById String
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  @@index([userId])
+  @@index([roleId])
+  @@map("escalation_matrices")
+}
+
+/// Records when each escalation level fired for a given task,
+/// so we don't re-fire the same level twice.
+model TaskEscalationLog {
+  id           String      @id @default(cuid())
+  taskId       String
+  task         WorkflowTask @relation(fields: [taskId], references: [id], onDelete: Cascade)
+  matrixId     String?
+  level        Int
+  action       String      // notify | reassign | both
+  escalatedTo  String?     // userId of the person notified/assigned
+  firedAt      DateTime    @default(now())
+
+  @@unique([taskId, level])
+  @@index([taskId])
+  @@map("task_escalation_logs")
 }
 
 model BusinessCalendar {
@@ -1141,6 +1210,45 @@ model DispositionCertificate {
   @@index([approvedById])
   @@index([status])
   @@map("disposition_certificates")
+}
+
+// === Form Data Registry ===
+// Generic structured data store. Admins define schemas (tables) and enter
+// records (rows). Workflows query these at runtime via the lookup_form_data
+// system action to drive conditional logic without external integrations.
+
+model FormDataSchema {
+  id          String   @id @default(cuid())
+  name        String   @unique
+  /// URL-safe slug used to reference this dataset from workflow conditions
+  /// e.g. "leave_types", "leave_balances"
+  slug        String   @unique
+  description String?
+  /// Field definitions: [{id, name, label, type, required, options?}]
+  /// type: text | number | date | boolean | select | email | phone | user_ref
+  fields      Json     @default("[]")
+  isActive    Boolean  @default(true)
+  createdById String
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  records     FormDataEntry[]
+
+  @@map("form_data_schemas")
+}
+
+model FormDataEntry {
+  id        String         @id @default(cuid())
+  schemaId  String
+  schema    FormDataSchema @relation(fields: [schemaId], references: [id], onDelete: Cascade)
+  /// Arbitrary key-value data matching the parent schema's field definitions
+  data      Json           @default("{}")
+  createdById String
+  createdAt DateTime       @default(now())
+  updatedAt DateTime       @updatedAt
+
+  @@index([schemaId])
+  @@map("form_data_entries")
 }
 
 // === System Settings ===

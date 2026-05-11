@@ -1,55 +1,12 @@
 "use client";
 
-import { useState, useEffect, useCallback, useRef, use } from "react";
+import { useState, useEffect, useCallback, use } from "react";
 import Link from "next/link";
+import { FormRenderer, FormField, evaluateCondition } from "@/components/forms/form-renderer";
 
 /* ================================================================
    Types
    ================================================================ */
-
-interface FormFieldValidation {
-  min?: number;
-  max?: number;
-  minLength?: number;
-  maxLength?: number;
-  pattern?: string;
-  patternMessage?: string;
-}
-
-interface FormFieldCondition {
-  fieldId: string;
-  operator: "equals" | "not_equals" | "contains" | "not_empty" | "empty";
-  value?: string;
-}
-
-interface FormFieldOption {
-  label: string;
-  value: string;
-}
-
-interface TableColumn {
-  label: string;
-  name: string;
-  type: string;
-}
-
-interface FormField {
-  id: string;
-  type: string;
-  label: string;
-  name: string;
-  placeholder?: string;
-  helpText?: string;
-  required?: boolean;
-  readOnly?: boolean;
-  hidden?: boolean;
-  defaultValue?: any;
-  width?: "full" | "half";
-  validation?: FormFieldValidation;
-  options?: FormFieldOption[];
-  condition?: FormFieldCondition;
-  tableColumns?: TableColumn[];
-}
 
 interface FormTemplate {
   id: string;
@@ -60,93 +17,135 @@ interface FormTemplate {
   version: number;
 }
 
-/* ================================================================
-   Condition evaluation
-   ================================================================ */
-
-function evaluateCondition(
-  condition: FormFieldCondition,
-  formData: Record<string, any>,
-  fields: FormField[]
-): boolean {
-  const targetField = fields.find((f) => f.id === condition.fieldId);
-  if (!targetField) return true;
-  const val = formData[targetField.name];
-  const strVal = val == null ? "" : String(val);
-
-  switch (condition.operator) {
-    case "equals":
-      return strVal === (condition.value ?? "");
-    case "not_equals":
-      return strVal !== (condition.value ?? "");
-    case "contains":
-      return strVal.includes(condition.value ?? "");
-    case "not_empty":
-      return strVal.length > 0;
-    case "empty":
-      return strVal.length === 0;
-    default:
-      return true;
-  }
-}
+const STEPS = [
+  { num: 1, label: "Fill In" },
+  { num: 2, label: "Review & Submit" },
+];
 
 /* ================================================================
    Validation
    ================================================================ */
 
-function validateField(
-  field: FormField,
-  value: any
-): string | null {
+function validateField(field: FormField, value: any): string | null {
   if (field.type === "section" || field.type === "divider") return null;
-
   const strVal = value == null ? "" : String(value);
-
-  if (field.required && strVal.trim() === "") {
-    return `${field.label} is required`;
-  }
-
+  if (field.required && strVal.trim() === "") return `${field.label} is required`;
   if (!strVal) return null;
-
   if (field.validation) {
     const v = field.validation;
-
     if (field.type === "number" || field.type === "table") {
       const num = Number(value);
       if (v.min != null && num < v.min) return `Minimum value is ${v.min}`;
       if (v.max != null && num > v.max) return `Maximum value is ${v.max}`;
     }
-
-    if (v.minLength != null && strVal.length < v.minLength) {
-      return `Minimum ${v.minLength} characters required`;
-    }
-    if (v.maxLength != null && strVal.length > v.maxLength) {
-      return `Maximum ${v.maxLength} characters allowed`;
-    }
-
+    if (v.minLength != null && strVal.length < v.minLength) return `Minimum ${v.minLength} characters required`;
+    if (v.maxLength != null && strVal.length > v.maxLength) return `Maximum ${v.maxLength} characters allowed`;
     if (v.pattern) {
       try {
-        const re = new RegExp(v.pattern);
-        if (!re.test(strVal)) {
-          return v.patternMessage ?? `Invalid format`;
-        }
-      } catch {
-        /* ignore broken regex */
-      }
+        if (!new RegExp(v.pattern).test(strVal)) return v.patternMessage ?? "Invalid format";
+      } catch { /* ignore */ }
     }
   }
-
-  if (field.type === "email" && strVal) {
-    if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(strVal)) {
-      return "Please enter a valid email address";
-    }
-  }
-
+  if (field.type === "email" && strVal && !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(strVal))
+    return "Please enter a valid email address";
   return null;
 }
 
 /* ================================================================
-   SVG Icons (inline to keep self-contained)
+   Review helpers — format a raw value into a human-readable string
+   ================================================================ */
+
+function formatValue(field: FormField, value: any): string {
+  if (value == null || value === "") return "—";
+  if (Array.isArray(value)) return value.length ? value.join(", ") : "—";
+  if (field.type === "date") {
+    const d = new Date(value);
+    if (!isNaN(d.getTime())) return d.toLocaleDateString("en-GB", { day: "numeric", month: "long", year: "numeric" });
+  }
+  if (field.type === "checkbox") return value ? "Yes" : "No";
+  return String(value);
+}
+
+/* ================================================================
+   Review panel — groups fields by section and shows label/value pairs
+   ================================================================ */
+
+function ReviewPanel({
+  fields,
+  formData,
+  isVisible,
+  onEdit,
+}: {
+  fields: FormField[];
+  formData: Record<string, any>;
+  isVisible: (f: FormField) => boolean;
+  onEdit: () => void;
+}) {
+  // Split fields into sections
+  type Section = { title: string | null; fields: FormField[] };
+  const sections: Section[] = [];
+  let current: Section = { title: null, fields: [] };
+
+  for (const f of fields) {
+    if (f.type === "divider") continue;
+    if (f.type === "section") {
+      if (current.fields.length) sections.push(current);
+      current = { title: f.label, fields: [] };
+    } else if (isVisible(f)) {
+      current.fields.push(f);
+    }
+  }
+  if (current.fields.length) sections.push(current);
+
+  return (
+    <div className="space-y-6">
+      {sections.map((sec, si) => (
+        <div key={si} className="bg-white dark:bg-gray-900 rounded-2xl border border-gray-200 dark:border-gray-800 overflow-hidden">
+          {sec.title && (
+            <div className="px-5 py-3 border-b border-gray-100 dark:border-gray-800 bg-gray-50 dark:bg-gray-800/50">
+              <h3 className="text-sm font-semibold text-gray-700 dark:text-gray-300 uppercase tracking-wide">
+                {sec.title}
+              </h3>
+            </div>
+          )}
+          <div className="divide-y divide-gray-100 dark:divide-gray-800">
+            {sec.fields.map((f) => (
+              <div key={f.name} className="grid grid-cols-1 sm:grid-cols-2 gap-1 px-5 py-3">
+                <span className="text-xs font-medium text-gray-500 dark:text-gray-400 uppercase tracking-wide self-center">
+                  {f.label}{f.required && <span className="text-red-400 ml-0.5">*</span>}
+                </span>
+                <span className={`text-sm font-medium ${
+                  formData[f.name] == null || formData[f.name] === "" || (Array.isArray(formData[f.name]) && !formData[f.name].length)
+                    ? "text-gray-400 dark:text-gray-600 italic"
+                    : "text-gray-900 dark:text-gray-100"
+                }`}>
+                  {formatValue(f, formData[f.name])}
+                </span>
+              </div>
+            ))}
+          </div>
+        </div>
+      ))}
+
+      {/* Edit button */}
+      <div className="flex justify-end">
+        <button
+          type="button"
+          onClick={onEdit}
+          className="inline-flex items-center gap-1.5 text-sm text-[#02773b] hover:underline"
+        >
+          <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" strokeWidth={2} stroke="currentColor">
+            <path strokeLinecap="round" strokeLinejoin="round" d="m16.862 4.487 1.687-1.688a1.875 1.875 0 1 1 2.652 2.652L10.582 16.07a4.5 4.5 0 0 1-1.897 1.13L6 18l.8-2.685a4.5 4.5 0 0 1 1.13-1.897l8.932-8.931Zm0 0L19.5 7.125" />
+          </svg>
+          Edit answers
+        </button>
+      </div>
+    </div>
+  );
+}
+
+/* ================================================================
+   Icons
    ================================================================ */
 
 function IconBack() {
@@ -156,7 +155,6 @@ function IconBack() {
     </svg>
   );
 }
-
 function IconCheck() {
   return (
     <svg className="w-5 h-5" fill="none" viewBox="0 0 24 24" strokeWidth={2} stroke="currentColor">
@@ -164,31 +162,6 @@ function IconCheck() {
     </svg>
   );
 }
-
-function IconUpload() {
-  return (
-    <svg className="w-8 h-8" fill="none" viewBox="0 0 24 24" strokeWidth={1.5} stroke="currentColor">
-      <path strokeLinecap="round" strokeLinejoin="round" d="M3 16.5v2.25A2.25 2.25 0 0 0 5.25 21h13.5A2.25 2.25 0 0 0 21 18.75V16.5m-13.5-9L12 3m0 0 4.5 4.5M12 3v13.5" />
-    </svg>
-  );
-}
-
-function IconPlus() {
-  return (
-    <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" strokeWidth={2} stroke="currentColor">
-      <path strokeLinecap="round" strokeLinejoin="round" d="M12 4.5v15m7.5-7.5h-15" />
-    </svg>
-  );
-}
-
-function IconTrash() {
-  return (
-    <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" strokeWidth={2} stroke="currentColor">
-      <path strokeLinecap="round" strokeLinejoin="round" d="m14.74 9-.346 9m-4.788 0L9.26 9m9.968-3.21c.342.052.682.107 1.022.166m-1.022-.165L18.16 19.673a2.25 2.25 0 0 1-2.244 2.077H8.084a2.25 2.25 0 0 1-2.244-2.077L4.772 5.79m14.456 0a48.108 48.108 0 0 0-3.478-.397m-12 .562c.34-.059.68-.114 1.022-.165m0 0a48.11 48.11 0 0 1 3.478-.397m7.5 0v-.916c0-1.18-.91-2.164-2.09-2.201a51.964 51.964 0 0 0-3.32 0c-1.18.037-2.09 1.022-2.09 2.201v.916m7.5 0a48.667 48.667 0 0 0-7.5 0" />
-    </svg>
-  );
-}
-
 function IconSpinner() {
   return (
     <svg className="w-5 h-5 animate-spin" fill="none" viewBox="0 0 24 24">
@@ -197,7 +170,6 @@ function IconSpinner() {
     </svg>
   );
 }
-
 function IconSuccessBig() {
   return (
     <svg className="w-16 h-16 text-[#02773b]" fill="none" viewBox="0 0 24 24" strokeWidth={1.5} stroke="currentColor">
@@ -205,7 +177,6 @@ function IconSuccessBig() {
     </svg>
   );
 }
-
 function IconWarning() {
   return (
     <svg className="w-16 h-16 text-[#dd9f42]" fill="none" viewBox="0 0 24 24" strokeWidth={1.5} stroke="currentColor">
@@ -215,290 +186,39 @@ function IconWarning() {
 }
 
 /* ================================================================
-   Shared input class names
+   Step indicator
    ================================================================ */
 
-const INPUT_BASE =
-  "w-full rounded-lg border border-gray-300 dark:border-gray-700 bg-white dark:bg-gray-900 " +
-  "px-3 py-2 text-sm text-gray-900 dark:text-gray-100 placeholder:text-gray-400 dark:placeholder:text-gray-500 " +
-  "focus:outline-none focus:ring-2 focus:ring-[#02773b]/40 focus:border-[#02773b] " +
-  "disabled:opacity-60 disabled:cursor-not-allowed transition-colors";
-
-const INPUT_ERROR =
-  "border-red-400 dark:border-red-500 focus:ring-red-400/40 focus:border-red-400";
-
-function inputCls(hasError: boolean): string {
-  return hasError ? `${INPUT_BASE} ${INPUT_ERROR}` : INPUT_BASE;
-}
-
-/* ================================================================
-   Multi-select dropdown component
-   ================================================================ */
-
-function MultiSelectField({
-  field,
-  value,
-  onChange,
-  hasError,
-}: {
-  field: FormField;
-  value: string[];
-  onChange: (v: string[]) => void;
-  hasError: boolean;
-}) {
-  const [open, setOpen] = useState(false);
-  const ref = useRef<HTMLDivElement>(null);
-
-  useEffect(() => {
-    function handleClick(e: MouseEvent) {
-      if (ref.current && !ref.current.contains(e.target as Node)) {
-        setOpen(false);
-      }
-    }
-    document.addEventListener("mousedown", handleClick);
-    return () => document.removeEventListener("mousedown", handleClick);
-  }, []);
-
-  function toggle(optVal: string) {
-    if (value.includes(optVal)) {
-      onChange(value.filter((v) => v !== optVal));
-    } else {
-      onChange([...value, optVal]);
-    }
-  }
-
-  const selectedLabels = (field.options ?? [])
-    .filter((o) => value.includes(o.value))
-    .map((o) => o.label);
-
+function StepIndicator({ step }: { step: number }) {
   return (
-    <div ref={ref} className="relative">
-      <button
-        type="button"
-        onClick={() => !field.readOnly && setOpen(!open)}
-        className={`${inputCls(hasError)} text-left flex items-center justify-between gap-2`}
-        disabled={field.readOnly}
-      >
-        <span className={selectedLabels.length ? "" : "text-gray-400 dark:text-gray-500"}>
-          {selectedLabels.length ? selectedLabels.join(", ") : field.placeholder || "Select options..."}
-        </span>
-        <svg className={`w-4 h-4 shrink-0 text-gray-400 transition-transform ${open ? "rotate-180" : ""}`} fill="none" viewBox="0 0 24 24" strokeWidth={2} stroke="currentColor">
-          <path strokeLinecap="round" strokeLinejoin="round" d="m19.5 8.25-7.5 7.5-7.5-7.5" />
-        </svg>
-      </button>
-      {open && (
-        <div className="absolute z-20 mt-1 w-full max-h-52 overflow-y-auto rounded-lg border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-900 shadow-lg">
-          {(field.options ?? []).map((opt) => (
-            <label
-              key={opt.value}
-              className="flex items-center gap-2 px-3 py-2 hover:bg-gray-50 dark:hover:bg-gray-800 cursor-pointer text-sm text-gray-900 dark:text-gray-100"
-            >
-              <input
-                type="checkbox"
-                checked={value.includes(opt.value)}
-                onChange={() => toggle(opt.value)}
-                className="rounded border-gray-300 dark:border-gray-600 text-[#02773b] focus:ring-[#02773b]/40"
-              />
-              {opt.label}
-            </label>
-          ))}
-          {(field.options ?? []).length === 0 && (
-            <div className="px-3 py-2 text-sm text-gray-400">No options available</div>
-          )}
-        </div>
-      )}
-    </div>
-  );
-}
-
-/* ================================================================
-   File field with drag zone
-   ================================================================ */
-
-function FileField({
-  field,
-  value,
-  onChange,
-  hasError,
-}: {
-  field: FormField;
-  value: File | null;
-  onChange: (f: File | null) => void;
-  hasError: boolean;
-}) {
-  const inputRef = useRef<HTMLInputElement>(null);
-  const [dragging, setDragging] = useState(false);
-
-  function handleDrop(e: React.DragEvent) {
-    e.preventDefault();
-    setDragging(false);
-    if (field.readOnly) return;
-    const file = e.dataTransfer.files?.[0];
-    if (file) onChange(file);
-  }
-
-  return (
-    <div
-      onDragOver={(e) => { e.preventDefault(); setDragging(true); }}
-      onDragLeave={() => setDragging(false)}
-      onDrop={handleDrop}
-      onClick={() => !field.readOnly && inputRef.current?.click()}
-      className={`relative rounded-lg border-2 border-dashed p-6 text-center cursor-pointer transition-colors ${
-        dragging
-          ? "border-[#02773b] bg-[#02773b]/5"
-          : hasError
-          ? "border-red-400 dark:border-red-500 bg-red-50/50 dark:bg-red-950/10"
-          : "border-gray-300 dark:border-gray-700 hover:border-[#02773b]/50 bg-gray-50 dark:bg-gray-900/50"
-      } ${field.readOnly ? "opacity-60 cursor-not-allowed" : ""}`}
-    >
-      <input
-        ref={inputRef}
-        type="file"
-        className="hidden"
-        disabled={field.readOnly}
-        onChange={(e) => {
-          const file = e.target.files?.[0];
-          onChange(file ?? null);
-        }}
-      />
-      <div className="flex flex-col items-center gap-2">
-        <div className="text-gray-400 dark:text-gray-500">
-          <IconUpload />
-        </div>
-        {value ? (
-          <div className="space-y-1">
-            <p className="text-sm font-medium text-gray-900 dark:text-gray-100">{value.name}</p>
-            <p className="text-xs text-gray-500">{(value.size / 1024).toFixed(1)} KB</p>
-            <button
-              type="button"
-              onClick={(e) => { e.stopPropagation(); onChange(null); }}
-              className="text-xs text-red-500 hover:text-red-600 font-medium"
-            >
-              Remove
-            </button>
-          </div>
-        ) : (
-          <div>
-            <p className="text-sm text-gray-600 dark:text-gray-400">
-              <span className="font-medium text-[#02773b]">Click to upload</span> or drag and drop
-            </p>
-            {field.placeholder && (
-              <p className="text-xs text-gray-400 mt-1">{field.placeholder}</p>
+    <div className="flex items-center gap-0">
+      {STEPS.map((s, i) => {
+        const done = s.num < step;
+        const active = s.num === step;
+        return (
+          <div key={s.num} className="flex items-center">
+            <div className="flex items-center gap-2">
+              <div className={`flex items-center justify-center w-7 h-7 rounded-full text-xs font-semibold border-2 transition-colors ${
+                done
+                  ? "bg-[#02773b] border-[#02773b] text-white"
+                  : active
+                  ? "border-[#02773b] text-[#02773b] bg-white dark:bg-gray-900"
+                  : "border-gray-300 dark:border-gray-600 text-gray-400 dark:text-gray-500 bg-white dark:bg-gray-900"
+              }`}>
+                {done ? <IconCheck /> : s.num}
+              </div>
+              <span className={`text-sm font-medium hidden sm:block ${
+                active ? "text-[#02773b]" : done ? "text-gray-600 dark:text-gray-400" : "text-gray-400 dark:text-gray-500"
+              }`}>
+                {s.label}
+              </span>
+            </div>
+            {i < STEPS.length - 1 && (
+              <div className={`w-8 sm:w-16 h-px mx-2 sm:mx-3 ${done ? "bg-[#02773b]" : "bg-gray-200 dark:bg-gray-700"}`} />
             )}
           </div>
-        )}
-      </div>
-    </div>
-  );
-}
-
-/* ================================================================
-   Table field with repeatable rows
-   ================================================================ */
-
-function TableField({
-  field,
-  value,
-  onChange,
-}: {
-  field: FormField;
-  value: Record<string, any>[];
-  onChange: (rows: Record<string, any>[]) => void;
-}) {
-  const columns = field.tableColumns ?? [];
-
-  function addRow() {
-    const empty: Record<string, any> = {};
-    columns.forEach((c) => (empty[c.name] = ""));
-    onChange([...value, empty]);
-  }
-
-  function removeRow(idx: number) {
-    onChange(value.filter((_, i) => i !== idx));
-  }
-
-  function updateCell(rowIdx: number, colName: string, cellVal: string) {
-    const next = value.map((row, i) =>
-      i === rowIdx ? { ...row, [colName]: cellVal } : row
-    );
-    onChange(next);
-  }
-
-  function cellType(colType: string): string {
-    if (colType === "number") return "number";
-    if (colType === "email") return "email";
-    if (colType === "date") return "date";
-    return "text";
-  }
-
-  return (
-    <div className="space-y-3">
-      <div className="overflow-x-auto rounded-lg border border-gray-200 dark:border-gray-700">
-        <table className="w-full text-sm">
-          <thead>
-            <tr className="bg-gray-50 dark:bg-gray-800/60">
-              {columns.map((col) => (
-                <th
-                  key={col.name}
-                  className="px-3 py-2 text-left font-medium text-gray-600 dark:text-gray-400 whitespace-nowrap"
-                >
-                  {col.label}
-                </th>
-              ))}
-              <th className="px-3 py-2 w-10" />
-            </tr>
-          </thead>
-          <tbody className="divide-y divide-gray-100 dark:divide-gray-800">
-            {value.length === 0 && (
-              <tr>
-                <td
-                  colSpan={columns.length + 1}
-                  className="px-3 py-6 text-center text-gray-400 dark:text-gray-500 text-sm"
-                >
-                  No rows added yet
-                </td>
-              </tr>
-            )}
-            {value.map((row, rIdx) => (
-              <tr key={rIdx} className="hover:bg-gray-50/50 dark:hover:bg-gray-800/30">
-                {columns.map((col) => (
-                  <td key={col.name} className="px-2 py-1.5">
-                    <input
-                      type={cellType(col.type)}
-                      value={row[col.name] ?? ""}
-                      onChange={(e) => updateCell(rIdx, col.name, e.target.value)}
-                      className={`${INPUT_BASE} py-1.5 text-xs`}
-                      readOnly={field.readOnly}
-                    />
-                  </td>
-                ))}
-                <td className="px-2 py-1.5">
-                  {!field.readOnly && (
-                    <button
-                      type="button"
-                      onClick={() => removeRow(rIdx)}
-                      className="p-1 rounded text-gray-400 hover:text-red-500 hover:bg-red-50 dark:hover:bg-red-950/30 transition-colors"
-                      title="Remove row"
-                    >
-                      <IconTrash />
-                    </button>
-                  )}
-                </td>
-              </tr>
-            ))}
-          </tbody>
-        </table>
-      </div>
-      {!field.readOnly && (
-        <button
-          type="button"
-          onClick={addRow}
-          className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-medium text-[#02773b] bg-[#02773b]/10 hover:bg-[#02773b]/20 transition-colors"
-        >
-          <IconPlus />
-          Add Row
-        </button>
-      )}
+        );
+      })}
     </div>
   );
 }
@@ -507,21 +227,20 @@ function TableField({
    Main page component
    ================================================================ */
 
-export default function FormFillPage({
-  params,
-}: {
-  params: Promise<{ id: string }>;
-}) {
+export default function FormFillPage({ params }: { params: Promise<{ id: string }> }) {
   const { id } = use(params);
 
-  /* ----- state ----- */
   const [form, setForm] = useState<FormTemplate | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
+
+  const [step, setStep] = useState(1);
   const [formData, setFormData] = useState<Record<string, any>>({});
   const [fieldErrors, setFieldErrors] = useState<Record<string, string>>({});
+
   const [submitting, setSubmitting] = useState(false);
   const [submitted, setSubmitted] = useState(false);
+  const [autoWorkflowId, setAutoWorkflowId] = useState<string | null>(null);
   const [submitError, setSubmitError] = useState<string | null>(null);
 
   /* ----- fetch form template ----- */
@@ -529,7 +248,6 @@ export default function FormFillPage({
     let cancelled = false;
     setLoading(true);
     setError(null);
-
     fetch(`/api/forms/${id}`)
       .then((res) => {
         if (!res.ok) throw new Error(res.status === 404 ? "FORM_NOT_FOUND" : `Failed to load form (${res.status})`);
@@ -538,40 +256,25 @@ export default function FormFillPage({
       .then((data: FormTemplate) => {
         if (cancelled) return;
         setForm(data);
-
-        /* initialise form data with defaults */
         const defaults: Record<string, any> = {};
         data.fields.forEach((f) => {
           if (f.type === "section" || f.type === "divider") return;
-          if (f.type === "table") {
-            defaults[f.name] = f.defaultValue ?? [];
-          } else if (f.type === "checkbox" || f.type === "multiselect") {
-            defaults[f.name] = f.defaultValue ?? [];
-          } else {
-            defaults[f.name] = f.defaultValue ?? "";
-          }
+          if (f.type === "table") defaults[f.name] = f.defaultValue ?? [];
+          else if (f.type === "checkbox" || f.type === "multiselect") defaults[f.name] = f.defaultValue ?? [];
+          else defaults[f.name] = f.defaultValue ?? "";
         });
         setFormData(defaults);
       })
-      .catch((err) => {
-        if (cancelled) return;
-        setError(err.message);
-      })
-      .finally(() => {
-        if (!cancelled) setLoading(false);
-      });
-
+      .catch((err) => { if (!cancelled) setError(err.message); })
+      .finally(() => { if (!cancelled) setLoading(false); });
     return () => { cancelled = true; };
   }, [id]);
 
-  /* ----- helpers ----- */
   const setField = useCallback((name: string, value: any) => {
     setFormData((prev) => ({ ...prev, [name]: value }));
     setFieldErrors((prev) => {
       if (!prev[name]) return prev;
-      const next = { ...prev };
-      delete next[name];
-      return next;
+      const next = { ...prev }; delete next[name]; return next;
     });
   }, []);
 
@@ -581,40 +284,38 @@ export default function FormFillPage({
     return evaluateCondition(field.condition, formData, form?.fields ?? []);
   }
 
-  /* ----- submit ----- */
-  function handleSubmit(e: React.FormEvent) {
+  /* ----- step 1 → 2: validate then advance ----- */
+  function handleContinueToReview(e: React.FormEvent) {
     e.preventDefault();
     if (!form) return;
-
-    /* validate */
     const errors: Record<string, string> = {};
     form.fields.forEach((field) => {
       if (!isFieldVisible(field)) return;
       const err = validateField(field, formData[field.name]);
       if (err) errors[field.name] = err;
     });
-
     if (Object.keys(errors).length > 0) {
       setFieldErrors(errors);
-      /* scroll to first error */
       const firstKey = Object.keys(errors)[0];
-      const el = document.querySelector(`[data-field="${firstKey}"]`);
-      el?.scrollIntoView({ behavior: "smooth", block: "center" });
+      document.querySelector(`[data-field="${firstKey}"]`)?.scrollIntoView({ behavior: "smooth", block: "center" });
       return;
     }
-
     setFieldErrors({});
+    setStep(2);
+    window.scrollTo({ top: 0, behavior: "smooth" });
+  }
+
+  /* ----- step 2: submit ----- */
+  function handleSubmit() {
+    if (!form) return;
     setSubmitting(true);
     setSubmitError(null);
-
-    /* collect only visible field data */
     const payload: Record<string, any> = {};
     form.fields.forEach((field) => {
       if (field.type === "section" || field.type === "divider") return;
       if (!isFieldVisible(field)) return;
       payload[field.name] = formData[field.name];
     });
-
     fetch(`/api/forms/${id}/submissions`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
@@ -624,15 +325,12 @@ export default function FormFillPage({
         if (!res.ok) throw new Error(`Submission failed (${res.status})`);
         return res.json();
       })
-      .then(() => {
+      .then((result) => {
+        setAutoWorkflowId(result.workflowInstanceId ?? null);
         setSubmitted(true);
       })
-      .catch((err) => {
-        setSubmitError(err.message);
-      })
-      .finally(() => {
-        setSubmitting(false);
-      });
+      .catch((err) => setSubmitError(err.message))
+      .finally(() => setSubmitting(false));
   }
 
   function resetForm() {
@@ -640,42 +338,36 @@ export default function FormFillPage({
     const defaults: Record<string, any> = {};
     form.fields.forEach((f) => {
       if (f.type === "section" || f.type === "divider") return;
-      if (f.type === "table") {
-        defaults[f.name] = f.defaultValue ?? [];
-      } else if (f.type === "checkbox" || f.type === "multiselect") {
-        defaults[f.name] = f.defaultValue ?? [];
-      } else {
-        defaults[f.name] = f.defaultValue ?? "";
-      }
+      if (f.type === "table") defaults[f.name] = f.defaultValue ?? [];
+      else if (f.type === "checkbox" || f.type === "multiselect") defaults[f.name] = f.defaultValue ?? [];
+      else defaults[f.name] = f.defaultValue ?? "";
     });
     setFormData(defaults);
     setFieldErrors({});
     setSubmitted(false);
+    setStep(1);
+    setAutoWorkflowId(null);
     setSubmitError(null);
   }
 
   /* ================================================================
-     Render: loading state
+     Render: loading
      ================================================================ */
   if (loading) {
     return (
-      <div className="p-4 sm:p-6 animate-fade-in">
-        <div className="max-w-3xl mx-auto space-y-6">
-          {/* skeleton header */}
-          <div className="space-y-3">
-            <div className="h-4 w-24 bg-gray-200 dark:bg-gray-800 rounded animate-pulse" />
-            <div className="h-8 w-72 bg-gray-200 dark:bg-gray-800 rounded animate-pulse" />
-            <div className="h-4 w-96 bg-gray-200 dark:bg-gray-800 rounded animate-pulse" />
-          </div>
-          {/* skeleton fields */}
-          <div className="bg-white dark:bg-gray-900 rounded-2xl border border-gray-200 dark:border-gray-800 p-6 space-y-6">
-            {Array.from({ length: 5 }).map((_, i) => (
-              <div key={i} className="space-y-2">
-                <div className="h-4 w-32 bg-gray-200 dark:bg-gray-800 rounded animate-pulse" />
-                <div className="h-10 w-full bg-gray-100 dark:bg-gray-800/60 rounded-lg animate-pulse" />
-              </div>
-            ))}
-          </div>
+      <div className="p-4 sm:p-6 animate-fade-in space-y-6">
+        <div className="space-y-3">
+          <div className="h-4 w-24 bg-gray-200 dark:bg-gray-800 rounded animate-pulse" />
+          <div className="h-8 w-72 bg-gray-200 dark:bg-gray-800 rounded animate-pulse" />
+          <div className="h-4 w-96 bg-gray-200 dark:bg-gray-800 rounded animate-pulse" />
+        </div>
+        <div className="bg-white dark:bg-gray-900 rounded-2xl border border-gray-200 dark:border-gray-800 p-6 space-y-6">
+          {Array.from({ length: 5 }).map((_, i) => (
+            <div key={i} className="space-y-2">
+              <div className="h-4 w-32 bg-gray-200 dark:bg-gray-800 rounded animate-pulse" />
+              <div className="h-10 w-full bg-gray-100 dark:bg-gray-800/60 rounded-lg animate-pulse" />
+            </div>
+          ))}
         </div>
       </div>
     );
@@ -690,20 +382,14 @@ export default function FormFillPage({
       <div className="p-4 sm:p-6 animate-fade-in">
         <div className="max-w-lg mx-auto mt-20 text-center space-y-4">
           <IconWarning />
-          <h2 className="text-xl font-semibold text-gray-900 dark:text-gray-100 mx-auto">
+          <h2 className="text-xl font-semibold text-gray-900 dark:text-gray-100">
             {isNotFound ? "Form Not Found" : "Error Loading Form"}
           </h2>
           <p className="text-sm text-gray-500 dark:text-gray-400">
-            {isNotFound
-              ? "The form you are looking for does not exist or has been removed."
-              : error}
+            {isNotFound ? "The form you are looking for does not exist or has been removed." : error}
           </p>
-          <Link
-            href="/forms"
-            className="inline-flex items-center gap-2 px-4 py-2 rounded-lg text-sm font-medium text-white bg-[#02773b] hover:bg-[#026332] transition-colors"
-          >
-            <IconBack />
-            Back to Forms
+          <Link href="/forms" className="inline-flex items-center gap-2 px-4 py-2 rounded-lg text-sm font-medium text-white bg-[#02773b] hover:bg-[#026332] transition-colors">
+            <IconBack />Back to Forms
           </Link>
         </div>
       </div>
@@ -715,18 +401,10 @@ export default function FormFillPage({
       <div className="p-4 sm:p-6 animate-fade-in">
         <div className="max-w-lg mx-auto mt-20 text-center space-y-4">
           <IconWarning />
-          <h2 className="text-xl font-semibold text-gray-900 dark:text-gray-100 mx-auto">
-            Form Unavailable
-          </h2>
-          <p className="text-sm text-gray-500 dark:text-gray-400">
-            This form is currently inactive and not accepting submissions.
-          </p>
-          <Link
-            href="/forms"
-            className="inline-flex items-center gap-2 px-4 py-2 rounded-lg text-sm font-medium text-white bg-[#02773b] hover:bg-[#026332] transition-colors"
-          >
-            <IconBack />
-            Back to Forms
+          <h2 className="text-xl font-semibold text-gray-900 dark:text-gray-100">Form Unavailable</h2>
+          <p className="text-sm text-gray-500 dark:text-gray-400">This form is currently inactive and not accepting submissions.</p>
+          <Link href="/forms" className="inline-flex items-center gap-2 px-4 py-2 rounded-lg text-sm font-medium text-white bg-[#02773b] hover:bg-[#026332] transition-colors">
+            <IconBack />Back to Forms
           </Link>
         </div>
       </div>
@@ -734,32 +412,33 @@ export default function FormFillPage({
   }
 
   /* ================================================================
-     Render: success state
+     Render: success
      ================================================================ */
   if (submitted) {
     return (
       <div className="p-4 sm:p-6 animate-fade-in">
         <div className="max-w-lg mx-auto mt-20 text-center space-y-5">
-          <div className="flex justify-center">
-            <IconSuccessBig />
-          </div>
+          <div className="flex justify-center"><IconSuccessBig /></div>
           <h2 className="text-xl font-semibold text-gray-900 dark:text-gray-100">
-            Submission Successful
+            {autoWorkflowId ? "Request Submitted" : "Submission Successful"}
           </h2>
           <p className="text-sm text-gray-500 dark:text-gray-400">
-            Your response to <span className="font-medium text-gray-700 dark:text-gray-300">{form.name}</span> has been submitted successfully.
+            {autoWorkflowId
+              ? <><span className="font-medium text-gray-700 dark:text-gray-300">{form.name}</span> has been submitted and a workflow has been started. Track progress in your inbox.</>
+              : <>Your response to <span className="font-medium text-gray-700 dark:text-gray-300">{form.name}</span> has been submitted successfully.</>
+            }
           </p>
           <div className="flex items-center justify-center gap-3 pt-2">
-            <button
-              onClick={resetForm}
-              className="px-4 py-2 rounded-lg text-sm font-medium text-[#02773b] bg-[#02773b]/10 hover:bg-[#02773b]/20 transition-colors"
-            >
-              Submit Another
-            </button>
-            <Link
-              href="/forms"
-              className="px-4 py-2 rounded-lg text-sm font-medium text-white bg-[#02773b] hover:bg-[#026332] transition-colors"
-            >
+            {autoWorkflowId ? (
+              <Link href="/workflows" className="px-4 py-2 rounded-lg text-sm font-medium text-white bg-[#02773b] hover:bg-[#026332] transition-colors">
+                View My Tasks
+              </Link>
+            ) : (
+              <button onClick={resetForm} className="px-4 py-2 rounded-lg text-sm font-medium text-[#02773b] bg-[#02773b]/10 hover:bg-[#02773b]/20 transition-colors">
+                Submit Another
+              </button>
+            )}
+            <Link href="/forms" className="px-4 py-2 rounded-lg text-sm font-medium text-[#02773b] border border-[#02773b]/30 hover:bg-[#02773b]/5 transition-colors">
               Back to Forms
             </Link>
           </div>
@@ -769,312 +448,95 @@ export default function FormFillPage({
   }
 
   /* ================================================================
-     Field renderer
-     ================================================================ */
-  function renderField(field: FormField) {
-    if (!isFieldVisible(field)) return null;
-
-    const err = fieldErrors[field.name];
-    const val = formData[field.name];
-
-    /* --- section header --- */
-    if (field.type === "section") {
-      return (
-        <div key={field.id} className="col-span-full pt-4 first:pt-0">
-          <h3 className="text-base font-semibold text-gray-900 dark:text-gray-100 border-b border-gray-200 dark:border-gray-800 pb-2">
-            {field.label}
-          </h3>
-          {field.helpText && (
-            <p className="text-xs text-gray-500 dark:text-gray-400 mt-1">{field.helpText}</p>
-          )}
-        </div>
-      );
-    }
-
-    /* --- divider --- */
-    if (field.type === "divider") {
-      return (
-        <div key={field.id} className="col-span-full">
-          <hr className="border-gray-200 dark:border-gray-800" />
-        </div>
-      );
-    }
-
-    /* --- wrapper for input fields --- */
-    const widthCls = field.width === "half" ? "col-span-1" : "col-span-full";
-
-    return (
-      <div key={field.id} data-field={field.name} className={`${widthCls} space-y-1.5`}>
-        <label className="block text-sm font-medium text-gray-700 dark:text-gray-300">
-          {field.label}
-          {field.required && <span className="text-red-500 ml-0.5">*</span>}
-        </label>
-
-        {/* --- text --- */}
-        {field.type === "text" && (
-          <input
-            type="text"
-            value={val ?? ""}
-            onChange={(e) => setField(field.name, e.target.value)}
-            placeholder={field.placeholder}
-            readOnly={field.readOnly}
-            maxLength={field.validation?.maxLength}
-            className={inputCls(!!err)}
-          />
-        )}
-
-        {/* --- textarea --- */}
-        {field.type === "textarea" && (
-          <textarea
-            rows={3}
-            value={val ?? ""}
-            onChange={(e) => setField(field.name, e.target.value)}
-            placeholder={field.placeholder}
-            readOnly={field.readOnly}
-            maxLength={field.validation?.maxLength}
-            className={inputCls(!!err)}
-          />
-        )}
-
-        {/* --- richtext --- */}
-        {field.type === "richtext" && (
-          <div className="space-y-1">
-            <textarea
-              rows={5}
-              value={val ?? ""}
-              onChange={(e) => setField(field.name, e.target.value)}
-              placeholder={field.placeholder}
-              readOnly={field.readOnly}
-              maxLength={field.validation?.maxLength}
-              className={inputCls(!!err)}
-            />
-            <p className="text-[10px] text-gray-400 dark:text-gray-500 italic">Rich text formatting supported</p>
-          </div>
-        )}
-
-        {/* --- number --- */}
-        {field.type === "number" && (
-          <input
-            type="number"
-            value={val ?? ""}
-            onChange={(e) => setField(field.name, e.target.value)}
-            placeholder={field.placeholder}
-            readOnly={field.readOnly}
-            min={field.validation?.min}
-            max={field.validation?.max}
-            className={inputCls(!!err)}
-          />
-        )}
-
-        {/* --- email --- */}
-        {field.type === "email" && (
-          <input
-            type="email"
-            value={val ?? ""}
-            onChange={(e) => setField(field.name, e.target.value)}
-            placeholder={field.placeholder}
-            readOnly={field.readOnly}
-            className={inputCls(!!err)}
-          />
-        )}
-
-        {/* --- phone --- */}
-        {field.type === "phone" && (
-          <input
-            type="tel"
-            value={val ?? ""}
-            onChange={(e) => setField(field.name, e.target.value)}
-            placeholder={field.placeholder}
-            readOnly={field.readOnly}
-            className={inputCls(!!err)}
-          />
-        )}
-
-        {/* --- date --- */}
-        {field.type === "date" && (
-          <input
-            type="date"
-            value={val ?? ""}
-            onChange={(e) => setField(field.name, e.target.value)}
-            readOnly={field.readOnly}
-            className={inputCls(!!err)}
-          />
-        )}
-
-        {/* --- datetime --- */}
-        {field.type === "datetime" && (
-          <input
-            type="datetime-local"
-            value={val ?? ""}
-            onChange={(e) => setField(field.name, e.target.value)}
-            readOnly={field.readOnly}
-            className={inputCls(!!err)}
-          />
-        )}
-
-        {/* --- select --- */}
-        {field.type === "select" && (
-          <select
-            value={val ?? ""}
-            onChange={(e) => setField(field.name, e.target.value)}
-            disabled={field.readOnly}
-            className={inputCls(!!err)}
-          >
-            <option value="">{field.placeholder || "Select an option..."}</option>
-            {(field.options ?? []).map((opt) => (
-              <option key={opt.value} value={opt.value}>
-                {opt.label}
-              </option>
-            ))}
-          </select>
-        )}
-
-        {/* --- multiselect --- */}
-        {field.type === "multiselect" && (
-          <MultiSelectField
-            field={field}
-            value={Array.isArray(val) ? val : []}
-            onChange={(v) => setField(field.name, v)}
-            hasError={!!err}
-          />
-        )}
-
-        {/* --- radio --- */}
-        {field.type === "radio" && (
-          <div className="space-y-2 pt-1">
-            {(field.options ?? []).map((opt) => (
-              <label key={opt.value} className="flex items-center gap-2 cursor-pointer">
-                <input
-                  type="radio"
-                  name={field.name}
-                  value={opt.value}
-                  checked={val === opt.value}
-                  onChange={() => setField(field.name, opt.value)}
-                  disabled={field.readOnly}
-                  className="text-[#02773b] focus:ring-[#02773b]/40 border-gray-300 dark:border-gray-600"
-                />
-                <span className="text-sm text-gray-700 dark:text-gray-300">{opt.label}</span>
-              </label>
-            ))}
-          </div>
-        )}
-
-        {/* --- checkbox group --- */}
-        {field.type === "checkbox" && (
-          <div className="space-y-2 pt-1">
-            {(field.options ?? []).map((opt) => {
-              const arr = Array.isArray(val) ? val : [];
-              return (
-                <label key={opt.value} className="flex items-center gap-2 cursor-pointer">
-                  <input
-                    type="checkbox"
-                    checked={arr.includes(opt.value)}
-                    onChange={() => {
-                      if (arr.includes(opt.value)) {
-                        setField(field.name, arr.filter((v: string) => v !== opt.value));
-                      } else {
-                        setField(field.name, [...arr, opt.value]);
-                      }
-                    }}
-                    disabled={field.readOnly}
-                    className="rounded border-gray-300 dark:border-gray-600 text-[#02773b] focus:ring-[#02773b]/40"
-                  />
-                  <span className="text-sm text-gray-700 dark:text-gray-300">{opt.label}</span>
-                </label>
-              );
-            })}
-          </div>
-        )}
-
-        {/* --- file --- */}
-        {field.type === "file" && (
-          <FileField
-            field={field}
-            value={val instanceof File ? val : null}
-            onChange={(f) => setField(field.name, f)}
-            hasError={!!err}
-          />
-        )}
-
-        {/* --- table --- */}
-        {field.type === "table" && (
-          <TableField
-            field={field}
-            value={Array.isArray(val) ? val : []}
-            onChange={(rows) => setField(field.name, rows)}
-          />
-        )}
-
-        {/* help text */}
-        {field.helpText && (
-          <p className="text-xs text-gray-400 dark:text-gray-500">{field.helpText}</p>
-        )}
-
-        {/* inline error */}
-        {err && (
-          <p className="text-xs text-red-500 dark:text-red-400 flex items-center gap-1">
-            <svg className="w-3.5 h-3.5 shrink-0" fill="none" viewBox="0 0 24 24" strokeWidth={2} stroke="currentColor">
-              <path strokeLinecap="round" strokeLinejoin="round" d="M12 9v3.75m9-.75a9 9 0 1 1-18 0 9 9 0 0 1 18 0Zm-9 3.75h.008v.008H12v-.008Z" />
-            </svg>
-            {err}
-          </p>
-        )}
-      </div>
-    );
-  }
-
-  /* ================================================================
-     Render: form
+     Render: wizard
      ================================================================ */
   const totalRequired = form.fields.filter(
     (f) => f.required && isFieldVisible(f) && f.type !== "section" && f.type !== "divider"
   ).length;
 
   return (
-    <div className="p-4 sm:p-6 animate-fade-in">
-      <div className="max-w-3xl mx-auto space-y-6">
-        {/* ---- header ---- */}
-        <div className="space-y-3">
-          <Link
-            href="/forms"
-            className="inline-flex items-center gap-1.5 text-sm text-gray-500 dark:text-gray-400 hover:text-[#02773b] transition-colors"
-          >
-            <IconBack />
-            Back to Forms
-          </Link>
+    <div className="p-4 sm:p-6 animate-fade-in space-y-6">
+      {/* ---- header ---- */}
+      <div className="space-y-4">
+        <Link href="/forms" className="inline-flex items-center gap-1.5 text-sm text-gray-500 dark:text-gray-400 hover:text-[#02773b] transition-colors">
+          <IconBack />Back to Forms
+        </Link>
 
-          <div className="flex flex-wrap items-start justify-between gap-3">
-            <div className="space-y-1">
-              <h1 className="text-2xl font-bold text-gray-900 dark:text-gray-100">
-                {form.name}
-              </h1>
-              {form.description && (
-                <p className="text-sm text-gray-500 dark:text-gray-400">{form.description}</p>
-              )}
-            </div>
-            <span className="inline-flex items-center gap-1 px-2.5 py-1 rounded-full text-xs font-medium bg-[#dd9f42]/15 text-[#dd9f42] border border-[#dd9f42]/20">
-              v{form.version}
-            </span>
+        <div className="flex flex-wrap items-start justify-between gap-3">
+          <div className="space-y-1">
+            <h1 className="text-2xl font-bold text-gray-900 dark:text-gray-100">{form.name}</h1>
+            {form.description && <p className="text-sm text-gray-500 dark:text-gray-400">{form.description}</p>}
           </div>
+          <span className="inline-flex items-center gap-1 px-2.5 py-1 rounded-full text-xs font-medium bg-[#dd9f42]/15 text-[#dd9f42] border border-[#dd9f42]/20">
+            v{form.version}
+          </span>
+        </div>
 
+        {/* Step indicator */}
+        <StepIndicator step={step} />
+      </div>
+
+      {/* ====== STEP 1: Fill In ====== */}
+      {step === 1 && (
+        <form onSubmit={handleContinueToReview} noValidate>
           {totalRequired > 0 && (
-            <p className="text-xs text-gray-400 dark:text-gray-500">
+            <p className="text-xs text-gray-400 dark:text-gray-500 mb-4">
               <span className="text-red-500">*</span> indicates required fields
             </p>
           )}
-        </div>
 
-        {/* ---- form ---- */}
-        <form onSubmit={handleSubmit} noValidate>
           <div className="bg-white dark:bg-gray-900 rounded-2xl border border-gray-200 dark:border-gray-800 p-5 sm:p-6">
-            <div className="grid grid-cols-1 sm:grid-cols-2 gap-x-4 gap-y-5">
-              {form.fields.map((field) => renderField(field))}
-            </div>
+            <FormRenderer
+              fields={form.fields}
+              formData={formData}
+              onChange={setField}
+              errors={fieldErrors}
+            />
           </div>
 
-          {/* submit error banner */}
+          {Object.keys(fieldErrors).length > 0 && (
+            <div className="mt-4 p-3 rounded-lg bg-red-50 dark:bg-red-950/30 border border-red-200 dark:border-red-900/50 text-sm text-red-600 dark:text-red-400">
+              Please fix {Object.keys(fieldErrors).length} error{Object.keys(fieldErrors).length > 1 ? "s" : ""} above before continuing.
+            </div>
+          )}
+
+          <div className="mt-6 flex items-center justify-end gap-3">
+            <Link href="/forms" className="px-4 py-2.5 rounded-lg text-sm font-medium text-gray-600 dark:text-gray-400 bg-gray-100 dark:bg-gray-800 hover:bg-gray-200 dark:hover:bg-gray-700 transition-colors">
+              Cancel
+            </Link>
+            <button
+              type="submit"
+              className="inline-flex items-center gap-2 px-5 py-2.5 rounded-lg text-sm font-medium text-white bg-[#02773b] hover:bg-[#026332] transition-colors shadow-sm"
+            >
+              Review & Continue
+              <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" strokeWidth={2} stroke="currentColor">
+                <path strokeLinecap="round" strokeLinejoin="round" d="M8.25 4.5l7.5 7.5-7.5 7.5" />
+              </svg>
+            </button>
+          </div>
+        </form>
+      )}
+
+      {/* ====== STEP 2: Review & Submit ====== */}
+      {step === 2 && (
+        <div className="space-y-6">
+          {/* Info banner */}
+          <div className="flex items-start gap-3 p-4 rounded-xl bg-blue-50 dark:bg-blue-950/30 border border-blue-200 dark:border-blue-800/50 text-sm text-blue-700 dark:text-blue-300">
+            <svg className="w-5 h-5 shrink-0 mt-0.5" fill="none" viewBox="0 0 24 24" strokeWidth={1.5} stroke="currentColor">
+              <path strokeLinecap="round" strokeLinejoin="round" d="m11.25 11.25.041-.02a.75.75 0 0 1 1.063.852l-.708 2.836a.75.75 0 0 0 1.063.853l.041-.021M21 12a9 9 0 1 1-18 0 9 9 0 0 1 18 0Zm-9-3.75h.008v.008H12V8.25Z" />
+            </svg>
+            <span>Please review your answers carefully. Click <strong>Edit answers</strong> to go back and make changes, or <strong>Submit</strong> to confirm.</span>
+          </div>
+
+          <ReviewPanel
+            fields={form.fields}
+            formData={formData}
+            isVisible={isFieldVisible}
+            onEdit={() => { setStep(1); window.scrollTo({ top: 0, behavior: "smooth" }); }}
+          />
+
           {submitError && (
-            <div className="mt-4 p-3 rounded-lg bg-red-50 dark:bg-red-950/30 border border-red-200 dark:border-red-900/50 text-sm text-red-600 dark:text-red-400 flex items-center gap-2">
+            <div className="p-3 rounded-lg bg-red-50 dark:bg-red-950/30 border border-red-200 dark:border-red-900/50 text-sm text-red-600 dark:text-red-400 flex items-center gap-2">
               <svg className="w-4 h-4 shrink-0" fill="none" viewBox="0 0 24 24" strokeWidth={2} stroke="currentColor">
                 <path strokeLinecap="round" strokeLinejoin="round" d="M12 9v3.75m9-.75a9 9 0 1 1-18 0 9 9 0 0 1 18 0Zm-9 3.75h.008v.008H12v-.008Z" />
               </svg>
@@ -1082,41 +544,25 @@ export default function FormFillPage({
             </div>
           )}
 
-          {/* validation summary */}
-          {Object.keys(fieldErrors).length > 0 && (
-            <div className="mt-4 p-3 rounded-lg bg-red-50 dark:bg-red-950/30 border border-red-200 dark:border-red-900/50 text-sm text-red-600 dark:text-red-400">
-              Please fix {Object.keys(fieldErrors).length} error{Object.keys(fieldErrors).length > 1 ? "s" : ""} above before submitting.
-            </div>
-          )}
-
-          {/* actions */}
-          <div className="mt-6 flex items-center justify-end gap-3">
-            <Link
-              href="/forms"
+          <div className="flex items-center justify-end gap-3">
+            <button
+              type="button"
+              onClick={() => { setStep(1); window.scrollTo({ top: 0, behavior: "smooth" }); }}
               className="px-4 py-2.5 rounded-lg text-sm font-medium text-gray-600 dark:text-gray-400 bg-gray-100 dark:bg-gray-800 hover:bg-gray-200 dark:hover:bg-gray-700 transition-colors"
             >
-              Cancel
-            </Link>
+              Back
+            </button>
             <button
-              type="submit"
+              type="button"
+              onClick={handleSubmit}
               disabled={submitting}
               className="inline-flex items-center gap-2 px-5 py-2.5 rounded-lg text-sm font-medium text-white bg-[#02773b] hover:bg-[#026332] disabled:opacity-60 disabled:cursor-not-allowed transition-colors shadow-sm"
             >
-              {submitting ? (
-                <>
-                  <IconSpinner />
-                  Submitting...
-                </>
-              ) : (
-                <>
-                  <IconCheck />
-                  Submit
-                </>
-              )}
+              {submitting ? <><IconSpinner />Submitting…</> : <><IconCheck />Confirm & Submit</>}
             </button>
           </div>
-        </form>
-      </div>
+        </div>
+      )}
     </div>
   );
 }

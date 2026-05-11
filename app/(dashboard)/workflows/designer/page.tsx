@@ -3,6 +3,7 @@
 import { useState, useCallback, useEffect, useRef, useMemo } from "react";
 import dynamic from "next/dynamic";
 import { useSession } from "next-auth/react";
+import { useSearchParams } from "next/navigation";
 import {
   useNodesState,
   useEdgesState,
@@ -55,11 +56,64 @@ interface TemplateListItem {
   description: string | null;
   version: number;
   isActive: boolean;
+  slug?: string | null;
+  instanceName?: string | null;
+  sidebarIcon?: string | null;
+  sidebarOrder?: number;
+  customQueries?: CustomView[];
   definition: {
     nodes?: Node[];
     edges?: Edge[];
     steps?: { index: number; name: string; type: string }[];
   };
+}
+
+const SIDEBAR_ICONS = [
+  { name: "document", label: "Document" },
+  { name: "users", label: "People" },
+  { name: "briefcase", label: "Briefcase" },
+  { name: "academic-cap", label: "Academic" },
+  { name: "building", label: "Building" },
+  { name: "clipboard", label: "Clipboard" },
+  { name: "chart-bar", label: "Chart" },
+  { name: "arrow-path", label: "Process" },
+  { name: "envelope", label: "Mail" },
+  { name: "shield", label: "Shield" },
+] as const;
+
+type SidebarIconName = (typeof SIDEBAR_ICONS)[number]["name"];
+
+interface CustomView {
+  id: string;
+  label: string;
+  description?: string;
+  filter: string;
+}
+
+const FILTER_OPTIONS = [
+  // Scope
+  { group: "Scope", value: "all",            label: "All instances" },
+  { group: "Scope", value: "mine",           label: "Started by me" },
+  { group: "Scope", value: "assigned_to_me", label: "Assigned to me (pending tasks)" },
+  // Status
+  { group: "Status", value: "status:IN_PROGRESS", label: "In progress" },
+  { group: "Status", value: "status:COMPLETED",   label: "Completed" },
+  { group: "Status", value: "status:REJECTED",    label: "Rejected" },
+  { group: "Status", value: "status:CANCELLED",   label: "Cancelled" },
+  // Timing
+  { group: "Timing", value: "overdue",       label: "Overdue (past due date)" },
+  { group: "Timing", value: "mine_pending",  label: "My pending instances" },
+  // Step (dynamic — appended at render time)
+  { group: "Step",   value: "step:",         label: "At specific step…" },
+];
+
+function slugify(text: string): string {
+  return text
+    .toLowerCase()
+    .trim()
+    .replace(/[^\w\s-]/g, "")
+    .replace(/[\s_]+/g, "-")
+    .replace(/^-+|-+$/g, "");
 }
 
 interface ValidationIssue {
@@ -94,6 +148,36 @@ const defaultEdges: Edge[] = [];
  */
 
 /* ------------------------------------------------------------------ */
+/*  Icon renderer for sidebar icon picker                              */
+/* ------------------------------------------------------------------ */
+
+function WorkflowIcon({ name, className }: { name: string; className?: string }) {
+  const cls = className ?? "w-5 h-5";
+  switch (name) {
+    case "users":
+      return <svg className={cls} fill="none" viewBox="0 0 24 24" strokeWidth={1.5} stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" d="M15 19.128a9.38 9.38 0 0 0 2.625.372 9.337 9.337 0 0 0 4.121-.952 4.125 4.125 0 0 0-7.533-2.493M15 19.128v-.003c0-1.113-.285-2.16-.786-3.07M15 19.128v.106A12.318 12.318 0 0 1 8.624 21c-2.331 0-4.512-.645-6.374-1.766l-.001-.109a6.375 6.375 0 0 1 11.964-3.07M12 6.375a3.375 3.375 0 1 1-6.75 0 3.375 3.375 0 0 1 6.75 0Zm8.25 2.25a2.625 2.625 0 1 1-5.25 0 2.625 2.625 0 0 1 5.25 0Z" /></svg>;
+    case "briefcase":
+      return <svg className={cls} fill="none" viewBox="0 0 24 24" strokeWidth={1.5} stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" d="M20.25 14.15v4.25c0 1.094-.787 2.036-1.872 2.18-2.087.277-4.216.42-6.378.42s-4.291-.143-6.378-.42c-1.085-.144-1.872-1.086-1.872-2.18v-4.25m16.5 0a2.18 2.18 0 0 0 .75-1.661V8.706c0-1.081-.768-2.015-1.837-2.175a48.114 48.114 0 0 0-3.413-.387m4.5 8.006c-.194.165-.42.295-.673.38A23.978 23.978 0 0 1 12 15.75c-2.648 0-5.195-.429-7.577-1.22a2.016 2.016 0 0 1-.673-.38m0 0A2.18 2.18 0 0 1 3 12.489V8.706c0-1.081.768-2.015 1.837-2.175a48.111 48.111 0 0 1 3.413-.387m7.5 0V5.25A2.25 2.25 0 0 0 13.5 3h-3a2.25 2.25 0 0 0-2.25 2.25v.894m7.5 0a48.667 48.667 0 0 0-7.5 0M12 12.75h.008v.008H12v-.008Z" /></svg>;
+    case "academic-cap":
+      return <svg className={cls} fill="none" viewBox="0 0 24 24" strokeWidth={1.5} stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" d="M4.26 10.147a60.438 60.438 0 0 0-.491 6.347A48.62 48.62 0 0 1 12 20.904a48.62 48.62 0 0 1 8.232-4.41 60.46 60.46 0 0 0-.491-6.347m-15.482 0a50.636 50.636 0 0 0-2.658-.813A59.906 59.906 0 0 1 12 3.493a59.903 59.903 0 0 1 10.399 5.84c-.896.248-1.783.52-2.658.814m-15.482 0A50.717 50.717 0 0 1 12 13.489a50.702 50.702 0 0 1 3.741-3.342M12 3.493V2.25m0 5.25a2.25 2.25 0 1 0 4.5 0 2.25 2.25 0 0 0-4.5 0Z" /></svg>;
+    case "building":
+      return <svg className={cls} fill="none" viewBox="0 0 24 24" strokeWidth={1.5} stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" d="M3.75 21h16.5M4.5 3h15M5.25 3v18m13.5-18v18M9 6.75h1.5m-1.5 3h1.5m-1.5 3h1.5m3-6H15m-1.5 3H15m-1.5 3H15M9 21v-3.375c0-.621.504-1.125 1.125-1.125h3.75c.621 0 1.125.504 1.125 1.125V21" /></svg>;
+    case "clipboard":
+      return <svg className={cls} fill="none" viewBox="0 0 24 24" strokeWidth={1.5} stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" d="M9 12h3.75M9 15h3.75M9 18h3.75m3 .75H18a2.25 2.25 0 0 0 2.25-2.25V6.108c0-1.135-.845-2.098-1.976-2.192a48.424 48.424 0 0 0-1.123-.08m-5.801 0c-.065.21-.1.433-.1.664 0 .414.336.75.75.75h4.5a.75.75 0 0 0 .75-.75 2.25 2.25 0 0 0-.1-.664m-5.8 0A2.251 2.251 0 0 1 13.5 2.25H15c1.012 0 1.867.668 2.15 1.586m-5.8 0c-.376.023-.75.05-1.124.08C9.095 4.01 8.25 4.973 8.25 6.108V8.25m0 0H4.875c-.621 0-1.125.504-1.125 1.125v11.25c0 .621.504 1.125 1.125 1.125h9.75c.621 0 1.125-.504 1.125-1.125V9.375c0-.621-.504-1.125-1.125-1.125H8.25Z" /></svg>;
+    case "chart-bar":
+      return <svg className={cls} fill="none" viewBox="0 0 24 24" strokeWidth={1.5} stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" d="M3 13.125C3 12.504 3.504 12 4.125 12h2.25c.621 0 1.125.504 1.125 1.125v6.75C7.5 20.496 6.996 21 6.375 21h-2.25A1.125 1.125 0 0 1 3 19.875v-6.75ZM9.75 8.625c0-.621.504-1.125 1.125-1.125h2.25c.621 0 1.125.504 1.125 1.125v11.25c0 .621-.504 1.125-1.125 1.125h-2.25a1.125 1.125 0 0 1-1.125-1.125V8.625ZM16.5 4.125c0-.621.504-1.125 1.125-1.125h2.25C20.496 3 21 3.504 21 4.125v15.75c0 .621-.504 1.125-1.125 1.125h-2.25a1.125 1.125 0 0 1-1.125-1.125V4.125Z" /></svg>;
+    case "arrow-path":
+      return <svg className={cls} fill="none" viewBox="0 0 24 24" strokeWidth={1.5} stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" d="M16.023 9.348h4.992v-.001M2.985 19.644v-4.992m0 0h4.992m-4.993 0 3.181 3.183a8.25 8.25 0 0 0 13.803-3.7M4.031 9.865a8.25 8.25 0 0 1 13.803-3.7l3.181 3.182m0-4.991v4.99" /></svg>;
+    case "envelope":
+      return <svg className={cls} fill="none" viewBox="0 0 24 24" strokeWidth={1.5} stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" d="M21.75 6.75v10.5a2.25 2.25 0 0 1-2.25 2.25h-15a2.25 2.25 0 0 1-2.25-2.25V6.75m19.5 0A2.25 2.25 0 0 0 19.5 4.5h-15a2.25 2.25 0 0 0-2.25 2.25m19.5 0v.243a2.25 2.25 0 0 1-1.07 1.916l-7.5 4.615a2.25 2.25 0 0 1-2.36 0L3.32 8.91a2.25 2.25 0 0 1-1.07-1.916V6.75" /></svg>;
+    case "shield":
+      return <svg className={cls} fill="none" viewBox="0 0 24 24" strokeWidth={1.5} stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" d="M9 12.75 11.25 15 15 9.75m-3-7.036A11.959 11.959 0 0 1 3.598 6 11.99 11.99 0 0 0 3 9.749c0 5.592 3.824 10.29 9 11.623 5.176-1.332 9-6.03 9-11.622 0-1.31-.21-2.571-.598-3.751h-.152c-3.196 0-6.1-1.248-8.25-3.285Z" /></svg>;
+    default: // document
+      return <svg className={cls} fill="none" viewBox="0 0 24 24" strokeWidth={1.5} stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" d="M19.5 14.25v-2.625a3.375 3.375 0 0 0-3.375-3.375h-1.5A1.125 1.125 0 0 1 13.5 7.125v-1.5a3.375 3.375 0 0 0-3.375-3.375H8.25m2.25 0H5.625c-.621 0-1.125.504-1.125 1.125v17.25c0 .621.504 1.125 1.125 1.125h12.75c.621 0 1.125-.504 1.125-1.125V11.25a9 9 0 0 0-9-9Z" /></svg>;
+  }
+}
+
+/* ------------------------------------------------------------------ */
 /*  Page component                                                     */
 /* ------------------------------------------------------------------ */
 
@@ -113,6 +197,18 @@ export default function WorkflowDesignerPage() {
   const [isPublished, setIsPublished] = useState(false);
   const [templates, setTemplates] = useState<TemplateListItem[]>([]);
   const [loadingTemplates, setLoadingTemplates] = useState(false);
+
+  // ---- Module settings ----
+  const [moduleSlug, setModuleSlug] = useState("");
+  const [moduleInstanceName, setModuleInstanceName] = useState("");
+  const [moduleSidebarIcon, setModuleSidebarIcon] = useState<SidebarIconName>("document");
+  const [moduleSidebarOrder, setModuleSidebarOrder] = useState(0);
+  const [moduleCustomViews, setModuleCustomViews] = useState<CustomView[]>([]);
+  const [showModuleSettings, setShowModuleSettings] = useState(false);
+  const [newViewLabel, setNewViewLabel] = useState("");
+  const [newViewFilter, setNewViewFilter] = useState("all");
+  const [newViewStep, setNewViewStep] = useState("");
+  const [newViewDesc, setNewViewDesc] = useState("");
 
   // ---- UI state ----
   const [saving, setSaving] = useState(false);
@@ -135,12 +231,31 @@ export default function WorkflowDesignerPage() {
   const [showLoadDropdown, setShowLoadDropdown] = useState(false);
   const loadDropdownRef = useRef<HTMLDivElement>(null);
 
+  // ---- Auto-save state ----
+  const [draftBanner, setDraftBanner] = useState<{ savedAt: string; key: string } | null>(null);
+  const autosaveTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const serverAutosaveRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const [autoSaving, setAutoSaving] = useState(false);
+  const [lastSavedAt, setLastSavedAt] = useState<Date | null>(null);
+
   // Open panels by default on desktop, closed on mobile
   useEffect(() => {
     if (window.innerWidth >= 1024) {
       setLeftPanelOpen(true);
       setRightPanelOpen(true);
     }
+  }, []);
+
+  // Check for a saved draft when opening a new template
+  useEffect(() => {
+    if (urlTemplateId) return; // existing templates are checked inside handleLoadTemplate
+    try {
+      const raw = localStorage.getItem("wf-draft-new");
+      if (!raw) return;
+      const draft = JSON.parse(raw) as { savedAt?: string };
+      if (draft.savedAt) setDraftBanner({ savedAt: draft.savedAt, key: "wf-draft-new" });
+    } catch {}
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   // ---- Undo/Redo history ----
@@ -196,6 +311,102 @@ export default function WorkflowDesignerPage() {
   useEffect(() => {
     setHasUnsavedChanges(currentSnapshot !== savedSnapshotRef.current);
   }, [currentSnapshot]);
+
+  // Server-side auto-save for existing templates (1.5 s debounce after last change)
+  useEffect(() => {
+    if (!hasUnsavedChanges || !templateId || !templateName.trim()) return;
+    if (serverAutosaveRef.current) clearTimeout(serverAutosaveRef.current);
+    serverAutosaveRef.current = setTimeout(async () => {
+      setAutoSaving(true);
+      try {
+        const definition = {
+          nodes: nodes.map((n) => ({ id: n.id, type: n.type, position: n.position, data: n.data })),
+          edges: edges.map((e) => ({
+            id: e.id, source: e.source, target: e.target,
+            sourceHandle: e.sourceHandle, targetHandle: e.targetHandle,
+            type: e.type, animated: e.animated, markerEnd: e.markerEnd,
+            style: e.style, label: e.label, data: e.data,
+          })),
+          steps: extractStepsFromFlow(nodes, edges),
+        };
+        const res = await fetch(`/api/workflows/templates/${templateId}`, {
+          method: "PUT",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            name: templateName.trim(),
+            description: templateDescription.trim() || undefined,
+            definition,
+            slug: moduleSlug.trim() || null,
+            instanceName: moduleInstanceName.trim() || null,
+            sidebarIcon: moduleSidebarIcon || "document",
+            sidebarOrder: moduleSidebarOrder,
+            customQueries: moduleCustomViews,
+          }),
+        });
+        if (res.ok) {
+          const result = await res.json();
+          if (result.template?.version) setTemplateVersion(result.template.version);
+          savedSnapshotRef.current = currentSnapshot;
+          setLastSavedAt(new Date());
+          try { localStorage.removeItem(`wf-draft-${templateId}`); } catch {}
+          setDraftBanner(null);
+        }
+      } catch { /* silent — user still has unsaved indicator */ }
+      setAutoSaving(false);
+    }, 1500);
+    return () => {
+      if (serverAutosaveRef.current) clearTimeout(serverAutosaveRef.current);
+    };
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [hasUnsavedChanges, templateId, templateName, templateDescription, nodes, edges,
+      moduleSlug, moduleInstanceName, moduleSidebarIcon, moduleSidebarOrder, moduleCustomViews]);
+
+  // localStorage draft only for brand-new (unsaved) templates
+  useEffect(() => {
+    if (!hasUnsavedChanges || templateId) return;
+    if (autosaveTimerRef.current) clearTimeout(autosaveTimerRef.current);
+    autosaveTimerRef.current = setTimeout(() => {
+      try {
+        localStorage.setItem("wf-draft-new", JSON.stringify({
+          templateName, templateDescription, nodes, edges,
+          moduleSlug, moduleInstanceName, moduleSidebarIcon, moduleSidebarOrder, moduleCustomViews,
+          savedAt: new Date().toISOString(),
+        }));
+      } catch {}
+    }, 500);
+    return () => {
+      if (autosaveTimerRef.current) clearTimeout(autosaveTimerRef.current);
+    };
+  // currentSnapshot as a lightweight change signal; individual states captured by closure
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [currentSnapshot, hasUnsavedChanges]);
+
+  // Save immediately to localStorage before the page unloads
+  useEffect(() => {
+    function handleBeforeUnload() {
+      if (!hasUnsavedChanges) return;
+      try {
+        const key = `wf-draft-${templateId ?? "new"}`;
+        localStorage.setItem(key, JSON.stringify({
+          templateId,
+          templateName,
+          templateDescription,
+          nodes,
+          edges,
+          moduleSlug,
+          moduleInstanceName,
+          moduleSidebarIcon,
+          moduleSidebarOrder,
+          moduleCustomViews,
+          savedAt: new Date().toISOString(),
+        }));
+      } catch {}
+    }
+    window.addEventListener("beforeunload", handleBeforeUnload);
+    return () => window.removeEventListener("beforeunload", handleBeforeUnload);
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [hasUnsavedChanges, templateId, templateName, templateDescription, nodes, edges,
+      moduleSlug, moduleInstanceName, moduleSidebarIcon, moduleSidebarOrder, moduleCustomViews]);
 
   // Record history on node/edge changes (debounced)
   const historyTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -281,7 +492,7 @@ export default function WorkflowDesignerPage() {
   const fetchTemplates = useCallback(async () => {
     setLoadingTemplates(true);
     try {
-      const res = await fetch("/api/workflows/templates");
+      const res = await fetch("/api/workflows/templates?all=true");
       if (res.ok) {
         const data = await res.json();
         setTemplates(data.templates ?? []);
@@ -296,6 +507,18 @@ export default function WorkflowDesignerPage() {
   useEffect(() => {
     fetchTemplates();
   }, [fetchTemplates]);
+
+  // Auto-load template from URL ?template=id
+  const searchParams = useSearchParams();
+  const urlTemplateId = searchParams.get("template");
+  const didAutoLoad = useRef(false);
+  useEffect(() => {
+    if (urlTemplateId && !didAutoLoad.current) {
+      didAutoLoad.current = true;
+      handleLoadTemplate(urlTemplateId);
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [urlTemplateId]);
 
   /* ================================================================== */
   /*  Node helpers                                                       */
@@ -338,6 +561,30 @@ export default function WorkflowDesignerPage() {
   /*  Canvas operations                                                  */
   /* ================================================================== */
 
+  function restoreLocalDraft(key: string) {
+    try {
+      const raw = localStorage.getItem(key);
+      if (!raw) return;
+      const draft = JSON.parse(raw);
+      if (draft.templateName !== undefined) setTemplateName(draft.templateName);
+      if (draft.templateDescription !== undefined) setTemplateDescription(draft.templateDescription);
+      if (Array.isArray(draft.nodes)) setNodes(draft.nodes);
+      if (Array.isArray(draft.edges)) setEdges(draft.edges);
+      if (draft.moduleSlug !== undefined) setModuleSlug(draft.moduleSlug);
+      if (draft.moduleInstanceName !== undefined) setModuleInstanceName(draft.moduleInstanceName);
+      if (draft.moduleSidebarIcon) setModuleSidebarIcon(draft.moduleSidebarIcon);
+      if (draft.moduleSidebarOrder !== undefined) setModuleSidebarOrder(draft.moduleSidebarOrder);
+      if (Array.isArray(draft.moduleCustomViews)) setModuleCustomViews(draft.moduleCustomViews);
+      if (draft.templateId) setTemplateId(draft.templateId);
+    } catch {}
+    setDraftBanner(null);
+  }
+
+  function discardLocalDraft(key: string) {
+    try { localStorage.removeItem(key); } catch {}
+    setDraftBanner(null);
+  }
+
   function handleClear() {
     if (
       !confirm(
@@ -353,6 +600,11 @@ export default function WorkflowDesignerPage() {
     setTemplateDescription("");
     setTemplateVersion(1);
     setIsPublished(false);
+    setModuleSlug("");
+    setModuleInstanceName("");
+    setModuleSidebarIcon("document");
+    setModuleSidebarOrder(0);
+    setModuleCustomViews([]);
     setValidationIssues([]);
     setHighlightedNodes(new Set());
     setShowValidationPanel(false);
@@ -698,6 +950,11 @@ export default function WorkflowDesignerPage() {
       setTemplateDescription(tmpl.description ?? "");
       setTemplateVersion(tmpl.version ?? 1);
       setIsPublished(tmpl.isActive ?? false);
+      setModuleSlug(tmpl.slug ?? "");
+      setModuleInstanceName(tmpl.instanceName ?? "");
+      setModuleSidebarIcon((tmpl.sidebarIcon as SidebarIconName) ?? "document");
+      setModuleSidebarOrder(tmpl.sidebarOrder ?? 0);
+      setModuleCustomViews(Array.isArray(tmpl.customQueries) ? tmpl.customQueries as CustomView[] : []);
 
       const def = tmpl.definition;
 
@@ -814,6 +1071,15 @@ export default function WorkflowDesignerPage() {
       setSaveMessage({ type: "success", text: `Loaded "${tmpl.name}" (v${tmpl.version ?? 1})` });
       setTimeout(() => setSaveMessage(null), 3000);
 
+      // Check for a local draft newer than the server copy
+      try {
+        const raw = localStorage.getItem(`wf-draft-${tmpl.id}`);
+        if (raw) {
+          const draft = JSON.parse(raw) as { savedAt?: string };
+          if (draft.savedAt) setDraftBanner({ savedAt: draft.savedAt, key: `wf-draft-${tmpl.id}` });
+        }
+      } catch {}
+
       // Clear validation
       clearValidationHighlights();
       setValidationIssues([]);
@@ -855,6 +1121,14 @@ export default function WorkflowDesignerPage() {
       steps: extractStepsFromFlow(nodes, edges),
     };
 
+    const modulePayload = {
+      slug: moduleSlug.trim() || null,
+      instanceName: moduleInstanceName.trim() || null,
+      sidebarIcon: moduleSidebarIcon || "document",
+      sidebarOrder: moduleSidebarOrder,
+      customQueries: moduleCustomViews,
+    };
+
     try {
       let res;
       if (templateId) {
@@ -865,6 +1139,7 @@ export default function WorkflowDesignerPage() {
             name: templateName.trim(),
             description: templateDescription.trim() || undefined,
             definition,
+            ...modulePayload,
           }),
         });
       } else {
@@ -879,6 +1154,7 @@ export default function WorkflowDesignerPage() {
                 ? definition.steps.map((s) => ({ name: s.name, type: s.type }))
                 : [{ name: "Default Step", type: "approval" }],
             definition,
+            ...modulePayload,
           }),
         });
       }
@@ -896,10 +1172,15 @@ export default function WorkflowDesignerPage() {
         setTemplateVersion(result.template.version);
       }
 
+      // Clear local draft after successful server save
+      try { localStorage.removeItem(`wf-draft-${templateId ?? "new"}`); } catch {}
+      setDraftBanner(null);
+
       savedSnapshotRef.current = currentSnapshot;
-      setSaveMessage({ type: "success", text: "Template saved!" });
+      setLastSavedAt(new Date());
+      setSaveMessage({ type: "success", text: "Saved" });
       fetchTemplates();
-      setTimeout(() => setSaveMessage(null), 3000);
+      setTimeout(() => setSaveMessage(null), 2000);
     } catch (err) {
       setSaveMessage({
         type: "error",
@@ -960,6 +1241,7 @@ export default function WorkflowDesignerPage() {
           ? "Template unpublished"
           : "Template published and active!",
       });
+      window.dispatchEvent(new Event("workflowSidebarRefresh"));
       fetchTemplates();
       setTimeout(() => setSaveMessage(null), 3000);
     } catch (err) {
@@ -1070,6 +1352,29 @@ export default function WorkflowDesignerPage() {
 
   return (
     <div className="flex flex-col h-[calc(100vh-4rem)] overflow-hidden">
+      {/* Draft restore banner */}
+      {draftBanner && (
+        <div className="flex-shrink-0 flex items-center gap-3 px-4 py-2 bg-amber-50 dark:bg-amber-950/40 border-b border-amber-200 dark:border-amber-800 text-sm">
+          <svg className="w-4 h-4 text-amber-600 dark:text-amber-400 flex-shrink-0" fill="none" viewBox="0 0 24 24" strokeWidth={2} stroke="currentColor">
+            <path strokeLinecap="round" strokeLinejoin="round" d="M12 9v3.75m-9.303 3.376c-.866 1.5.217 3.374 1.948 3.374h14.71c1.73 0 2.813-1.874 1.948-3.374L13.949 3.378c-.866-1.5-3.032-1.5-3.898 0L2.697 16.126ZM12 15.75h.007v.008H12v-.008Z" />
+          </svg>
+          <span className="text-amber-800 dark:text-amber-300 flex-1">
+            You have unsaved local changes from {new Date(draftBanner.savedAt).toLocaleString()}. Restore them?
+          </span>
+          <button
+            onClick={() => restoreLocalDraft(draftBanner.key)}
+            className="px-3 py-1 text-xs font-semibold rounded-lg bg-amber-600 text-white hover:bg-amber-700 transition-colors"
+          >
+            Restore
+          </button>
+          <button
+            onClick={() => discardLocalDraft(draftBanner.key)}
+            className="px-3 py-1 text-xs font-semibold rounded-lg text-amber-700 dark:text-amber-400 hover:bg-amber-100 dark:hover:bg-amber-900/40 transition-colors"
+          >
+            Discard
+          </button>
+        </div>
+      )}
       {/* ============================================================ */}
       {/*  TOOLBAR ROW 1 - Template info + primary actions              */}
       {/* ============================================================ */}
@@ -1355,9 +1660,16 @@ export default function WorkflowDesignerPage() {
                             <span className="text-sm font-medium text-gray-900 dark:text-gray-100 truncate">
                               {t.name}
                             </span>
-                            <span className="text-[10px] font-mono text-gray-400 flex-shrink-0">
-                              v{t.version ?? 1}
-                            </span>
+                            <div className="flex items-center gap-1.5 flex-shrink-0">
+                              {!t.isActive && (
+                                <span className="text-[9px] font-semibold uppercase tracking-wide px-1.5 py-0.5 rounded bg-amber-100 dark:bg-amber-900/40 text-amber-700 dark:text-amber-400">
+                                  Draft
+                                </span>
+                              )}
+                              <span className="text-[10px] font-mono text-gray-400">
+                                v{t.version ?? 1}
+                              </span>
+                            </div>
                           </div>
                           {t.description && (
                             <p className="text-[11px] text-gray-400 dark:text-gray-500 truncate mt-0.5">
@@ -1548,14 +1860,24 @@ export default function WorkflowDesignerPage() {
             </span>
           )}
 
-          {/* Unsaved indicator */}
-          {hasUnsavedChanges && (
-            <span className="text-amber-600 dark:text-amber-400 font-medium">
-              Unsaved changes
+          {/* Auto-save status */}
+          {autoSaving ? (
+            <span className="flex items-center gap-1 text-gray-400 dark:text-gray-500">
+              <svg className="animate-spin w-3 h-3" viewBox="0 0 24 24" fill="none">
+                <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4"/>
+                <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z"/>
+              </svg>
+              Saving…
             </span>
-          )}
+          ) : lastSavedAt && !hasUnsavedChanges ? (
+            <span className="text-green-600 dark:text-green-400 font-medium">
+              Saved {lastSavedAt.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}
+            </span>
+          ) : hasUnsavedChanges && !templateId ? (
+            <span className="text-amber-600 dark:text-amber-400 font-medium">Unsaved</span>
+          ) : null}
 
-          {/* Save message */}
+          {/* Save message (manual saves / errors) */}
           {saveMessage && (
             <span
               className={`font-medium ${
@@ -1776,30 +2098,268 @@ export default function WorkflowDesignerPage() {
               {selectedNode ? (
                 <NodeConfigPanel
                   node={selectedNode}
+                  nodes={nodes}
                   onUpdate={handleUpdateNodeData}
                   onDelete={handleDeleteNode}
                 />
               ) : (
-                <div className="text-center py-8">
-                  <svg
-                    className="w-10 h-10 text-gray-300 dark:text-gray-600 mx-auto mb-3"
-                    fill="none"
-                    viewBox="0 0 24 24"
-                    strokeWidth={1}
-                    stroke="currentColor"
-                  >
-                    <path
-                      strokeLinecap="round"
-                      strokeLinejoin="round"
-                      d="M15.042 21.672 13.684 16.6m0 0-2.51 2.225.569-9.47 5.227 7.917-3.286-.672ZM12 2.25V4.5m5.834.166-1.591 1.591M20.25 10.5H18M7.757 14.743l-1.59 1.59M6 10.5H3.75m4.007-4.243-1.59-1.59"
-                    />
-                  </svg>
-                  <p className="text-sm text-gray-400 dark:text-gray-500">
-                    Select a node to configure
-                  </p>
-                  <p className="text-[11px] text-gray-300 dark:text-gray-600 mt-1">
-                    Click any node on the canvas
-                  </p>
+                <div className="space-y-5">
+                  <div className="text-center py-6">
+                    <svg
+                      className="w-10 h-10 text-gray-300 dark:text-gray-600 mx-auto mb-3"
+                      fill="none"
+                      viewBox="0 0 24 24"
+                      strokeWidth={1}
+                      stroke="currentColor"
+                    >
+                      <path
+                        strokeLinecap="round"
+                        strokeLinejoin="round"
+                        d="M15.042 21.672 13.684 16.6m0 0-2.51 2.225.569-9.47 5.227 7.917-3.286-.672ZM12 2.25V4.5m5.834.166-1.591 1.591M20.25 10.5H18M7.757 14.743l-1.59 1.59M6 10.5H3.75m4.007-4.243-1.59-1.59"
+                      />
+                    </svg>
+                    <p className="text-sm text-gray-400 dark:text-gray-500">
+                      Select a node to configure
+                    </p>
+                    <p className="text-[11px] text-gray-300 dark:text-gray-600 mt-1">
+                      Click any node on the canvas
+                    </p>
+                  </div>
+
+                  {/* Module Settings */}
+                  <div className="border-t border-gray-100 dark:border-gray-800 pt-4">
+                    <button
+                      onClick={() => setShowModuleSettings((v) => !v)}
+                      className="w-full flex items-center justify-between text-xs font-semibold text-gray-500 dark:text-gray-400 uppercase tracking-wider mb-3 hover:text-gray-700 dark:hover:text-gray-200 transition-colors"
+                    >
+                      <span>Module Settings</span>
+                      <svg
+                        className={`w-3.5 h-3.5 transition-transform ${showModuleSettings ? "rotate-90" : ""}`}
+                        fill="none"
+                        viewBox="0 0 24 24"
+                        strokeWidth={2}
+                        stroke="currentColor"
+                      >
+                        <path strokeLinecap="round" strokeLinejoin="round" d="m8.25 4.5 7.5 7.5-7.5 7.5" />
+                      </svg>
+                    </button>
+
+                    {showModuleSettings && (
+                      <div className="space-y-3 animate-in slide-in-from-top-1">
+                        <p className="text-[11px] text-gray-400 dark:text-gray-500 leading-relaxed">
+                          When published with a slug, this workflow appears as a standalone module in the sidebar.
+                        </p>
+
+                        {/* Slug */}
+                        <div className="space-y-1">
+                          <label className="text-[11px] font-medium text-gray-600 dark:text-gray-400">
+                            URL Slug
+                          </label>
+                          <div className="flex gap-1">
+                            <input
+                              type="text"
+                              value={moduleSlug}
+                              onChange={(e) => setModuleSlug(slugify(e.target.value))}
+                              placeholder="leave-request"
+                              className="flex-1 h-8 rounded-lg border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-800 px-2.5 text-xs text-gray-900 dark:text-gray-100 placeholder:text-gray-400 focus:border-[#02773b] focus:ring-1 focus:ring-[#02773b]/30 outline-none transition-colors"
+                            />
+                            <button
+                              type="button"
+                              onClick={() => setModuleSlug(slugify(templateName))}
+                              className="h-8 px-2 rounded-lg border border-gray-200 dark:border-gray-700 text-[10px] text-gray-500 hover:text-gray-700 dark:hover:text-gray-300 hover:bg-gray-50 dark:hover:bg-gray-800 transition-colors"
+                              title="Generate from name"
+                            >
+                              Auto
+                            </button>
+                          </div>
+                          {moduleSlug && (
+                            <p className="text-[10px] text-gray-400 dark:text-gray-500">
+                              /w/<span className="font-mono text-[#02773b]">{moduleSlug}</span>/inbox
+                            </p>
+                          )}
+                        </div>
+
+                        {/* Instance Name */}
+                        <div className="space-y-1">
+                          <label className="text-[11px] font-medium text-gray-600 dark:text-gray-400">
+                            Instance Label
+                          </label>
+                          <input
+                            type="text"
+                            value={moduleInstanceName}
+                            onChange={(e) => setModuleInstanceName(e.target.value)}
+                            placeholder="e.g. Leave Request"
+                            className="w-full h-8 rounded-lg border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-800 px-2.5 text-xs text-gray-900 dark:text-gray-100 placeholder:text-gray-400 focus:border-[#02773b] focus:ring-1 focus:ring-[#02773b]/30 outline-none transition-colors"
+                          />
+                          <p className="text-[10px] text-gray-400 dark:text-gray-500">
+                            Used in sidebar: &quot;New <em>{moduleInstanceName || "Instance"}</em>&quot;
+                          </p>
+                        </div>
+
+                        {/* Icon picker */}
+                        <div className="space-y-1">
+                          <label className="text-[11px] font-medium text-gray-600 dark:text-gray-400">
+                            Sidebar Icon
+                          </label>
+                          <div className="grid grid-cols-5 gap-1">
+                            {SIDEBAR_ICONS.map((icon) => (
+                              <button
+                                key={icon.name}
+                                type="button"
+                                onClick={() => setModuleSidebarIcon(icon.name)}
+                                title={icon.label}
+                                className={`h-9 rounded-lg border flex items-center justify-center transition-colors ${
+                                  moduleSidebarIcon === icon.name
+                                    ? "border-[#02773b] bg-[#02773b]/10 text-[#02773b]"
+                                    : "border-gray-200 dark:border-gray-700 text-gray-400 hover:border-gray-400 dark:hover:border-gray-500 hover:text-gray-600 dark:hover:text-gray-300"
+                                }`}
+                              >
+                                <WorkflowIcon name={icon.name} className="w-4 h-4" />
+                              </button>
+                            ))}
+                          </div>
+                        </div>
+
+                        {/* Sidebar order */}
+                        <div className="space-y-1">
+                          <label className="text-[11px] font-medium text-gray-600 dark:text-gray-400">
+                            Sidebar Order
+                          </label>
+                          <input
+                            type="number"
+                            min={0}
+                            value={moduleSidebarOrder}
+                            onChange={(e) => setModuleSidebarOrder(Number(e.target.value))}
+                            className="w-full h-8 rounded-lg border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-800 px-2.5 text-xs text-gray-900 dark:text-gray-100 focus:border-[#02773b] focus:ring-1 focus:ring-[#02773b]/30 outline-none transition-colors"
+                          />
+                          <p className="text-[10px] text-gray-400 dark:text-gray-500">Lower = higher in sidebar</p>
+                        </div>
+
+                        {/* Custom sub-views */}
+                        <div className="space-y-2 pt-1 border-t border-gray-100 dark:border-gray-800">
+                          <label className="text-[11px] font-semibold text-gray-600 dark:text-gray-400 uppercase tracking-wider">
+                            Custom Views
+                          </label>
+                          <p className="text-[10px] text-gray-400 dark:text-gray-500">
+                            Add filtered views to the sidebar nav.
+                          </p>
+
+                          {/* Existing views */}
+                          {moduleCustomViews.length > 0 && (
+                            <div className="space-y-1">
+                              {moduleCustomViews.map((view) => (
+                                <div key={view.id} className="flex items-center gap-1.5 px-2 py-1.5 rounded-lg bg-gray-50 dark:bg-gray-800">
+                                  <div className="flex-1 min-w-0">
+                                    <p className="text-[11px] font-medium text-gray-700 dark:text-gray-300 truncate">{view.label}</p>
+                                    <p className="text-[10px] text-gray-400 dark:text-gray-500 truncate">{view.filter}</p>
+                                  </div>
+                                  <button
+                                    type="button"
+                                    onClick={() => setModuleCustomViews((vs) => vs.filter((v) => v.id !== view.id))}
+                                    className="p-0.5 rounded text-gray-400 hover:text-red-500 transition-colors flex-shrink-0"
+                                  >
+                                    <svg className="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" strokeWidth={2} stroke="currentColor">
+                                      <path strokeLinecap="round" strokeLinejoin="round" d="M6 18 18 6M6 6l12 12" />
+                                    </svg>
+                                  </button>
+                                </div>
+                              ))}
+                            </div>
+                          )}
+
+                          {/* Add new view form */}
+                          {(() => {
+                            // Task nodes available on the current canvas
+                            const taskNodes = nodes.filter((n) => n.type === "task");
+                            const isStepFilter = newViewFilter === "step:";
+                            const fieldCls = "w-full h-7 rounded border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-800 px-2 text-[11px] text-gray-900 dark:text-gray-100 placeholder:text-gray-400 focus:border-[#02773b] outline-none";
+
+                            // Group filter options
+                            const groups = Array.from(new Set(FILTER_OPTIONS.map((f) => f.group)));
+
+                            return (
+                              <div className="rounded-lg border border-dashed border-gray-200 dark:border-gray-700 p-2 space-y-1.5">
+                                <input
+                                  type="text"
+                                  value={newViewLabel}
+                                  onChange={(e) => setNewViewLabel(e.target.value)}
+                                  placeholder="View label (e.g. Pending Approval)"
+                                  className={fieldCls}
+                                />
+                                <input
+                                  type="text"
+                                  value={newViewDesc}
+                                  onChange={(e) => setNewViewDesc(e.target.value)}
+                                  placeholder="Description (optional)"
+                                  className={fieldCls}
+                                />
+                                <select
+                                  value={newViewFilter}
+                                  onChange={(e) => { setNewViewFilter(e.target.value); setNewViewStep(""); }}
+                                  className={fieldCls}
+                                >
+                                  {groups.map((g) => (
+                                    <optgroup key={g} label={g}>
+                                      {FILTER_OPTIONS.filter((f) => f.group === g).map((f) => (
+                                        <option key={f.value} value={f.value}>{f.label}</option>
+                                      ))}
+                                    </optgroup>
+                                  ))}
+                                </select>
+
+                                {/* Step picker — only shown when "At specific step…" is selected */}
+                                {isStepFilter && (
+                                  <select
+                                    value={newViewStep}
+                                    onChange={(e) => setNewViewStep(e.target.value)}
+                                    className={fieldCls}
+                                  >
+                                    <option value="">— select a step —</option>
+                                    {taskNodes.length === 0 ? (
+                                      <option disabled value="">No task nodes on canvas yet</option>
+                                    ) : (
+                                      taskNodes.map((n) => {
+                                        const label = (n.data?.label as string) || n.id;
+                                        return (
+                                          <option key={n.id} value={label}>{label}</option>
+                                        );
+                                      })
+                                    )}
+                                  </select>
+                                )}
+
+                                <button
+                                  type="button"
+                                  disabled={!newViewLabel.trim() || (isStepFilter && !newViewStep)}
+                                  onClick={() => {
+                                    if (!newViewLabel.trim()) return;
+                                    if (isStepFilter && !newViewStep) return;
+                                    const filterValue = isStepFilter ? `step:${newViewStep}` : newViewFilter;
+                                    setModuleCustomViews((vs) => [
+                                      ...vs,
+                                      {
+                                        id: `view_${Date.now()}`,
+                                        label: newViewLabel.trim(),
+                                        description: newViewDesc.trim() || undefined,
+                                        filter: filterValue,
+                                      },
+                                    ]);
+                                    setNewViewLabel("");
+                                    setNewViewDesc("");
+                                    setNewViewFilter("all");
+                                    setNewViewStep("");
+                                  }}
+                                  className="w-full h-7 rounded bg-[#02773b]/10 text-[#02773b] text-[11px] font-medium hover:bg-[#02773b]/20 disabled:opacity-40 disabled:cursor-not-allowed transition-colors"
+                                >
+                                  + Add View
+                                </button>
+                              </div>
+                            );
+                          })()}
+                        </div>
+                      </div>
+                    )}
+                  </div>
                 </div>
               )}
             </div>

@@ -22,9 +22,12 @@ export async function GET(req: NextRequest) {
       return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
     }
 
-    const showAll =
-      req.nextUrl.searchParams.get("all") === "true" &&
-      session.user.permissions.includes("workflows:manage");
+    const requestAll = req.nextUrl.searchParams.get("all") === "true";
+    const canManage =
+      session.user.permissions.includes("workflows:manage") ||
+      session.user.permissions.includes("forms:manage") ||
+      session.user.roles.includes("Admin");
+    const showAll = requestAll && canManage;
 
     const templates = await db.workflowTemplate.findMany({
       where: showAll ? {} : { isActive: true },
@@ -94,11 +97,15 @@ export async function POST(req: NextRequest) {
     }
 
     const body = await req.json();
-    const { name, description, steps, definition: rawDefinition } = body as {
+    const { name, description, steps, definition: rawDefinition, slug, instanceName, sidebarIcon, sidebarOrder } = body as {
       name: string;
       description?: string;
       steps?: { name: string; type: "approval" | "review" }[];
       definition?: Record<string, unknown>;
+      slug?: string | null;
+      instanceName?: string | null;
+      sidebarIcon?: string | null;
+      sidebarOrder?: number;
     };
 
     if (!name) {
@@ -156,6 +163,10 @@ export async function POST(req: NextRequest) {
         description: description ?? null,
         definition: definition as Prisma.InputJsonValue,
         createdById: session.user.id,
+        ...(slug ? { slug } : {}),
+        ...(instanceName ? { instanceName } : {}),
+        ...(sidebarIcon ? { sidebarIcon } : {}),
+        ...(sidebarOrder !== undefined ? { sidebarOrder } : {}),
       },
       select: {
         id: true,

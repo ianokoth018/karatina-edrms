@@ -189,11 +189,13 @@ function DeleteModal({
   onConfirm,
   onCancel,
   deleting,
+  error,
 }: {
   templateName: string;
   onConfirm: () => void;
   onCancel: () => void;
   deleting: boolean;
+  error: string | null;
 }) {
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center p-4">
@@ -202,16 +204,21 @@ function DeleteModal({
         <div className="flex items-center gap-3 mb-4">
           <div className="w-10 h-10 rounded-full bg-red-100 dark:bg-red-950/40 flex items-center justify-center flex-shrink-0">
             <svg className="w-5 h-5 text-red-600 dark:text-red-400" fill="none" viewBox="0 0 24 24" strokeWidth={1.5} stroke="currentColor">
-              <path strokeLinecap="round" strokeLinejoin="round" d="M12 9v3.75m-9.303 3.376c-.866 1.5.217 3.374 1.948 3.374h14.71c1.73 0 2.813-1.874 1.948-3.374L13.949 3.378c-.866-1.5-3.032-1.5-3.898 0L2.697 16.126ZM12 15.75h.007v.008H12v-.008Z" />
+              <path strokeLinecap="round" strokeLinejoin="round" d="m14.74 9-.346 9m-4.788 0L9.26 9m9.968-3.21c.342.052.682.107 1.022.166m-1.022-.165L18.16 19.673a2.25 2.25 0 0 1-2.244 2.077H8.084a2.25 2.25 0 0 1-2.244-2.077L4.772 5.79m14.456 0a48.108 48.108 0 0 0-3.478-.397m-12 .562c.34-.059.68-.114 1.022-.165m0 0a48.11 48.11 0 0 1 3.478-.397m7.5 0v-.916c0-1.18-.91-2.164-2.09-2.201a51.964 51.964 0 0 0-3.32 0c-1.18.037-2.09 1.022-2.09 2.201v.916m7.5 0a48.667 48.667 0 0 0-7.5 0" />
             </svg>
           </div>
           <div>
-            <h3 className="text-base font-bold text-gray-900 dark:text-gray-100">Deactivate Template</h3>
+            <h3 className="text-base font-bold text-gray-900 dark:text-gray-100">Delete Template</h3>
             <p className="text-sm text-gray-500 dark:text-gray-400 mt-0.5">
-              This will deactivate <span className="font-medium text-gray-700 dark:text-gray-300">&ldquo;{templateName}&rdquo;</span>. Existing instances will not be affected.
+              Permanently delete <span className="font-medium text-gray-700 dark:text-gray-300">&ldquo;{templateName}&rdquo;</span>? This cannot be undone.
             </p>
           </div>
         </div>
+        {error && (
+          <div className="mb-4 rounded-xl bg-red-50 dark:bg-red-950/30 border border-red-200 dark:border-red-800 px-4 py-3 text-sm text-red-700 dark:text-red-400">
+            {error}
+          </div>
+        )}
         <div className="flex justify-end gap-3 pt-2">
           <button
             onClick={onCancel}
@@ -230,7 +237,7 @@ function DeleteModal({
                 <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z" />
               </svg>
             )}
-            Deactivate
+            Delete Permanently
           </button>
         </div>
       </div>
@@ -256,6 +263,7 @@ export default function WorkflowTemplatesPage() {
   const [toggling, setToggling] = useState<string | null>(null);
   const [deleteTarget, setDeleteTarget] = useState<Template | null>(null);
   const [deleting, setDeleting] = useState(false);
+  const [deleteError, setDeleteError] = useState<string | null>(null);
 
   // Dropdown menu
   const [openMenu, setOpenMenu] = useState<string | null>(null);
@@ -360,22 +368,23 @@ export default function WorkflowTemplatesPage() {
   async function handleDelete() {
     if (!deleteTarget) return;
     setDeleting(true);
+    setDeleteError(null);
     try {
       const res = await fetch(`/api/workflows/templates/${deleteTarget.id}`, {
         method: "DELETE",
       });
       if (res.ok) {
-        setTemplates((prev) =>
-          prev.map((t) =>
-            t.id === deleteTarget.id ? { ...t, isActive: false } : t
-          )
-        );
+        setTemplates((prev) => prev.filter((t) => t.id !== deleteTarget.id));
+        window.dispatchEvent(new Event("workflowSidebarRefresh"));
+        setDeleteTarget(null);
+      } else {
+        const data = await res.json();
+        setDeleteError(data.error ?? "Failed to delete template.");
       }
     } catch {
-      /* silent */
+      setDeleteError("Network error — please try again.");
     } finally {
       setDeleting(false);
-      setDeleteTarget(null);
     }
   }
 
@@ -837,8 +846,9 @@ export default function WorkflowTemplatesPage() {
         <DeleteModal
           templateName={deleteTarget.name}
           onConfirm={handleDelete}
-          onCancel={() => setDeleteTarget(null)}
+          onCancel={() => { setDeleteTarget(null); setDeleteError(null); }}
           deleting={deleting}
+          error={deleteError}
         />
       )}
     </div>

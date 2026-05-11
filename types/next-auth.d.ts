@@ -13,6 +13,7 @@ declare module "next-auth" {
       employeeId: string;
       jobTitle: string;
       designation: string;
+      phone: string;
       profilePhoto: string;
       mustChangePassword: boolean;
     };
@@ -29,6 +30,7 @@ declare module "next-auth" {
     employeeId: string;
     jobTitle: string;
     designation: string;
+    phone: string;
     profilePhoto: string;
     mustChangePassword: boolean;
   }
@@ -43,6 +45,7 @@ declare module "next-auth/jwt" {
     employeeId: string;
     jobTitle: string;
     designation: string;
+    phone: string;
     profilePhoto: string;
     mustChangePassword: boolean;
     accessTokenExpires: number;

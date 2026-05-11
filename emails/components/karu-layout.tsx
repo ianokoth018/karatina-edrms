@@ -130,14 +130,13 @@ export default function KaruEmailLayout({
               }}
             >
               <Img
-                src={`${baseUrl}/karu-crest.png`}
-                width="56"
-                height="56"
-                alt="Karatina University crest"
+                src={`${baseUrl}/karu-logo-v2.png`}
+                width="160"
+                height="64"
+                alt="Karatina University Logo"
                 style={{
                   display: "inline-block",
                   margin: "0 auto",
-                  borderRadius: "50%",
                   backgroundColor: "#ffffff",
                   padding: "4px",
                 }}

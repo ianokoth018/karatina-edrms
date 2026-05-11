@@ -10,6 +10,8 @@ export interface EmailNodeData {
   subject?: string;
   bodyTemplate?: string;
   includeDocumentLink?: boolean;
+  ctaLabel?: string;
+  ctaUrl?: string;
 }
 
 const recipientLabels: Record<string, string> = {

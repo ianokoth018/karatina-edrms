@@ -26,18 +26,31 @@ export async function GET(req: NextRequest) {
     const { searchParams } = new URL(req.url);
     const status = searchParams.get("status");
     const templateId = searchParams.get("templateId");
+    const mine = searchParams.get("mine") === "true";
+    const assignedToMe = searchParams.get("assignedToMe") === "true";
+    const stepName = searchParams.get("stepName");
     const page = Math.max(1, Number(searchParams.get("page") ?? "1"));
     const limit = Math.min(100, Math.max(1, Number(searchParams.get("limit") ?? "20")));
     const skip = (page - 1) * limit;
 
-    const where: Record<string, unknown> = {
-      OR: [
+    const where: Record<string, unknown> = {};
+
+    if (mine) {
+      where.initiatedById = session.user.id;
+    } else if (assignedToMe) {
+      where.tasks = { some: { assigneeId: session.user.id, status: "PENDING" } };
+    } else {
+      where.OR = [
         { initiatedById: session.user.id },
         { tasks: { some: { assigneeId: session.user.id } } },
-      ],
-    };
+      ];
+    }
+
     if (status) where.status = status;
     if (templateId) where.templateId = templateId;
+    if (stepName) {
+      where.tasks = { some: { stepName, status: "PENDING" } };
+    }
 
     const [instances, total] = await Promise.all([
       db.workflowInstance.findMany({

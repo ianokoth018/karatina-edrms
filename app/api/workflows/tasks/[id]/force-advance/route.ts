@@ -23,7 +23,7 @@ export async function POST(
 
     const { id } = await params;
     const body = await req.json().catch(() => ({}));
-    const action = (body.action as "APPROVED" | "REJECTED") ?? "APPROVED";
+    const action = (typeof body.action === "string" && body.action.trim() ? body.action as string : "APPROVED");
     const comment = (body.comment as string) || `Force-advanced by admin ${session.user.name ?? session.user.email}`;
 
     const task = await db.workflowTask.findUnique({ where: { id } });

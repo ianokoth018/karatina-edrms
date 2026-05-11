@@ -1,8 +1,10 @@
 "use client";
 
-import { useState, useCallback, useEffect, useMemo, Suspense } from "react";
+import { useState, useCallback, useEffect, useMemo, useRef, Suspense } from "react";
 import { useSearchParams, useRouter } from "next/navigation";
 import { useSession } from "next-auth/react";
+import { FormRenderer } from "@/components/forms/form-renderer";
+import type { FormField as RendererFormField } from "@/components/forms/form-renderer";
 
 // ---------------------------------------------------------------------------
 // Types
@@ -46,6 +48,9 @@ interface FormField {
     maxLength?: number;
     pattern?: string;
     patternMessage?: string;
+    crossFieldRules?: { compareTo: string; operator: "gt" | "gte" | "lt" | "lte" | "eq" | "neq"; message: string }[];
+    minDate?: string;
+    maxDate?: string;
   };
   options?: { label: string; value: string }[];
   condition?: {
@@ -61,14 +66,25 @@ interface FormField {
     labelField?: string;         // Field from response to use as label (default: "name")
     valueField?: string;         // Field from response to use as value (default: "name")
     dependsOn?: string;          // Field name this depends on (e.g., department select for user list)
+    filterByMyDepartment?: boolean; // Pre-filter users to the submitter's own department
   };
   // For user_picker and multi_user_picker
   maxUsers?: number;           // Max users for multi_user_picker (default 5)
   orderable?: boolean;         // Whether users can be reordered (multi_user_picker)
   excludeFields?: string[];    // IDs of other user picker fields whose selected values should be excluded
+  /** When true, skip the dept dropdown and show only colleagues from the submitter's own department. */
+  filterByMyDepartment?: boolean;
   // For step
   stepIcon?: string;           // Optional icon name for the step
   includeReviewStep?: boolean; // If true, auto-add a review step at end (only on first step field)
+  /** Auto-fill from the logged-in user's profile when the form loads. */
+  autoFill?: "user.name" | "user.email" | "user.employeeId" | "user.jobTitle" | "user.department" | "user.phone";
+  /** Auto-calculate this number field from two date fields using business-day logic. */
+  autoCalculate?: {
+    type: "businessDays";
+    startField: string;
+    endField: string;
+  };
   // Casefolder / XML mapping
   fieldLevel?: "casefolder" | "document"; // batch-level = casefolder, document-level = per-file
   xmlFieldName?: string; // exact XML field name from scanner (e.g., "Student Name", "Document Description")
@@ -440,6 +456,10 @@ function FormDesignerInner() {
   const [workflowTemplateId, setWorkflowTemplateId] = useState<string | null>(null);
   const [workflowTemplates, setWorkflowTemplates] = useState<{ id: string; name: string }[]>([]);
 
+  // ---- Local draft (auto-save) ----
+  const [draftBanner, setDraftBanner] = useState<{ savedAt: string; key: string } | null>(null);
+  const autosaveTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+
   // Track unsaved changes
   const markDirty = useCallback(() => setHasUnsaved(true), []);
 
@@ -466,6 +486,16 @@ function FormDesignerInner() {
         setIsPublished(!!data.isActive);
         setExistingId(data.id ?? formId);
         setWorkflowTemplateId(data.workflowTemplateId ?? null);
+
+        // Check for a local draft newer than the server copy
+        try {
+          const draftKey = `form-draft-${data.id ?? formId}`;
+          const raw = localStorage.getItem(draftKey);
+          if (raw) {
+            const draft = JSON.parse(raw) as { savedAt?: string };
+            if (draft.savedAt && !cancelled) setDraftBanner({ savedAt: draft.savedAt, key: draftKey });
+          }
+        } catch {}
       } catch {
         if (!cancelled) {
           setSaveMsg({ type: "error", text: "Failed to load form template." });
@@ -483,7 +513,7 @@ function FormDesignerInner() {
   useEffect(() => {
     (async () => {
       try {
-        const res = await fetch("/api/workflows/templates");
+        const res = await fetch("/api/workflows/templates?all=true");
         if (!res.ok) return;
         const data = await res.json();
         const templates = (data.templates ?? data ?? []) as {
@@ -498,6 +528,64 @@ function FormDesignerInner() {
       }
     })();
   }, []);
+
+  // Check for a saved draft when creating a new form
+  useEffect(() => {
+    if (formId) return; // existing forms: draft check happens after server load below
+    try {
+      const raw = localStorage.getItem("form-draft-new");
+      if (!raw) return;
+      const draft = JSON.parse(raw) as { savedAt?: string };
+      if (draft.savedAt) setDraftBanner({ savedAt: draft.savedAt, key: "form-draft-new" });
+    } catch {}
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  // Debounced auto-save to localStorage (30 s after last change)
+  useEffect(() => {
+    if (!hasUnsaved) return;
+    if (autosaveTimerRef.current) clearTimeout(autosaveTimerRef.current);
+    autosaveTimerRef.current = setTimeout(() => {
+      try {
+        const key = `form-draft-${existingId ?? "new"}`;
+        localStorage.setItem(key, JSON.stringify({
+          existingId,
+          formName,
+          formDescription,
+          fields,
+          isPublished,
+          workflowTemplateId,
+          savedAt: new Date().toISOString(),
+        }));
+      } catch {}
+    }, 30_000);
+    return () => {
+      if (autosaveTimerRef.current) clearTimeout(autosaveTimerRef.current);
+    };
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [hasUnsaved, existingId, formName, formDescription, fields, isPublished, workflowTemplateId]);
+
+  // Save immediately to localStorage before the page unloads
+  useEffect(() => {
+    function handleBeforeUnload() {
+      if (!hasUnsaved) return;
+      try {
+        const key = `form-draft-${existingId ?? "new"}`;
+        localStorage.setItem(key, JSON.stringify({
+          existingId,
+          formName,
+          formDescription,
+          fields,
+          isPublished,
+          workflowTemplateId,
+          savedAt: new Date().toISOString(),
+        }));
+      } catch {}
+    }
+    window.addEventListener("beforeunload", handleBeforeUnload);
+    return () => window.removeEventListener("beforeunload", handleBeforeUnload);
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [hasUnsaved, existingId, formName, formDescription, fields, isPublished, workflowTemplateId]);
 
   // ---- Add field ----
   const addField = useCallback(
@@ -630,6 +718,9 @@ function FormDesignerInner() {
       if (!existingId && result.id) {
         setExistingId(result.id);
       }
+      // Clear local draft after successful server save
+      try { localStorage.removeItem(`form-draft-${existingId ?? "new"}`); } catch {}
+      setDraftBanner(null);
       setHasUnsaved(false);
       setSaveMsg({ type: "success", text: "Form saved successfully!" });
       setTimeout(() => setSaveMsg(null), 3000);
@@ -648,7 +739,9 @@ function FormDesignerInner() {
     (field: FormField, formValues: Record<string, string>) => {
       if (!field.condition) return true;
       const { fieldId, operator, value } = field.condition;
-      const actual = formValues[fieldId] ?? "";
+      // Values are stored by field.name; conditions reference field.id — resolve it
+      const referencedField = fields.find((f) => f.id === fieldId);
+      const actual = formValues[referencedField?.name ?? fieldId] ?? "";
       switch (operator) {
         case "equals":
           return actual === (value ?? "");
@@ -664,8 +757,28 @@ function FormDesignerInner() {
           return true;
       }
     },
-    []
+    [fields]
   );
+
+  function restoreLocalDraft(key: string) {
+    try {
+      const raw = localStorage.getItem(key);
+      if (!raw) return;
+      const draft = JSON.parse(raw);
+      if (draft.formName !== undefined) setFormName(draft.formName);
+      if (draft.formDescription !== undefined) setFormDescription(draft.formDescription);
+      if (Array.isArray(draft.fields)) setFields(draft.fields);
+      if (draft.isPublished !== undefined) setIsPublished(draft.isPublished);
+      if (draft.workflowTemplateId !== undefined) setWorkflowTemplateId(draft.workflowTemplateId);
+      if (draft.existingId) setExistingId(draft.existingId);
+    } catch {}
+    setDraftBanner(null);
+  }
+
+  function discardLocalDraft(key: string) {
+    try { localStorage.removeItem(key); } catch {}
+    setDraftBanner(null);
+  }
 
   // ---- Loading state ----
   if (loading) {
@@ -806,6 +919,29 @@ function FormDesignerInner() {
 
   return (
     <div className="flex flex-col h-[calc(100vh-4rem)] overflow-hidden bg-gray-50 dark:bg-gray-950">
+      {/* Draft restore banner */}
+      {draftBanner && (
+        <div className="flex-shrink-0 flex items-center gap-3 px-4 py-2 bg-amber-50 dark:bg-amber-950/40 border-b border-amber-200 dark:border-amber-800 text-sm">
+          <svg className="w-4 h-4 text-amber-600 dark:text-amber-400 flex-shrink-0" fill="none" viewBox="0 0 24 24" strokeWidth={2} stroke="currentColor">
+            <path strokeLinecap="round" strokeLinejoin="round" d="M12 9v3.75m-9.303 3.376c-.866 1.5.217 3.374 1.948 3.374h14.71c1.73 0 2.813-1.874 1.948-3.374L13.949 3.378c-.866-1.5-3.032-1.5-3.898 0L2.697 16.126ZM12 15.75h.007v.008H12v-.008Z" />
+          </svg>
+          <span className="text-amber-800 dark:text-amber-300 flex-1">
+            You have unsaved local changes from {new Date(draftBanner.savedAt).toLocaleString()}. Restore them?
+          </span>
+          <button
+            onClick={() => restoreLocalDraft(draftBanner.key)}
+            className="px-3 py-1 text-xs font-semibold rounded-lg bg-amber-600 text-white hover:bg-amber-700 transition-colors"
+          >
+            Restore
+          </button>
+          <button
+            onClick={() => discardLocalDraft(draftBanner.key)}
+            className="px-3 py-1 text-xs font-semibold rounded-lg text-amber-700 dark:text-amber-400 hover:bg-amber-100 dark:hover:bg-amber-900/40 transition-colors"
+          >
+            Discard
+          </button>
+        </div>
+      )}
       {/* ================================================================ */}
       {/* TOP TOOLBAR                                                      */}
       {/* ================================================================ */}
@@ -1401,6 +1537,33 @@ function PropertiesPanel({
                 placeholder="Help text shown below field"
               />
             </div>
+
+            {/* Auto-fill from logged-in user profile */}
+            {(field.type === "text" || field.type === "email" || field.type === "phone" || field.type === "select") && (
+              <div>
+                <PropLabel htmlFor="prop-autofill">Auto-fill from profile</PropLabel>
+                <select
+                  id="prop-autofill"
+                  value={field.autoFill ?? ""}
+                  onChange={(e) => onUpdate({ autoFill: (e.target.value as FormField["autoFill"]) || undefined })}
+                  className="w-full rounded-lg border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-800 px-2.5 py-1.5 text-xs text-gray-900 dark:text-gray-100 focus:outline-none focus:ring-1 focus:ring-[#02773b]/40"
+                >
+                  <option value="">None (manual input)</option>
+                  <option value="user.name">Full Name</option>
+                  <option value="user.email">Email Address</option>
+                  <option value="user.employeeId">Personal Number (P/No.)</option>
+                  <option value="user.jobTitle">Job Title</option>
+                  <option value="user.department">Department / School</option>
+                  <option value="user.phone">Phone Number</option>
+                </select>
+                {field.autoFill && (
+                  <p className="text-[10px] text-gray-400 mt-1">
+                    This field will be pre-filled when the form loads.
+                  </p>
+                )}
+              </div>
+            )}
+
             {isMultiUserPicker ? (
               <div>
                 <PropLabel>Width</PropLabel>
@@ -1442,6 +1605,14 @@ function PropertiesPanel({
       {/* User Picker Settings */}
       {isAnyUserPicker && (
         <CollapsibleSection title="User Picker Settings">
+          <PropCheckbox
+            label="Filter by submitter's department"
+            checked={!!field.filterByMyDepartment}
+            onChange={(v) => onUpdate({ filterByMyDepartment: v || undefined })}
+          />
+          <p className="text-[10px] text-gray-400 -mt-1">
+            Skips the department dropdown and automatically shows only colleagues from the same department as the person filling the form
+          </p>
           {isMultiUserPicker && (
             <>
               <div>
@@ -1620,6 +1791,214 @@ function PropertiesPanel({
               </div>
             </div>
           )}
+
+          {/* Date range restrictions */}
+          {(field.type === "date" || field.type === "datetime") && (
+            <>
+              <div>
+                <PropLabel>Earliest Date (min)</PropLabel>
+                <select
+                  value={field.validation?.minDate ?? ""}
+                  onChange={(e) =>
+                    onUpdate({ validation: { ...field.validation, minDate: e.target.value || undefined } })
+                  }
+                  className="w-full h-8 rounded-md border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-800 px-2 text-xs text-gray-900 dark:text-gray-100 focus:border-[#02773b] focus:ring-1 focus:ring-[#02773b]/30 outline-none"
+                >
+                  <option value="">No restriction</option>
+                  <option value="today">Today (cannot pick past dates)</option>
+                  <option value="startOfYear">Start of current calendar year (Jan 1)</option>
+                  <option value="endOfYear">Start of current calendar year end (Dec 31)</option>
+                  <option value="startOfFinancialYear">Start of financial year (Jul 1)</option>
+                  <option value="startOfMonth">Start of current month</option>
+                </select>
+                <p className="text-[10px] text-gray-400 mt-0.5">Or type an ISO date: 2026-01-01</p>
+                {field.validation?.minDate && !["today","startOfYear","endOfYear","startOfFinancialYear","endOfFinancialYear","startOfMonth","endOfMonth"].includes(field.validation.minDate) && (
+                  <PropInput
+                    value={field.validation.minDate}
+                    onChange={(v) => onUpdate({ validation: { ...field.validation, minDate: v || undefined } })}
+                    placeholder="YYYY-MM-DD"
+                  />
+                )}
+              </div>
+              <div>
+                <PropLabel>Latest Date (max)</PropLabel>
+                <select
+                  value={field.validation?.maxDate ?? ""}
+                  onChange={(e) =>
+                    onUpdate({ validation: { ...field.validation, maxDate: e.target.value || undefined } })
+                  }
+                  className="w-full h-8 rounded-md border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-800 px-2 text-xs text-gray-900 dark:text-gray-100 focus:border-[#02773b] focus:ring-1 focus:ring-[#02773b]/30 outline-none"
+                >
+                  <option value="">No restriction</option>
+                  <option value="today">Today (cannot pick future dates)</option>
+                  <option value="endOfYear">End of current calendar year (Dec 31)</option>
+                  <option value="endOfFinancialYear">End of financial year (Jun 30)</option>
+                  <option value="endOfMonth">End of current month</option>
+                </select>
+                {field.validation?.maxDate && !["today","startOfYear","endOfYear","startOfFinancialYear","endOfFinancialYear","startOfMonth","endOfMonth"].includes(field.validation.maxDate) && (
+                  <PropInput
+                    value={field.validation.maxDate}
+                    onChange={(v) => onUpdate({ validation: { ...field.validation, maxDate: v || undefined } })}
+                    placeholder="YYYY-MM-DD"
+                  />
+                )}
+              </div>
+            </>
+          )}
+
+          {/* Cross-field comparison rules */}
+          {(field.type === "date" || field.type === "datetime" || field.type === "number" || field.type === "text") && (
+            <div className="space-y-2">
+              <div className="flex items-center justify-between">
+                <PropLabel>Cross-field Rules</PropLabel>
+                <button
+                  type="button"
+                  onClick={() =>
+                    onUpdate({
+                      validation: {
+                        ...field.validation,
+                        crossFieldRules: [
+                          ...(field.validation?.crossFieldRules ?? []),
+                          { compareTo: "", operator: "gte" as const, message: "" },
+                        ],
+                      },
+                    })
+                  }
+                  className="text-[10px] text-[#02773b] hover:underline font-medium"
+                >
+                  + Add Rule
+                </button>
+              </div>
+              {(field.validation?.crossFieldRules ?? []).map((rule, idx) => (
+                <div key={idx} className="rounded-lg border border-gray-200 dark:border-gray-700 p-2 space-y-1.5 bg-gray-50 dark:bg-gray-800/40">
+                  <div className="flex items-center gap-1.5">
+                    <span className="text-[10px] text-gray-400">This field must be</span>
+                    <select
+                      value={rule.operator}
+                      onChange={(e) => {
+                        const updated = [...(field.validation?.crossFieldRules ?? [])];
+                        updated[idx] = { ...rule, operator: e.target.value as typeof rule.operator };
+                        onUpdate({ validation: { ...field.validation, crossFieldRules: updated } });
+                      }}
+                      className="h-6 rounded border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-800 px-1 text-[10px] text-gray-900 dark:text-gray-100 outline-none"
+                    >
+                      <option value="gte">≥ (greater than or equal)</option>
+                      <option value="gt">&gt; (greater than)</option>
+                      <option value="lte">≤ (less than or equal)</option>
+                      <option value="lt">&lt; (less than)</option>
+                      <option value="eq">= (equal to)</option>
+                      <option value="neq">≠ (not equal to)</option>
+                    </select>
+                  </div>
+                  <div>
+                    <PropLabel>Compare to field</PropLabel>
+                    <select
+                      value={rule.compareTo}
+                      onChange={(e) => {
+                        const updated = [...(field.validation?.crossFieldRules ?? [])];
+                        updated[idx] = { ...rule, compareTo: e.target.value };
+                        onUpdate({ validation: { ...field.validation, crossFieldRules: updated } });
+                      }}
+                      className="w-full h-7 rounded-md border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-800 px-2 text-[10px] text-gray-900 dark:text-gray-100 outline-none"
+                    >
+                      <option value="">— select field —</option>
+                      {otherFields
+                        .filter((f) => f.type === field.type || (field.type === "date" && f.type === "datetime") || f.type === "number")
+                        .map((f) => (
+                          <option key={f.id} value={f.name}>{f.label} ({f.name})</option>
+                        ))}
+                    </select>
+                  </div>
+                  <div>
+                    <PropLabel>Error message</PropLabel>
+                    <PropInput
+                      value={rule.message}
+                      onChange={(v) => {
+                        const updated = [...(field.validation?.crossFieldRules ?? [])];
+                        updated[idx] = { ...rule, message: v };
+                        onUpdate({ validation: { ...field.validation, crossFieldRules: updated } });
+                      }}
+                      placeholder="e.g. End date cannot be before start date"
+                    />
+                  </div>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      const updated = (field.validation?.crossFieldRules ?? []).filter((_, i) => i !== idx);
+                      onUpdate({ validation: { ...field.validation, crossFieldRules: updated.length ? updated : undefined } });
+                    }}
+                    className="text-[10px] text-red-500 hover:underline"
+                  >
+                    Remove rule
+                  </button>
+                </div>
+              ))}
+              {(field.validation?.crossFieldRules?.length ?? 0) === 0 && (
+                <p className="text-[10px] text-gray-400">
+                  No rules yet. Use this to enforce relationships like &quot;End date ≥ Start date&quot; or &quot;Days requested ≤ Balance remaining&quot;.
+                </p>
+              )}
+            </div>
+          )}
+        </CollapsibleSection>
+      )}
+
+      {/* Auto-calculate business days (number fields only) */}
+      {isNumber && (
+        <CollapsibleSection title="Auto-Calculation">
+          <PropCheckbox
+            label="Auto-calculate business days from date range"
+            checked={field.autoCalculate?.type === "businessDays"}
+            onChange={(v) =>
+              onUpdate({
+                autoCalculate: v
+                  ? { type: "businessDays", startField: "", endField: "" }
+                  : undefined,
+                readOnly: v ? true : field.readOnly,
+              })
+            }
+          />
+          {field.autoCalculate?.type === "businessDays" && (
+            <>
+              <div>
+                <PropLabel>Start Date Field</PropLabel>
+                <select
+                  value={field.autoCalculate.startField}
+                  onChange={(e) =>
+                    onUpdate({ autoCalculate: { ...field.autoCalculate!, startField: e.target.value } })
+                  }
+                  className="w-full h-8 rounded-md border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-800 px-2 text-xs text-gray-900 dark:text-gray-100 focus:border-[#02773b] focus:ring-1 focus:ring-[#02773b]/30 outline-none"
+                >
+                  <option value="">— select field —</option>
+                  {allFields
+                    .filter((f) => f.type === "date" || f.type === "datetime")
+                    .map((f) => (
+                      <option key={f.id} value={f.name}>{f.label} ({f.name})</option>
+                    ))}
+                </select>
+              </div>
+              <div>
+                <PropLabel>End Date Field</PropLabel>
+                <select
+                  value={field.autoCalculate.endField}
+                  onChange={(e) =>
+                    onUpdate({ autoCalculate: { ...field.autoCalculate!, endField: e.target.value } })
+                  }
+                  className="w-full h-8 rounded-md border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-800 px-2 text-xs text-gray-900 dark:text-gray-100 focus:border-[#02773b] focus:ring-1 focus:ring-[#02773b]/30 outline-none"
+                >
+                  <option value="">— select field —</option>
+                  {allFields
+                    .filter((f) => f.type === "date" || f.type === "datetime")
+                    .map((f) => (
+                      <option key={f.id} value={f.name}>{f.label} ({f.name})</option>
+                    ))}
+                </select>
+              </div>
+              <p className="text-[10px] text-gray-400 dark:text-gray-500 leading-relaxed">
+                This field will auto-populate with the number of business days between the two selected dates, using the configured Work Calendar (Admin → Work Calendar). Weekends and public holidays are excluded automatically.
+              </p>
+            </>
+          )}
         </CollapsibleSection>
       )}
 
@@ -1697,39 +2076,68 @@ function PropertiesPanel({
               <div className="p-2 rounded-lg bg-blue-50 dark:bg-blue-950/20 border border-blue-100 dark:border-blue-900/30">
                 <p className="text-[10px] text-blue-600 dark:text-blue-400 leading-relaxed">
                   {field.dataSource.type === "departments" && "Fetches all departments from the system. Options auto-update as departments are added."}
-                  {field.dataSource.type === "users" && "Fetches users filtered by a department field. Set 'Depends on' to link to a department dropdown."}
+                  {field.dataSource.type === "users" && !field.dataSource.filterByMyDepartment && !field.dataSource.dependsOn && "Fetches all active users. Use 'Filter by my department' or 'Depends on' to narrow the list."}
+                  {field.dataSource.type === "users" && field.dataSource.filterByMyDepartment && "Shows only users from the submitter's own department — no extra field needed."}
+                  {field.dataSource.type === "users" && !field.dataSource.filterByMyDepartment && field.dataSource.dependsOn && "Fetches users filtered by a department field. Set 'Depends on' to link to a department dropdown."}
                   {field.dataSource.type === "roles" && "Fetches all roles defined in the system."}
                   {field.dataSource.type === "casefolders" && "Fetches all active casefolder names."}
                   {field.dataSource.type === "api" && "Fetches options from a custom API endpoint. Response must be a JSON array."}
                 </p>
               </div>
 
-              {/* Users: depends on */}
+              {/* Users: filter options */}
               {field.dataSource.type === "users" && (
-                <div>
-                  <PropLabel>Depends On (Department Field)</PropLabel>
-                  <select
-                    value={field.dataSource.dependsOn ?? ""}
-                    onChange={(e) =>
-                      onUpdate({
-                        dataSource: { ...field.dataSource!, dependsOn: e.target.value || undefined },
-                      })
-                    }
-                    className="w-full h-8 rounded-lg border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-800 px-2 text-xs text-gray-900 dark:text-gray-100 focus:border-[#02773b] focus:ring-1 focus:ring-[#02773b]/30 outline-none transition-colors"
-                  >
-                    <option value="">Select a field...</option>
-                    {allFields
-                      .filter((f) => f.id !== field.id && (f.type === "select" || f.type === "text"))
-                      .map((f) => (
-                        <option key={f.id} value={f.name}>
-                          {f.label} ({f.name})
-                        </option>
-                      ))}
-                  </select>
-                  <p className="text-[10px] text-gray-400 mt-0.5">
-                    When user selects a department in that field, this dropdown populates with its users
+                <>
+                  {/* Filter by my department toggle */}
+                  <label className="flex items-center gap-2 cursor-pointer select-none">
+                    <input
+                      type="checkbox"
+                      checked={!!field.dataSource.filterByMyDepartment}
+                      onChange={(e) =>
+                        onUpdate({
+                          dataSource: {
+                            ...field.dataSource!,
+                            filterByMyDepartment: e.target.checked || undefined,
+                            dependsOn: e.target.checked ? undefined : field.dataSource!.dependsOn,
+                          },
+                        })
+                      }
+                      className="rounded border-gray-300 text-[#02773b] focus:ring-[#02773b]/30"
+                    />
+                    <span className="text-xs text-gray-700 dark:text-gray-300">Filter by submitter&apos;s department</span>
+                  </label>
+                  <p className="text-[10px] text-gray-400 -mt-1">
+                    Auto-populates with colleagues from the same department as the person filling the form
                   </p>
-                </div>
+
+                  {/* Depends-on picker — only shown when filterByMyDepartment is off */}
+                  {!field.dataSource.filterByMyDepartment && (
+                    <div>
+                      <PropLabel>Depends On (Department Field)</PropLabel>
+                      <select
+                        value={field.dataSource.dependsOn ?? ""}
+                        onChange={(e) =>
+                          onUpdate({
+                            dataSource: { ...field.dataSource!, dependsOn: e.target.value || undefined },
+                          })
+                        }
+                        className="w-full h-8 rounded-lg border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-800 px-2 text-xs text-gray-900 dark:text-gray-100 focus:border-[#02773b] focus:ring-1 focus:ring-[#02773b]/30 outline-none transition-colors"
+                      >
+                        <option value="">All users (no filter)</option>
+                        {allFields
+                          .filter((f) => f.id !== field.id && (f.type === "select" || f.type === "text"))
+                          .map((f) => (
+                            <option key={f.id} value={f.name}>
+                              {f.label} ({f.name})
+                            </option>
+                          ))}
+                      </select>
+                      <p className="text-[10px] text-gray-400 mt-0.5">
+                        When a department is selected in that field, this list filters to its members
+                      </p>
+                    </div>
+                  )}
+                </>
               )}
 
               {/* Custom API */}
@@ -2155,156 +2563,9 @@ function PropertiesPanel({
 // Preview Mode Component
 // ===========================================================================
 
-// Helper to render a single field in preview mode
-function renderPreviewField(
-  field: FormField,
-  values: Record<string, string>,
-  isFieldVisible: (f: FormField, v: Record<string, string>) => boolean,
-  setValue: (name: string, value: string) => void,
-  tableRows: Record<string, Record<string, string>[]>,
-  setTableRows: React.Dispatch<React.SetStateAction<Record<string, Record<string, string>[]>>>,
-  allFields?: FormField[]
-) {
-  if (!isFieldVisible(field, values)) return null;
-  const isHalf = field.width === "half";
-  const wrapClass = isHalf ? "w-1/2 px-2 mb-4" : "w-full px-2 mb-4";
-  const inputBase = "w-full h-10 rounded-lg border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-800 px-3 text-sm text-gray-900 dark:text-gray-100 placeholder-gray-400 focus:border-[#02773b] focus:ring-1 focus:ring-[#02773b]/30 outline-none transition-colors";
-
-  if (field.type === "section") {
-    return (
-      <div key={field.id} className="w-full px-2 mb-4 mt-2">
-        <h2 className="text-base font-bold text-gray-900 dark:text-gray-100 border-b-2 border-[#02773b]/20 pb-2">{field.label}</h2>
-      </div>
-    );
-  }
-  if (field.type === "divider") {
-    return <div key={field.id} className="w-full px-2 mb-4"><hr className="border-gray-200 dark:border-gray-700" /></div>;
-  }
-  if (field.type === "step") {
-    const stepNumber = allFields ? allFields.filter((f) => f.type === "step").indexOf(field) + 1 : 1;
-    return (
-      <div key={field.id} className="w-full px-2 mt-6 mb-2">
-        <div className="flex items-center gap-3 p-3 bg-[#02773b]/5 border border-[#02773b]/20 rounded-lg">
-          <div className="w-8 h-8 rounded-full bg-[#02773b] text-white flex items-center justify-center text-sm font-bold">{stepNumber}</div>
-          <div>
-            <h3 className="font-semibold text-gray-900 dark:text-gray-100">{field.label}</h3>
-            {field.helpText && <p className="text-xs text-gray-500">{field.helpText}</p>}
-          </div>
-        </div>
-      </div>
-    );
-  }
-  if (field.type === "user_picker") {
-    return (
-      <div key={field.id} className={wrapClass}>
-        <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">
-          {field.label}{field.required && <span className="text-red-500 ml-0.5">*</span>}
-        </label>
-        <div className="space-y-2">
-          <select disabled className={inputBase}>
-            <option>{field.placeholder || "Select department..."}</option>
-          </select>
-          <select disabled className={inputBase}>
-            <option>Select user...</option>
-          </select>
-        </div>
-        {field.helpText && <p className="text-xs text-gray-400 mt-1">{field.helpText}</p>}
-      </div>
-    );
-  }
-  if (field.type === "multi_user_picker") {
-    return (
-      <div key={field.id} className="w-full px-2 mb-4">
-        <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">
-          {field.label}{field.required && <span className="text-red-500 ml-0.5">*</span>}
-        </label>
-        <div className="rounded-lg border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-800 p-3">
-          <div className="flex flex-wrap gap-2 mb-2">
-            <span className="inline-flex items-center gap-1 px-2.5 py-1 rounded-full bg-[#02773b]/10 text-[#02773b] text-xs font-medium">
-              <svg className="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" strokeWidth={1.5} stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" d="M15.75 6a3.75 3.75 0 1 1-7.5 0 3.75 3.75 0 0 1 7.5 0ZM4.501 20.118a7.5 7.5 0 0 1 14.998 0A17.933 17.933 0 0 1 12 21.75c-2.676 0-5.216-.584-7.499-1.632Z" /></svg>
-              Example User
-              <button type="button" className="ml-0.5 text-[#02773b]/60 hover:text-[#02773b]">&times;</button>
-            </span>
-          </div>
-          <div className="flex items-center justify-between">
-            <button type="button" className="inline-flex items-center gap-1.5 text-xs font-medium text-[#02773b] hover:text-[#026332] transition-colors">
-              <svg className="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" strokeWidth={2} stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" d="M12 4.5v15m7.5-7.5h-15" /></svg>
-              Add User
-            </button>
-            <span className="text-[10px] text-gray-400">Max {field.maxUsers ?? 5} users</span>
-          </div>
-        </div>
-        {field.helpText && <p className="text-xs text-gray-400 mt-1">{field.helpText}</p>}
-      </div>
-    );
-  }
-
-  return (
-    <div key={field.id} className={wrapClass}>
-      <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">
-        {field.label}{field.required && <span className="text-red-500 ml-0.5">*</span>}
-      </label>
-      {field.type === "textarea" || field.type === "richtext" ? (
-        <textarea rows={3} value={values[field.name] ?? ""} onChange={(e) => setValue(field.name, e.target.value)} placeholder={field.placeholder} className={`${inputBase} h-auto py-2`} />
-      ) : field.type === "select" ? (
-        <select value={values[field.name] ?? ""} onChange={(e) => setValue(field.name, e.target.value)} className={inputBase}>
-          <option value="">{field.placeholder || "Select..."}</option>
-          {field.options?.map((o) => <option key={o.value} value={o.value}>{o.label}</option>)}
-        </select>
-      ) : field.type === "radio" ? (
-        <div className="space-y-1.5 mt-1">{field.options?.map((o) => (
-          <label key={o.value} className="flex items-center gap-2 cursor-pointer">
-            <input type="radio" name={field.name} value={o.value} checked={values[field.name] === o.value} onChange={(e) => setValue(field.name, e.target.value)} className="text-[#02773b] accent-[#02773b]" />
-            <span className="text-sm text-gray-700 dark:text-gray-300">{o.label}</span>
-          </label>
-        ))}</div>
-      ) : field.type === "checkbox" ? (
-        <div className="space-y-1.5 mt-1">{field.options?.map((o) => (
-          <label key={o.value} className="flex items-center gap-2 cursor-pointer">
-            <input type="checkbox" className="text-[#02773b] accent-[#02773b]" />
-            <span className="text-sm text-gray-700 dark:text-gray-300">{o.label}</span>
-          </label>
-        ))}</div>
-      ) : field.type === "file" ? (
-        <div className="rounded-lg border-2 border-dashed border-gray-300 dark:border-gray-600 p-4 text-center text-sm text-gray-400">Click or drag to upload</div>
-      ) : field.type === "table" ? (
-        <div className="border border-gray-200 dark:border-gray-700 rounded-lg overflow-hidden">
-          <div className="overflow-x-auto">
-              <table className="w-full text-sm">
-            <thead><tr className="bg-gray-50 dark:bg-gray-800">{field.tableColumns?.map((c) => <th key={c.name} className="px-3 py-2 text-left text-xs font-medium text-gray-500">{c.label}</th>)}</tr></thead>
-            <tbody>
-              {(tableRows[field.name] || [{}]).map((row, ri) => (
-                <tr key={ri} className="border-t border-gray-200 dark:border-gray-700">
-                  {field.tableColumns?.map((c) => (
-                    <td key={c.name} className="px-3 py-1.5">
-                      <input type={c.type === "number" ? "number" : "text"} value={row[c.name] ?? ""} onChange={(e) => {
-                        setTableRows((prev) => {
-                          const rows = [...(prev[field.name] || [{}])];
-                          rows[ri] = { ...rows[ri], [c.name]: e.target.value };
-                          return { ...prev, [field.name]: rows };
-                        });
-                      }} className="w-full h-8 rounded border border-gray-200 dark:border-gray-600 bg-white dark:bg-gray-800 px-2 text-sm outline-none" />
-                    </td>
-                  ))}
-                </tr>
-              ))}
-            </tbody>
-          </table>
-              </div>
-          <button type="button" onClick={() => setTableRows((prev) => ({ ...prev, [field.name]: [...(prev[field.name] || [{}]), {}] }))} className="w-full py-1.5 text-xs text-[#02773b] hover:bg-[#02773b]/5 transition-colors">+ Add Row</button>
-        </div>
-      ) : (
-        <input type={field.type === "number" ? "number" : field.type === "email" ? "email" : field.type === "date" ? "date" : field.type === "datetime" ? "datetime-local" : field.type === "phone" ? "tel" : "text"} value={values[field.name] ?? ""} onChange={(e) => setValue(field.name, e.target.value)} placeholder={field.placeholder} className={inputBase} />
-      )}
-      {field.helpText && <p className="text-xs text-gray-400 mt-1">{field.helpText}</p>}
-    </div>
-  );
-}
-
 function PreviewMode({
   formName,
   fields,
-  isFieldVisible,
   onExitPreview,
 }: {
   formName: string;
@@ -2312,12 +2573,11 @@ function PreviewMode({
   isFieldVisible: (field: FormField, values: Record<string, string>) => boolean;
   onExitPreview: () => void;
 }) {
-  const [values, setValues] = useState<Record<string, string>>({});
-  const [tableRows, setTableRows] = useState<Record<string, Record<string, string>[]>>({});
+  const [formData, setFormData] = useState<Record<string, unknown>>({});
 
-  const setValue = (name: string, value: string) => {
-    setValues((prev) => ({ ...prev, [name]: value }));
-  };
+  function handleChange(name: string, value: unknown) {
+    setFormData((prev) => ({ ...prev, [name]: value }));
+  }
 
   return (
     <div className="flex flex-col h-[calc(100vh-4rem)] overflow-hidden bg-gray-50 dark:bg-gray-950">
@@ -2348,317 +2608,24 @@ function PreviewMode({
               <h1 className="text-lg font-bold text-white">{formName || "Untitled Form"}</h1>
             </div>
 
-            {/* Form body */}
-            <div className="p-6 space-y-6">
-              {/* Casefolder Fields Section */}
-              {fields.some((f) => f.fieldLevel !== "document") && (
-                <div>
-                  <div className="flex items-center gap-2 mb-4">
-                    <div className="w-1.5 h-1.5 rounded-full bg-[#02773b]" />
-                    <h3 className="text-xs font-bold text-[#02773b] uppercase tracking-wider">Casefolder Fields</h3>
-                    <div className="flex-1 h-px bg-[#02773b]/10" />
-                  </div>
-                  <div className="flex flex-wrap -mx-2">
-                    {fields.filter((f) => f.fieldLevel !== "document").map((field) => renderPreviewField(field, values, isFieldVisible, setValue, tableRows, setTableRows, fields))}
-                  </div>
-                </div>
-              )}
+            {/* Form body — rendered by the shared FormRenderer */}
+            <div className="p-6">
+              <FormRenderer
+                fields={fields as unknown as RendererFormField[]}
+                formData={formData}
+                onChange={handleChange}
+              />
+            </div>
 
-              {/* Document Fields Section */}
-              {fields.some((f) => f.fieldLevel === "document") && (
-                <div>
-                  <div className="flex items-center gap-2 mb-4">
-                    <div className="w-1.5 h-1.5 rounded-full bg-blue-500" />
-                    <h3 className="text-xs font-bold text-blue-600 dark:text-blue-400 uppercase tracking-wider">Document Details</h3>
-                    <div className="flex-1 h-px bg-blue-500/10" />
-                  </div>
-                  <div className="flex flex-wrap -mx-2">
-                    {fields.filter((f) => f.fieldLevel === "document").map((field) => renderPreviewField(field, values, isFieldVisible, setValue, tableRows, setTableRows, fields))}
-                  </div>
-                </div>
-              )}
-
-              {/* Legacy fallback — hidden, kept for the original loop */}
-              <div className="flex flex-wrap -mx-2" style={{ display: "none" }}>
-                {fields.map((field) => {
-                  if (!isFieldVisible(field, values)) return null;
-
-                  const isHalf = field.width === "half";
-                  const wrapClass = isHalf ? "w-1/2 px-2 mb-4" : "w-full px-2 mb-4";
-
-                  // Section header
-                  if (field.type === "section") {
-                    return (
-                      <div key={field.id} className="w-full px-2 mb-4 mt-2">
-                        <h2 className="text-base font-bold text-gray-900 dark:text-gray-100 border-b-2 border-[#02773b]/20 pb-2">
-                          {field.label}
-                        </h2>
-                      </div>
-                    );
-                  }
-
-                  // Divider
-                  if (field.type === "divider") {
-                    return (
-                      <div key={field.id} className="w-full px-2 mb-4">
-                        <hr className="border-gray-200 dark:border-gray-700" />
-                      </div>
-                    );
-                  }
-
-                  return (
-                    <div key={field.id} className={wrapClass}>
-                      {/* Label */}
-                      <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">
-                        {field.label}
-                        {field.required && <span className="text-red-500 ml-1">*</span>}
-                      </label>
-
-                      {/* Input */}
-                      {(field.type === "text" || field.type === "email" || field.type === "phone") && (
-                        <input
-                          type={field.type === "email" ? "email" : field.type === "phone" ? "tel" : "text"}
-                          value={values[field.id] ?? field.defaultValue ?? ""}
-                          onChange={(e) => setValue(field.id, e.target.value)}
-                          placeholder={field.placeholder}
-                          readOnly={field.readOnly}
-                          className="w-full h-10 rounded-lg border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-800 px-3 text-sm text-gray-900 dark:text-gray-100 placeholder:text-gray-400 focus:border-[#02773b] focus:ring-2 focus:ring-[#02773b]/20 outline-none transition-colors read-only:bg-gray-50 dark:read-only:bg-gray-800/50"
-                        />
-                      )}
-
-                      {field.type === "textarea" && (
-                        <textarea
-                          value={values[field.id] ?? field.defaultValue ?? ""}
-                          onChange={(e) => setValue(field.id, e.target.value)}
-                          placeholder={field.placeholder}
-                          readOnly={field.readOnly}
-                          rows={3}
-                          className="w-full rounded-lg border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-800 px-3 py-2 text-sm text-gray-900 dark:text-gray-100 placeholder:text-gray-400 focus:border-[#02773b] focus:ring-2 focus:ring-[#02773b]/20 outline-none transition-colors read-only:bg-gray-50 dark:read-only:bg-gray-800/50 resize-y"
-                        />
-                      )}
-
-                      {field.type === "number" && (
-                        <input
-                          type="number"
-                          value={values[field.id] ?? field.defaultValue ?? ""}
-                          onChange={(e) => setValue(field.id, e.target.value)}
-                          placeholder={field.placeholder}
-                          readOnly={field.readOnly}
-                          min={field.validation?.min}
-                          max={field.validation?.max}
-                          className="w-full h-10 rounded-lg border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-800 px-3 text-sm text-gray-900 dark:text-gray-100 placeholder:text-gray-400 focus:border-[#02773b] focus:ring-2 focus:ring-[#02773b]/20 outline-none transition-colors read-only:bg-gray-50 dark:read-only:bg-gray-800/50"
-                        />
-                      )}
-
-                      {(field.type === "date" || field.type === "datetime") && (
-                        <input
-                          type={field.type === "datetime" ? "datetime-local" : "date"}
-                          value={values[field.id] ?? field.defaultValue ?? ""}
-                          onChange={(e) => setValue(field.id, e.target.value)}
-                          readOnly={field.readOnly}
-                          className="w-full h-10 rounded-lg border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-800 px-3 text-sm text-gray-900 dark:text-gray-100 focus:border-[#02773b] focus:ring-2 focus:ring-[#02773b]/20 outline-none transition-colors read-only:bg-gray-50 dark:read-only:bg-gray-800/50"
-                        />
-                      )}
-
-                      {field.type === "select" && (
-                        <select
-                          value={values[field.id] ?? field.defaultValue ?? ""}
-                          onChange={(e) => setValue(field.id, e.target.value)}
-                          disabled={field.readOnly}
-                          className="w-full h-10 rounded-lg border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-800 px-3 text-sm text-gray-900 dark:text-gray-100 focus:border-[#02773b] focus:ring-2 focus:ring-[#02773b]/20 outline-none transition-colors disabled:opacity-60"
-                        >
-                          <option value="">{field.placeholder || "Select..."}</option>
-                          {(field.options ?? []).map((opt) => (
-                            <option key={opt.value} value={opt.value}>
-                              {opt.label}
-                            </option>
-                          ))}
-                        </select>
-                      )}
-
-                      {field.type === "multiselect" && (
-                        <select
-                          multiple
-                          value={(values[field.id] ?? "").split(",").filter(Boolean)}
-                          onChange={(e) => {
-                            const selected = Array.from(e.target.selectedOptions, (o) => o.value);
-                            setValue(field.id, selected.join(","));
-                          }}
-                          disabled={field.readOnly}
-                          className="w-full rounded-lg border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-800 px-3 py-2 text-sm text-gray-900 dark:text-gray-100 focus:border-[#02773b] focus:ring-2 focus:ring-[#02773b]/20 outline-none transition-colors disabled:opacity-60"
-                          size={Math.min((field.options ?? []).length, 5)}
-                        >
-                          {(field.options ?? []).map((opt) => (
-                            <option key={opt.value} value={opt.value}>
-                              {opt.label}
-                            </option>
-                          ))}
-                        </select>
-                      )}
-
-                      {field.type === "radio" && (
-                        <div className="space-y-2 mt-1">
-                          {(field.options ?? []).map((opt) => (
-                            <label key={opt.value} className="flex items-center gap-2 cursor-pointer">
-                              <input
-                                type="radio"
-                                name={field.id}
-                                value={opt.value}
-                                checked={values[field.id] === opt.value}
-                                onChange={(e) => setValue(field.id, e.target.value)}
-                                disabled={field.readOnly}
-                                className="text-[#02773b] focus:ring-[#02773b]/30"
-                              />
-                              <span className="text-sm text-gray-700 dark:text-gray-300">
-                                {opt.label}
-                              </span>
-                            </label>
-                          ))}
-                        </div>
-                      )}
-
-                      {field.type === "checkbox" && (
-                        <div className="space-y-2 mt-1">
-                          {(field.options ?? []).map((opt) => {
-                            const checked = (values[field.id] ?? "").split(",").includes(opt.value);
-                            return (
-                              <label key={opt.value} className="flex items-center gap-2 cursor-pointer">
-                                <input
-                                  type="checkbox"
-                                  checked={checked}
-                                  onChange={() => {
-                                    const current = (values[field.id] ?? "").split(",").filter(Boolean);
-                                    const next = checked
-                                      ? current.filter((v) => v !== opt.value)
-                                      : [...current, opt.value];
-                                    setValue(field.id, next.join(","));
-                                  }}
-                                  disabled={field.readOnly}
-                                  className="rounded text-[#02773b] focus:ring-[#02773b]/30"
-                                />
-                                <span className="text-sm text-gray-700 dark:text-gray-300">
-                                  {opt.label}
-                                </span>
-                              </label>
-                            );
-                          })}
-                        </div>
-                      )}
-
-                      {field.type === "file" && (
-                        <div className="border-2 border-dashed border-gray-300 dark:border-gray-600 rounded-lg p-4 text-center hover:border-[#02773b]/50 transition-colors cursor-pointer">
-                          <svg className="w-8 h-8 text-gray-400 mx-auto mb-2" fill="none" viewBox="0 0 24 24" strokeWidth={1} stroke="currentColor">
-                            <path strokeLinecap="round" strokeLinejoin="round" d="M3 16.5v2.25A2.25 2.25 0 0 0 5.25 21h13.5A2.25 2.25 0 0 0 21 18.75V16.5m-13.5-9L12 3m0 0 4.5 4.5M12 3v13.5" />
-                          </svg>
-                          <p className="text-xs text-gray-500 dark:text-gray-400">
-                            Click to upload or drag and drop
-                          </p>
-                        </div>
-                      )}
-
-                      {field.type === "richtext" && (
-                        <div className="border border-gray-300 dark:border-gray-600 rounded-lg overflow-hidden">
-                          <div className="bg-gray-50 dark:bg-gray-800 border-b border-gray-300 dark:border-gray-600 px-3 py-1.5 flex items-center gap-1">
-                            <span className="text-xs text-gray-400 font-medium">B</span>
-                            <span className="text-xs text-gray-400 font-medium italic">I</span>
-                            <span className="text-xs text-gray-400 font-medium underline">U</span>
-                          </div>
-                          <textarea
-                            value={values[field.id] ?? ""}
-                            onChange={(e) => setValue(field.id, e.target.value)}
-                            placeholder={field.placeholder || "Enter rich text..."}
-                            rows={4}
-                            className="w-full px-3 py-2 text-sm text-gray-900 dark:text-gray-100 bg-white dark:bg-gray-800 placeholder:text-gray-400 focus:outline-none resize-y"
-                          />
-                        </div>
-                      )}
-
-                      {field.type === "table" && (
-                        <div className="border border-gray-300 dark:border-gray-600 rounded-lg overflow-hidden">
-                          <div className="overflow-x-auto">
-              <table className="w-full text-sm">
-                            <thead>
-                              <tr className="bg-gray-50 dark:bg-gray-800">
-                                {(field.tableColumns ?? []).map((col) => (
-                                  <th
-                                    key={col.name}
-                                    className="px-3 py-2 text-left text-xs font-semibold text-gray-600 dark:text-gray-400 border-b border-gray-200 dark:border-gray-700"
-                                  >
-                                    {col.label}
-                                  </th>
-                                ))}
-                                <th className="w-10 border-b border-gray-200 dark:border-gray-700" />
-                              </tr>
-                            </thead>
-                            <tbody>
-                              {(tableRows[field.id] ?? [{ _key: "0" }]).map((row, rIdx) => (
-                                <tr key={rIdx} className="border-b border-gray-100 dark:border-gray-800 last:border-0">
-                                  {(field.tableColumns ?? []).map((col) => (
-                                    <td key={col.name} className="px-2 py-1.5">
-                                      <input
-                                        type={col.type === "number" ? "number" : col.type === "date" ? "date" : "text"}
-                                        value={row[col.name] ?? ""}
-                                        onChange={(e) => {
-                                          const rows = [...(tableRows[field.id] ?? [{ _key: "0" }])];
-                                          rows[rIdx] = { ...rows[rIdx], [col.name]: e.target.value };
-                                          setTableRows((prev) => ({ ...prev, [field.id]: rows }));
-                                        }}
-                                        className="w-full h-7 rounded border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-800 px-2 text-xs text-gray-900 dark:text-gray-100 focus:border-[#02773b] focus:ring-1 focus:ring-[#02773b]/30 outline-none"
-                                      />
-                                    </td>
-                                  ))}
-                                  <td className="px-1 py-1.5">
-                                    <button
-                                      onClick={() => {
-                                        const rows = (tableRows[field.id] ?? [{ _key: "0" }]).filter((_, i) => i !== rIdx);
-                                        setTableRows((prev) => ({ ...prev, [field.id]: rows.length ? rows : [{ _key: "0" }] }));
-                                      }}
-                                      className="p-0.5 rounded text-gray-400 hover:text-red-500"
-                                    >
-                                      <IconMinus className="w-3 h-3" />
-                                    </button>
-                                  </td>
-                                </tr>
-                              ))}
-                            </tbody>
-                          </table>
-              </div>
-                          <div className="px-3 py-2 bg-gray-50 dark:bg-gray-800/50">
-                            <button
-                              type="button"
-                              onClick={() => {
-                                const rows = [...(tableRows[field.id] ?? [{ _key: "0" }]), { _key: String(Date.now()) }];
-                                setTableRows((prev) => ({ ...prev, [field.id]: rows }));
-                              }}
-                              className="flex items-center gap-1 text-xs font-medium text-[#02773b] hover:text-[#026332]"
-                            >
-                              <IconPlus className="w-3 h-3" />
-                              Add row
-                            </button>
-                          </div>
-                        </div>
-                      )}
-
-                      {/* Help text */}
-                      {field.helpText && (
-                        <p className="text-xs text-gray-400 mt-1">{field.helpText}</p>
-                      )}
-                    </div>
-                  );
-                })}
-              </div>
-
-              {/* Submit button (preview only) */}
-              {fields.length > 0 && (
-                <div className="mt-6 pt-4 border-t border-gray-200 dark:border-gray-800">
-                  <button
-                    type="button"
-                    className="h-10 px-6 rounded-lg bg-[#02773b] hover:bg-[#026332] text-white text-sm font-medium transition-colors"
-                  >
-                    Submit
-                  </button>
-                </div>
-              )}
+            {/* Submit button (preview only) */}
+            <div className="px-6 pb-6">
+              <button
+                type="button"
+                disabled
+                className="w-full py-2.5 rounded-xl bg-[#02773b] text-white text-sm font-semibold opacity-50 cursor-not-allowed"
+              >
+                Submit (preview only)
+              </button>
             </div>
           </div>
         </div>
@@ -2666,6 +2633,7 @@ function PreviewMode({
     </div>
   );
 }
+
 
 // ===========================================================================
 // Page export with Suspense boundary for useSearchParams

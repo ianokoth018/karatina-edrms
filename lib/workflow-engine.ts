@@ -14,7 +14,7 @@ import * as React from "react";
 import WorkflowActionRequired from "@/emails/workflow-action-required";
 import WorkflowNotification from "@/emails/workflow-notification";
 import { sendSms, buildTaskSms, buildSlaSms, buildCompletionSms } from "@/lib/sms";
-import { getDefaultCalendar, addWorkingHours } from "@/lib/business-calendar";
+import { getDefaultCalendar, addWorkingHours, isWithinWorkingHours } from "@/lib/business-calendar";
 
 // ========================== Type Definitions ===============================
 
@@ -193,7 +193,7 @@ export async function resumeSignal(params: {
 export async function advanceWorkflow(params: {
   instanceId: string;
   completedTaskId: string;
-  action: "APPROVED" | "REJECTED" | "RETURNED";
+  action: string;
   actorId: string;
   comment?: string;
   formData?: Record<string, unknown>;
@@ -240,6 +240,46 @@ export async function advanceWorkflow(params: {
       data: { formData: { ...existing, ...formData } as object },
     });
   }
+
+  // ---- GRAPH-FIRST ROUTING ----
+  // If the designer drew an explicit edge from this action's handle,
+  // follow it regardless of action type. This powers multi-outcome routing.
+  const currentNodeForAction = findNodeForTask(definition, completedTask);
+  if (currentNodeForAction) {
+    const explicitNextNodes = findNextNodes(definition, currentNodeForAction.id, action);
+    if (explicitNextNodes.length > 0) {
+      const freshInst = await db.workflowInstance.findUnique({ where: { id: instanceId } });
+      const wfData: Record<string, unknown> = {
+        ...((freshInst?.formData as Record<string, unknown>) ?? {}),
+        _action: action,
+        _actor: actorId,
+        _comment: comment,
+      };
+      const createdIds: string[] = [];
+      let wfCompleted = false;
+      await processNextNodes(
+        definition, currentNodeForAction.id, action,
+        instanceId, instance.initiatedById,
+        wfData, createdIds,
+        (v) => { wfCompleted = v; },
+        new Set()
+      );
+      if (!wfCompleted && createdIds.length === 0) {
+        const pc = await db.workflowTask.count({ where: { instanceId, status: "PENDING" } });
+        if (pc === 0) wfCompleted = true;
+      }
+      if (wfCompleted) {
+        await db.workflowInstance.update({
+          where: { id: instanceId },
+          data: { status: "COMPLETED", completedAt: new Date() },
+        });
+        await notify(instance.initiatedById, "Workflow completed",
+          `Workflow "${instance.subject}" has been completed.`);
+      }
+      return { nextTasks: createdIds, workflowCompleted: wfCompleted, workflowRejected: false };
+    }
+  }
+  // ---- FALLBACK: no explicit graph edges — use legacy hardcoded routing ----
 
   // ---- REJECTED ----
   if (action === "REJECTED") {
@@ -338,8 +378,9 @@ export async function advanceWorkflow(params: {
   }
 
   if (workflowCompleted) {
-    await db.workflowInstance.update({
-      where: { id: instanceId },
+    // Status was already set by the end node handler above; only update if still IN_PROGRESS
+    await db.workflowInstance.updateMany({
+      where: { id: instanceId, status: "IN_PROGRESS" },
       data: { status: "COMPLETED", completedAt: new Date() },
     });
     await notify(instance.initiatedById, "Workflow completed",
@@ -408,47 +449,57 @@ export function evaluateConditions(
   return null;
 }
 
+function resolveConditionValue(raw: string, data: Record<string, unknown>): string {
+  return raw.replace(/\{\{([\w.]+)\}\}/g, (_, key) => {
+    const v = resolveFieldValue(data, key);
+    return v !== null && v !== undefined ? String(v) : "";
+  });
+}
+
 function testCondition(cond: Condition, data: Record<string, unknown>): boolean {
   const rawValue = resolveFieldValue(data, cond.field);
+  const condValue = resolveConditionValue(cond.value, data);
 
   switch (cond.operator) {
-    case "equals":         return String(rawValue) === cond.value;
-    case "not_equals":     return String(rawValue) !== cond.value;
-    case "greater_than":   return Number(rawValue) > Number(cond.value);
-    case "less_than":      return Number(rawValue) < Number(cond.value);
-    case "greater_equal":  return Number(rawValue) >= Number(cond.value);
-    case "less_equal":     return Number(rawValue) <= Number(cond.value);
-    case "contains":       return String(rawValue ?? "").includes(cond.value);
-    case "not_contains":   return !String(rawValue ?? "").includes(cond.value);
-    case "starts_with":    return String(rawValue ?? "").startsWith(cond.value);
-    case "ends_with":      return String(rawValue ?? "").endsWith(cond.value);
+    case "equals":         return String(rawValue) === condValue;
+    case "not_equals":     return String(rawValue) !== condValue;
+    case "greater_than":            return Number(rawValue) >  Number(condValue);
+    case "greater_than_or_equal":   return Number(rawValue) >= Number(condValue);
+    case "less_than":               return Number(rawValue) <  Number(condValue);
+    case "less_than_or_equal":      return Number(rawValue) <= Number(condValue);
+    case "greater_equal":  return Number(rawValue) >= Number(condValue);
+    case "less_equal":     return Number(rawValue) <= Number(condValue);
+    case "contains":       return String(rawValue ?? "").includes(condValue);
+    case "not_contains":   return !String(rawValue ?? "").includes(condValue);
+    case "starts_with":    return String(rawValue ?? "").startsWith(condValue);
+    case "ends_with":      return String(rawValue ?? "").endsWith(condValue);
     case "not_empty":      return rawValue !== null && rawValue !== undefined && rawValue !== "";
     case "empty":          return rawValue === null || rawValue === undefined || rawValue === "";
     case "in_list": {
-      const list = cond.value.split(",").map((s) => s.trim());
+      const list = condValue.split(",").map((s) => s.trim());
       return list.includes(String(rawValue));
     }
     case "not_in_list": {
-      const list = cond.value.split(",").map((s) => s.trim());
+      const list = condValue.split(",").map((s) => s.trim());
       return !list.includes(String(rawValue));
     }
     case "between": {
-      const [min, max] = cond.value.split(",").map(Number);
+      const [min, max] = condValue.split(",").map(Number);
       const n = Number(rawValue);
       return n >= min && n <= max;
     }
     case "date_before":
-      return new Date(rawValue as string) < new Date(cond.value);
+      return new Date(rawValue as string) < new Date(condValue);
     case "date_after":
-      return new Date(rawValue as string) > new Date(cond.value);
+      return new Date(rawValue as string) > new Date(condValue);
     case "date_between": {
-      const [from, to] = cond.value.split(",").map((s) => new Date(s.trim()));
+      const [from, to] = condValue.split(",").map((s) => new Date(s.trim()));
       const d = new Date(rawValue as string);
       return d >= from && d <= to;
     }
     case "regex": {
       try {
-        return new RegExp(cond.value).test(String(rawValue ?? ""));
+        return new RegExp(condValue).test(String(rawValue ?? ""));
       } catch {
         return false;
       }
@@ -738,6 +789,25 @@ async function notify(userId: string, title: string, body: string): Promise<void
   }
 }
 
+/**
+ * Returns true if email/SMS should be delivered right now based on the
+ * business calendar. The suppression flag is read from AppSetting; if not
+ * set, delivery is always allowed (fail-open).
+ */
+async function canDeliverOutOfBandNotification(): Promise<boolean> {
+  try {
+    const setting = await db.appSetting.findUnique({
+      where: { key: "calendar.suppressNotificationsOutsideHours" },
+    });
+    const suppress = setting ? (setting.value as boolean) : false;
+    if (!suppress) return true;
+    const cal = await getDefaultCalendar();
+    return isWithinWorkingHours(new Date(), cal);
+  } catch {
+    return true; // fail-open
+  }
+}
+
 async function recordNodeEvent(
   instanceId: string,
   nodeId: string,
@@ -751,22 +821,60 @@ async function recordNodeEvent(
   }
 }
 
-async function calculateDueDate(nodeData: Record<string, unknown>): Promise<Date> {
-  const slaHours = nodeData.slaHours as number | undefined;
+async function calculateDueDate(
+  nodeData: Record<string, unknown>,
+  workflowData?: Record<string, unknown>
+): Promise<Date> {
   const now = new Date();
 
+  // ── Hard deadline takes priority over SLA target ──────────────────────
+  const deadlineType = (nodeData.deadlineType as string) ?? "none";
+
+  if (deadlineType === "relative") {
+    const val = (nodeData.deadlineRelativeValue as number) ?? 0;
+    const unit = (nodeData.deadlineRelativeUnit as string) ?? "days";
+    if (val > 0) {
+      try {
+        const cal = await getDefaultCalendar();
+        const hours = unit === "days" ? val * 8 : val;
+        return addWorkingHours(now, hours, cal);
+      } catch {
+        const ms = unit === "days" ? val * 8 * 3600000 : val * 3600000;
+        return new Date(now.getTime() + ms);
+      }
+    }
+  }
+
+  if (deadlineType === "from_field" && workflowData) {
+    const fieldPath = (nodeData.deadlineFromField as string) ?? "";
+    const fieldValue = fieldPath ? resolveFieldValue(workflowData, fieldPath) : null;
+    if (fieldValue) {
+      const fieldDate = new Date(fieldValue as string);
+      if (!isNaN(fieldDate.getTime())) {
+        const offsetVal = (nodeData.deadlineOffsetValue as number) ?? 0;
+        const offsetUnit = (nodeData.deadlineOffsetUnit as string) ?? "days";
+        if (offsetVal > 0) {
+          const offsetMs = offsetUnit === "days" ? offsetVal * 24 * 3600000 : offsetVal * 3600000;
+          return new Date(fieldDate.getTime() - offsetMs);
+        }
+        return fieldDate;
+      }
+    }
+  }
+
+  // ── SLA target fallback ────────────────────────────────────────────────
+  const slaHours = nodeData.slaHours as number | undefined;
   if (slaHours && slaHours > 0) {
     try {
       const cal = await getDefaultCalendar();
       return addWorkingHours(now, slaHours, cal);
     } catch {
-      // Fallback to wall-clock if calendar unavailable
-      return new Date(now.getTime() + slaHours * 60 * 60 * 1000);
+      return new Date(now.getTime() + slaHours * 3600000);
     }
   }
 
   // Default: 7 calendar days
-  return new Date(now.getTime() + 7 * 24 * 60 * 60 * 1000);
+  return new Date(now.getTime() + 7 * 24 * 3600000);
 }
 
 function calculateTimerActivation(nodeData: Record<string, unknown>): Date {
@@ -809,7 +917,7 @@ async function processNextNodes(
   for (const node of nextNodes) {
     switch (node.type) {
       case "task": {
-        await activateTaskNode(node, instanceId, initiatorId, createdTaskIds);
+        await activateTaskNode(node, instanceId, initiatorId, createdTaskIds, workflowData);
         break;
       }
 
@@ -912,8 +1020,21 @@ async function processNextNodes(
       }
 
       case "end": {
+        // Map the designer's outcome field to a WorkflowStatus
+        const endOutcome = (node.data?.outcome as string | undefined) ?? "rejected";
+        const endStatus =
+          endOutcome === "approved"                       ? "COMPLETED"  :
+          endOutcome === "rejected"                       ? "REJECTED"   :
+          endOutcome === "withdrawn" || endOutcome === "cancelled" ? "CANCELLED"  :
+          endOutcome === "error"                          ? "CANCELLED"  :
+          "COMPLETED";
+
+        await db.workflowInstance.update({
+          where: { id: instanceId },
+          data: { status: endStatus as "COMPLETED" | "REJECTED" | "CANCELLED", completedAt: new Date() },
+        });
         setCompleted(true);
-        await recordNodeEvent(instanceId, node.id, `NODE_COMPLETED_${node.id}`, { type: "end" });
+        await recordNodeEvent(instanceId, node.id, `NODE_COMPLETED_${node.id}`, { type: "end", outcome: endOutcome, status: endStatus });
         break;
       }
 
@@ -996,7 +1117,8 @@ async function activateTaskNode(
   node: WorkflowNode,
   instanceId: string,
   initiatorId: string,
-  createdTaskIds: string[]
+  createdTaskIds: string[],
+  workflowData?: Record<string, unknown>
 ): Promise<void> {
   const data = node.data;
   const label = (data.label as string) ?? "Task";
@@ -1018,7 +1140,7 @@ async function activateTaskNode(
     });
   }
 
-  const dueAt = await calculateDueDate(data);
+  const dueAt = await calculateDueDate(data, workflowData);
 
   const task = await db.workflowTask.create({
     data: {
@@ -1049,6 +1171,8 @@ async function activateTaskNode(
     },
   });
 
+  const canNotify = await canDeliverOutOfBandNotification();
+
   if (isPoolTask && poolId) {
     // Notify all pool members that a task is available
     const members = await db.workflowPoolMember.findMany({
@@ -1056,9 +1180,11 @@ async function activateTaskNode(
       include: { user: { select: { id: true, email: true, name: true, displayName: true, phone: true } } },
     });
     for (const m of members) {
+      // In-app notification always delivered
       await notify(m.userId, `Pool task available: ${label}`,
         `A new task "${label}" is available in your queue for: ${inst?.subject ?? "workflow"}`);
-      if (m.user.phone) {
+      // SMS only during working hours
+      if (canNotify && m.user.phone) {
         const msg = buildTaskSms({
           recipientName: m.user.displayName ?? m.user.name ?? "User",
           stepName: label,
@@ -1068,6 +1194,8 @@ async function activateTaskNode(
           appUrl: process.env.NEXTAUTH_URL ? `${process.env.NEXTAUTH_URL}/workflows` : undefined,
         });
         await sendSms({ to: m.user.phone, message: msg });
+      } else if (!canNotify && m.user.phone) {
+        logger.info("SMS held outside working hours", { userId: m.userId, step: label });
       }
     }
     return;
@@ -1075,47 +1203,53 @@ async function activateTaskNode(
 
   if (!finalAssigneeId) return;
 
-  // In-app notification
+  // In-app notification always delivered immediately
   await notify(finalAssigneeId, "New workflow task assigned",
     `You have been assigned step "${label}" for: ${inst?.subject ?? "workflow"}`);
 
-  // Email + SMS notification
+  // Email + SMS only during working hours
   const assignee = await db.user.findUnique({
     where: { id: finalAssigneeId },
     select: { email: true, name: true, displayName: true, phone: true },
   });
-  if (assignee?.email) {
-    const baseUrl = process.env.APP_URL ?? process.env.NEXTAUTH_URL ?? "";
-    const initiator = inst?.initiatedById
-      ? await db.user.findUnique({
-          where: { id: inst.initiatedById },
-          select: { displayName: true, name: true },
-        })
-      : null;
-    await sendMail({
-      to: assignee.email,
-      subject: `Action Required: ${label}`,
-      react: React.createElement(WorkflowActionRequired, {
+  if (canNotify) {
+    if (assignee?.email) {
+      const baseUrl = process.env.APP_URL ?? process.env.NEXTAUTH_URL ?? "";
+      const initiator = inst?.initiatedById
+        ? await db.user.findUnique({
+            where: { id: inst.initiatedById },
+            select: { displayName: true, name: true },
+          })
+        : null;
+      await sendMail({
+        to: assignee.email,
+        subject: `Action Required: ${label}`,
+        react: React.createElement(WorkflowActionRequired, {
+          recipientName: assignee.displayName ?? assignee.name ?? "User",
+          stepLabel: label,
+          workflowSubject: inst?.subject ?? "Workflow item",
+          workflowReference: inst?.referenceNumber,
+          initiatorName: initiator?.displayName ?? initiator?.name,
+          dueAt: dueAt?.toISOString(),
+          actionUrl: `${baseUrl}/workflows`,
+        }),
+      });
+    }
+    if (assignee?.phone) {
+      const msg = buildTaskSms({
         recipientName: assignee.displayName ?? assignee.name ?? "User",
-        stepLabel: label,
-        workflowSubject: inst?.subject ?? "Workflow item",
-        workflowReference: inst?.referenceNumber,
-        initiatorName: initiator?.displayName ?? initiator?.name,
-        dueAt: dueAt?.toISOString(),
-        actionUrl: `${baseUrl}/workflows`,
-      }),
+        stepName: label,
+        instanceRef: instanceId,
+        subject: inst?.subject ?? "workflow",
+        dueAt,
+        appUrl: process.env.NEXTAUTH_URL ? `${process.env.NEXTAUTH_URL}/workflows` : undefined,
+      });
+      await sendSms({ to: assignee.phone, message: msg });
+    }
+  } else {
+    logger.info("Email/SMS held outside working hours", {
+      assigneeId: finalAssigneeId, step: label, instanceId,
     });
-  }
-  if (assignee?.phone) {
-    const msg = buildTaskSms({
-      recipientName: assignee.displayName ?? assignee.name ?? "User",
-      stepName: label,
-      instanceRef: instanceId,
-      subject: inst?.subject ?? "workflow",
-      dueAt,
-      appUrl: process.env.NEXTAUTH_URL ? `${process.env.NEXTAUTH_URL}/workflows` : undefined,
-    });
-    await sendSms({ to: assignee.phone, message: msg });
   }
 }
 
@@ -1130,15 +1264,44 @@ async function executeEmailNode(
   const recipientValue = data.recipientValue as string | undefined;
   const subjectTemplate = (data.subject as string) ?? (data.label as string) ?? "Workflow Notification";
   const bodyTemplate = (data.bodyTemplate as string) ?? "";
+  const ctaLabelTemplate = (data.ctaLabel as string) ?? "";
+  const ctaUrlTemplate = (data.ctaUrl as string) ?? "";
 
-  // Build interpolation vars from workflow data
-  const vars: Record<string, string> = {};
+  const baseUrl = process.env.APP_URL ?? process.env.NEXTAUTH_URL ?? "";
+
+  // Fetch instance metadata for interpolation
+  const inst = await db.workflowInstance.findUnique({
+    where: { id: instanceId },
+    select: { subject: true, referenceNumber: true },
+  });
+
+  // Build interpolation vars: flat keys + formData.* + instance.* namespaces
+  const vars: Record<string, string> = {
+    appUrl: baseUrl,
+    instanceId,
+    "instance.id": instanceId,
+    "instance.subject": inst?.subject ?? "",
+    "instance.referenceNumber": inst?.referenceNumber ?? "",
+    "instance.url": `${baseUrl}/workflows/instances/${instanceId}`,
+  };
   for (const [k, v] of Object.entries(workflowData)) {
-    if (typeof v === "string" || typeof v === "number") vars[k] = String(v);
+    if (typeof v === "string" || typeof v === "number") {
+      vars[k] = String(v);
+      vars[`formData.${k}`] = String(v);
+    }
   }
 
   const subject = interpolate(subjectTemplate, vars);
   const body = interpolate(bodyTemplate, vars);
+
+  // Build CTA — use configured values, fall back to a generic "View Workflow" link
+  const resolvedCtaUrl = ctaUrlTemplate
+    ? interpolate(ctaUrlTemplate, vars)
+    : `${baseUrl}/workflows/instances/${instanceId}`;
+  const resolvedCtaLabel = ctaLabelTemplate
+    ? interpolate(ctaLabelTemplate, vars)
+    : "View Workflow";
+  const cta = { label: resolvedCtaLabel, url: resolvedCtaUrl };
 
   let recipientId: string | null = null;
   let customEmail: string | null = null;
@@ -1192,6 +1355,7 @@ async function executeEmailNode(
           recipientName: user.displayName ?? user.name ?? "User",
           subject,
           body,
+          cta,
         }),
       });
     }
@@ -1206,6 +1370,7 @@ async function executeEmailNode(
         recipientName: "Recipient",
         subject,
         body,
+        cta,
       }),
     });
   }
@@ -1285,6 +1450,257 @@ async function executeSystemNode(
           headers: (actionConfig.headers as Record<string, string>) ?? {},
           workflowData,
         });
+        break;
+      }
+
+      /**
+       * lookup_form_data — Query a FormDataSchema by slug, find the first
+       * matching record, and inject its fields into the workflow's formData.
+       *
+       * actionConfig:
+       *   slug          — dataset slug, e.g. "leave_balances"
+       *   filters       — [{field, value}] conditions (AND logic); all must match
+       *   injectAs      — key prefix for injected fields, e.g. "_lookup_leave_balances"
+       *                   Each field becomes "{injectAs}.{fieldName}" in formData.
+       *
+       * Legacy single-condition format (still supported):
+       *   filterField / filterValue
+       */
+      case "lookup_form_data": {
+        const slug = (actionConfig.slug as string ?? "").trim();
+        const injectAs = (actionConfig.injectAs as string ?? `_lookup_${slug}`).trim();
+
+        if (!slug) {
+          logger.warn("lookup_form_data: no slug provided", { instanceId });
+          break;
+        }
+
+        const vars: Record<string, string> = {};
+        for (const [k, v] of Object.entries(workflowData)) {
+          if (typeof v === "string" || typeof v === "number") vars[k] = String(v);
+        }
+
+        // Normalise to multi-condition array (support old single-field format)
+        const rawFilters: { field: string; value: string }[] =
+          Array.isArray(actionConfig.filters) && actionConfig.filters.length > 0
+            ? (actionConfig.filters as { field: string; value: string }[])
+            : actionConfig.filterField
+              ? [{ field: actionConfig.filterField as string, value: actionConfig.filterValue as string ?? "" }]
+              : [];
+
+        const resolvedFilters = rawFilters
+          .map((f) => ({ field: f.field.trim(), value: interpolate(f.value, vars) }))
+          .filter((f) => f.field);
+
+        const schema = await db.formDataSchema.findUnique({
+          where: { slug, isActive: true },
+          include: { records: true },
+        });
+
+        if (!schema) {
+          logger.warn(`lookup_form_data: dataset "${slug}" not found`, { instanceId });
+          break;
+        }
+
+        const rawRecords = schema.records as { id: string; data: Record<string, unknown> }[];
+        const match = resolvedFilters.length > 0
+          ? rawRecords.find((r) =>
+              resolvedFilters.every((f) => String(r.data[f.field] ?? "").toLowerCase() === f.value.toLowerCase())
+            )
+          : rawRecords[0];
+
+        if (!match) {
+          logger.info(`lookup_form_data: no matching record in "${slug}"`, { instanceId, resolvedFilters });
+          const nullPatch: Record<string, unknown> = { [`${injectAs}._found`]: false };
+          const existing = (await db.workflowInstance.findUnique({ where: { id: instanceId }, select: { formData: true } }))?.formData ?? {};
+          await db.workflowInstance.update({
+            where: { id: instanceId },
+            data: { formData: { ...(existing as object), ...nullPatch } as object },
+          });
+          break;
+        }
+
+        const patch: Record<string, unknown> = { [`${injectAs}._found`]: true };
+        for (const [k, v] of Object.entries(match.data)) {
+          patch[`${injectAs}.${k}`] = v;
+        }
+
+        const existing = (await db.workflowInstance.findUnique({ where: { id: instanceId }, select: { formData: true } }))?.formData ?? {};
+        await db.workflowInstance.update({
+          where: { id: instanceId },
+          data: { formData: { ...(existing as object), ...patch } as object },
+        });
+
+        logger.info(`lookup_form_data: injected ${Object.keys(patch).length} fields from "${slug}"`, { instanceId, injectAs });
+        break;
+      }
+
+      /**
+       * update_form_data — Update a FormDataEntry record matched by conditions.
+       * Useful for decrementing leave balance after approval, etc.
+       *
+       * actionConfig:
+       *   slug             — dataset slug
+       *   matchConditions  — [{field, value}] conditions (AND logic); all must match
+       *   updates          — object mapping field names to new values (or {{placeholders}})
+       *
+       * Legacy single-condition format (still supported):
+       *   filterField / filterValue
+       */
+      case "update_form_data": {
+        const slug = (actionConfig.slug as string ?? "").trim();
+        const updates = (actionConfig.updates as Record<string, unknown>) ?? {};
+
+        if (!slug) break;
+
+        const vars2: Record<string, string> = {};
+        for (const [k, v] of Object.entries(workflowData)) {
+          if (typeof v === "string" || typeof v === "number") vars2[k] = String(v);
+        }
+
+        // Normalise to multi-condition array (support old single-field format)
+        const rawConditions: { field: string; value: string }[] =
+          Array.isArray(actionConfig.matchConditions) && actionConfig.matchConditions.length > 0
+            ? (actionConfig.matchConditions as { field: string; value: string }[])
+            : actionConfig.filterField
+              ? [{ field: actionConfig.filterField as string, value: actionConfig.filterValue as string ?? "" }]
+              : [];
+
+        const resolvedConditions = rawConditions
+          .map((c) => ({ field: c.field.trim(), value: interpolate(c.value, vars2) }))
+          .filter((c) => c.field);
+
+        const schema2 = await db.formDataSchema.findUnique({
+          where: { slug, isActive: true },
+          include: { records: true },
+        });
+        if (!schema2) break;
+
+        const rawRecords2 = schema2.records as { id: string; data: Record<string, unknown> }[];
+        const match2 = resolvedConditions.length > 0
+          ? rawRecords2.find((r) =>
+              resolvedConditions.every((c) => String(r.data[c.field] ?? "").toLowerCase() === c.value.toLowerCase())
+            )
+          : null;
+
+        if (match2) {
+          const patchedData: Record<string, unknown> = { ...match2.data };
+          for (const [k, v] of Object.entries(updates)) {
+            patchedData[k] = typeof v === "string" ? interpolate(v, vars2) : v;
+          }
+          await db.formDataEntry.update({ where: { id: match2.id }, data: { data: patchedData as object } });
+          logger.info(`update_form_data: updated record in "${slug}"`, { instanceId, resolvedConditions });
+        }
+        break;
+      }
+
+      /**
+       * create_delegation — Creates a Delegation record from the workflow
+       * initiator to an acting officer, covering the leave/absence period.
+       *
+       * actionConfig:
+       *   delegateField   — formData field containing the delegate's user ID
+       *                     (e.g. "acting_officer_id"). Alternatively use
+       *                     delegateValue for a static user ID.
+       *   startDateField  — formData field for delegation start (e.g. "leave_start_date")
+       *   endDateField    — formData field for delegation end   (e.g. "leave_end_date")
+       *   reason          — text or {{placeholder}} reason string
+       */
+      case "create_delegation": {
+        const delegateField  = (actionConfig.delegateField  as string ?? "").trim();
+        const delegateValue  = (actionConfig.delegateValue  as string ?? "").trim();
+        const startDateField = (actionConfig.startDateField as string ?? "").trim();
+        const endDateField   = (actionConfig.endDateField   as string ?? "").trim();
+        const reasonTemplate = (actionConfig.reason as string ?? "Delegated during leave").trim();
+
+        const vars: Record<string, string> = {};
+        for (const [k, v] of Object.entries(workflowData)) {
+          if (typeof v === "string" || typeof v === "number") vars[k] = String(v);
+        }
+
+        const delegateId  = delegateField ? (workflowData[delegateField] as string ?? "") : interpolate(delegateValue, vars);
+        const startRaw    = startDateField ? String(workflowData[startDateField] ?? "") : "";
+        const endRaw      = endDateField   ? String(workflowData[endDateField]   ?? "") : "";
+        const reason      = interpolate(reasonTemplate, vars);
+
+        if (!delegateId || !startRaw || !endRaw) {
+          logger.warn("create_delegation: missing delegate, start, or end — skipping", { instanceId });
+          break;
+        }
+
+        const startsAt = new Date(startRaw);
+        const endsAt   = new Date(endRaw);
+
+        if (isNaN(startsAt.getTime()) || isNaN(endsAt.getTime()) || endsAt <= startsAt) {
+          logger.warn("create_delegation: invalid date range — skipping", { instanceId, startRaw, endRaw });
+          break;
+        }
+
+        // Deactivate any overlapping active delegations from the same delegator
+        await db.delegation.updateMany({
+          where: {
+            delegatorId: instance!.initiatedById,
+            isActive: true,
+            startsAt: { lte: endsAt },
+            endsAt:   { gte: startsAt },
+          },
+          data: { isActive: false },
+        });
+
+        await db.delegation.create({
+          data: {
+            delegatorId: instance!.initiatedById,
+            delegateId,
+            reason,
+            startsAt,
+            endsAt,
+            isActive: true,
+            source: "leave_workflow",
+            workflowInstanceId: instanceId,
+          },
+        });
+
+        logger.info("create_delegation: delegation created", {
+          instanceId,
+          delegatorId: instance!.initiatedById,
+          delegateId,
+          startsAt,
+          endsAt,
+        });
+        break;
+      }
+
+      case "year_end_carry_forward": {
+        const fromYear  = actionConfig.fromYear  !== undefined
+          ? parseInt(String(workflowData[actionConfig.fromYear as string] ?? actionConfig.fromYear))
+          : new Date().getFullYear();
+        const toYear    = actionConfig.toYear    !== undefined
+          ? parseInt(String(workflowData[actionConfig.toYear as string] ?? actionConfig.toYear))
+          : new Date().getFullYear() + 1;
+        const balancesSlug = (actionConfig.balancesSlug as string) || "leave-balances";
+        const typesSlug    = (actionConfig.typesSlug    as string) || "leave-types";
+        const rulesJson    = (actionConfig.rules        as string) || "[]";
+
+        let rules: { leaveType: string; enabled: boolean; cap: number }[] = [];
+        try { rules = JSON.parse(rulesJson); } catch { rules = []; }
+
+        const baseUrl = process.env.APP_URL ?? process.env.NEXTAUTH_URL ?? "http://localhost:3000";
+        const res = await fetch(`${baseUrl}/api/admin/form-data/carry-forward`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json", "x-internal-token": process.env.INTERNAL_API_TOKEN ?? "" },
+          body: JSON.stringify({ fromYear, toYear, balancesSlug, typesSlug, rules }),
+        });
+        const cfResult = res.ok ? await res.json() : null;
+        if (cfResult) {
+          logger.info("year_end_carry_forward completed", {
+            instanceId,
+            fromYear,
+            toYear,
+            ...cfResult.result,
+          } as Record<string, unknown>);
+        } else {
+          logger.error("year_end_carry_forward API call failed", undefined, { instanceId, status: res.status });
+        }
         break;
       }
 

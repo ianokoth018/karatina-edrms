@@ -795,13 +795,13 @@ export default function UsersPage() {
                 </div>
                 <div className="space-y-1.5 sm:col-span-2">
                   <label className="block text-sm font-medium text-gray-700 dark:text-gray-200">
-                    Employee ID
+                    Personal Number (P/No.)
                   </label>
                   <input
                     type="text"
                     value={formEmployeeId}
                     onChange={(e) => setFormEmployeeId(e.target.value)}
-                    placeholder="e.g. KU-EMP-12345 (optional)"
+                    placeholder="e.g. KU/STAFF/2024/001"
                     className="w-full h-10 rounded-xl border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-800 px-4 text-sm text-gray-900 dark:text-gray-100 placeholder:text-gray-400 transition-colors focus:border-karu-green focus:ring-2 focus:ring-karu-green/20 outline-none"
                   />
                 </div>

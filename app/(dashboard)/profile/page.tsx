@@ -371,27 +371,7 @@ export default function ProfilePage() {
           </div>
 
           {/* Personal Info Card */}
-          <div className="rounded-2xl border border-gray-200 dark:border-gray-800 bg-white dark:bg-gray-900 shadow-sm overflow-hidden">
-            <div className="px-5 py-4 border-b border-gray-100 dark:border-gray-800">
-              <h2 className="text-sm font-semibold text-gray-900 dark:text-white">Personal Information</h2>
-            </div>
-            <div className="divide-y divide-gray-100 dark:divide-gray-800">
-              {[
-                { label: "Full Name", value: user.name },
-                { label: "Email Address", value: user.email },
-                { label: "Employee ID", value: user.employeeId },
-                { label: "Department", value: user.department },
-                { label: "Job Title", value: user.jobTitle },
-              ].map(({ label, value }) => (
-                <div key={label} className="flex items-center justify-between px-5 py-3">
-                  <span className="text-xs text-gray-500 dark:text-gray-400 w-32 shrink-0">{label}</span>
-                  <span className="text-sm text-gray-900 dark:text-white font-medium text-right truncate ml-2">
-                    {value || <span className="text-gray-400">—</span>}
-                  </span>
-                </div>
-              ))}
-            </div>
-          </div>
+          <PersonalInfoCard user={user} onSaved={update} />
         </div>
       )}
 
@@ -535,6 +515,124 @@ export default function ProfilePage() {
               Sign out
             </Link>
           </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
+/* ------------------------------------------------------------------ */
+/*  Personal info card — read-only fields + editable phone/payroll    */
+/* ------------------------------------------------------------------ */
+
+function PersonalInfoCard({
+  user,
+  onSaved,
+}: {
+  user: { name: string; email: string; employeeId?: string; department?: string; jobTitle?: string; phone?: string; id?: string };
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  onSaved: () => Promise<any>;
+}) {
+  const [editing, setEditing] = useState(false);
+  const [phone, setPhone] = useState(user.phone ?? "");
+  const [saving, setSaving] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  async function handleSave() {
+    setSaving(true);
+    setError(null);
+    try {
+      const res = await fetch(`/api/admin/users/${user.id}`, {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ phone: phone || null }),
+      });
+      if (!res.ok) {
+        const d = await res.json().catch(() => ({}));
+        setError(d.error ?? "Save failed");
+        return;
+      }
+      await onSaved();
+      setEditing(false);
+    } catch {
+      setError("Network error");
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  const readOnlyFields = [
+    { label: "Full Name", value: user.name },
+    { label: "Email Address", value: user.email },
+    { label: "Personal Number (P/No.)", value: user.employeeId },
+    { label: "Department / School", value: user.department },
+    { label: "Job Title", value: user.jobTitle },
+  ];
+
+  return (
+    <div className="rounded-2xl border border-gray-200 dark:border-gray-800 bg-white dark:bg-gray-900 shadow-sm overflow-hidden">
+      <div className="px-5 py-4 border-b border-gray-100 dark:border-gray-800 flex items-center justify-between">
+        <h2 className="text-sm font-semibold text-gray-900 dark:text-white">Personal Information</h2>
+        {!editing ? (
+          <button
+            onClick={() => setEditing(true)}
+            className="text-xs text-[#02773b] dark:text-emerald-400 font-medium hover:underline"
+          >
+            Edit
+          </button>
+        ) : (
+          <div className="flex items-center gap-3">
+            <button
+              onClick={() => { setEditing(false); setPhone(user.phone ?? ""); setError(null); }}
+              className="text-xs text-gray-500 hover:text-gray-700 dark:hover:text-gray-300"
+            >
+              Cancel
+            </button>
+            <button
+              onClick={handleSave}
+              disabled={saving}
+              className="text-xs px-3 py-1 rounded-lg bg-[#02773b] text-white font-medium hover:bg-[#026332] disabled:opacity-60"
+            >
+              {saving ? "Saving…" : "Save"}
+            </button>
+          </div>
+        )}
+      </div>
+
+      <div className="divide-y divide-gray-100 dark:divide-gray-800">
+        {/* Read-only fields set by admin */}
+        {readOnlyFields.map(({ label, value }) => (
+          <div key={label} className="flex items-center justify-between px-5 py-3">
+            <span className="text-xs text-gray-500 dark:text-gray-400 w-36 shrink-0">{label}</span>
+            <span className="text-sm text-gray-900 dark:text-white font-medium text-right truncate ml-2">
+              {value || <span className="text-gray-400">—</span>}
+            </span>
+          </div>
+        ))}
+
+        {/* Editable: Phone */}
+        <div className="flex items-center justify-between px-5 py-3">
+          <span className="text-xs text-gray-500 dark:text-gray-400 w-36 shrink-0">Phone Number</span>
+          {editing ? (
+            <input
+              type="tel"
+              value={phone}
+              onChange={(e) => setPhone(e.target.value)}
+              placeholder="+254 700 000 000"
+              className="ml-2 flex-1 text-sm rounded-lg border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-800 px-3 py-1.5 text-gray-900 dark:text-gray-100 focus:outline-none focus:ring-2 focus:ring-[#02773b]/40 focus:border-[#02773b]"
+            />
+          ) : (
+            <span className="text-sm text-gray-900 dark:text-white font-medium text-right truncate ml-2">
+              {user.phone || <span className="text-gray-400">—</span>}
+            </span>
+          )}
+        </div>
+
+      </div>
+
+      {error && (
+        <div className="px-5 py-3 bg-red-50 dark:bg-red-950/20 border-t border-red-100 dark:border-red-900">
+          <p className="text-xs text-red-600 dark:text-red-400">{error}</p>
         </div>
       )}
     </div>

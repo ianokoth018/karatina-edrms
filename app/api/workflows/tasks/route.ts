@@ -23,6 +23,7 @@ export async function GET(req: NextRequest) {
 
     const { searchParams } = new URL(req.url);
     const status = searchParams.get("status"); // PENDING, COMPLETED, or omit for all
+    const templateId = searchParams.get("templateId");
     const page = Math.max(1, Number(searchParams.get("page") ?? "1"));
     const limit = Math.min(100, Math.max(1, Number(searchParams.get("limit") ?? "20")));
     const skip = (page - 1) * limit;
@@ -33,6 +34,9 @@ export async function GET(req: NextRequest) {
 
     if (status && status !== "all") {
       where.status = status;
+    }
+    if (templateId) {
+      where.instance = { templateId };
     }
 
     const [tasks, total] = await Promise.all([

@@ -35,6 +35,11 @@ export async function GET(
         definition: true,
         version: true,
         isActive: true,
+        slug: true,
+        instanceName: true,
+        sidebarIcon: true,
+        sidebarOrder: true,
+        customQueries: true,
         createdById: true,
         createdAt: true,
         updatedAt: true,
@@ -88,11 +93,16 @@ export async function PUT(
     }
 
     const body = await req.json();
-    const { name, description, definition, isActive } = body as {
+    const { name, description, definition, isActive, slug, instanceName, sidebarIcon, sidebarOrder, customQueries } = body as {
       name?: string;
       description?: string;
       definition?: Record<string, unknown>;
       isActive?: boolean;
+      slug?: string | null;
+      instanceName?: string | null;
+      sidebarIcon?: string | null;
+      sidebarOrder?: number;
+      customQueries?: unknown[];
     };
 
     // If name is being changed, check for duplicate
@@ -108,6 +118,17 @@ export async function PUT(
       }
     }
 
+    // If slug is changing, check for duplicate
+    if (slug !== undefined && slug !== null && slug !== (existing as Record<string, unknown>).slug) {
+      const duplicateSlug = await db.workflowTemplate.findUnique({ where: { slug } });
+      if (duplicateSlug && duplicateSlug.id !== id) {
+        return NextResponse.json(
+          { error: "A template with this slug already exists" },
+          { status: 409 }
+        );
+      }
+    }
+
     const updateData: Record<string, unknown> = {};
     if (name !== undefined) updateData.name = name;
     if (description !== undefined) updateData.description = description;
@@ -116,6 +137,11 @@ export async function PUT(
       updateData.version = existing.version + 1;
     }
     if (isActive !== undefined) updateData.isActive = isActive;
+    if (slug !== undefined) updateData.slug = slug;
+    if (instanceName !== undefined) updateData.instanceName = instanceName;
+    if (sidebarIcon !== undefined) updateData.sidebarIcon = sidebarIcon;
+    if (sidebarOrder !== undefined) updateData.sidebarOrder = sidebarOrder;
+    if (customQueries !== undefined) updateData.customQueries = customQueries;
 
     // Warn caller if there are active instances on the current version
     const activeInstanceCount = definition
@@ -134,6 +160,11 @@ export async function PUT(
         definition: true,
         version: true,
         isActive: true,
+        slug: true,
+        instanceName: true,
+        sidebarIcon: true,
+        sidebarOrder: true,
+        customQueries: true,
         createdAt: true,
         updatedAt: true,
       },
@@ -173,7 +204,8 @@ export async function PUT(
 
 /**
  * DELETE /api/workflows/templates/[id]
- * Soft-delete a template by setting isActive to false.
+ * Hard-delete a template. Blocked if any instances exist (active or historical).
+ * Use PUT { isActive: false } to deactivate without deleting.
  */
 export async function DELETE(
   _req: NextRequest,
@@ -190,40 +222,34 @@ export async function DELETE(
 
     const { id } = await params;
 
-    const existing = await db.workflowTemplate.findUnique({
-      where: { id },
-    });
+    const existing = await db.workflowTemplate.findUnique({ where: { id } });
     if (!existing) {
+      return NextResponse.json({ error: "Template not found" }, { status: 404 });
+    }
+
+    const instanceCount = await db.workflowInstance.count({ where: { templateId: id } });
+    if (instanceCount > 0) {
       return NextResponse.json(
-        { error: "Template not found" },
-        { status: 404 }
+        { error: `Cannot delete — this template has ${instanceCount} instance(s). Deactivate it instead to preserve the history.` },
+        { status: 409 }
       );
     }
 
-    await db.workflowTemplate.update({
-      where: { id },
-      data: { isActive: false },
-    });
+    await db.workflowTemplate.delete({ where: { id } });
 
     await writeAudit({
       userId: session.user.id,
-      action: "WORKFLOW_TEMPLATE_DEACTIVATED",
+      action: "WORKFLOW_TEMPLATE_DELETED",
       resourceType: "workflow_template",
       resourceId: id,
       metadata: { name: existing.name },
     });
 
-    logger.info("Workflow template deactivated", {
-      userId: session.user.id,
-      action: "WORKFLOW_TEMPLATE_DEACTIVATED",
-    });
+    logger.info("Workflow template deleted", { userId: session.user.id, templateId: id });
 
     return NextResponse.json({ success: true });
   } catch (error) {
-    logger.error("Failed to deactivate workflow template", error);
-    return NextResponse.json(
-      { error: "Internal server error" },
-      { status: 500 }
-    );
+    logger.error("Failed to delete workflow template", error);
+    return NextResponse.json({ error: "Internal server error" }, { status: 500 });
   }
 }

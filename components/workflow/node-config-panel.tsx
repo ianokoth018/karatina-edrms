@@ -27,16 +27,25 @@ interface TaskNodeDataExtended {
     | "pool";
   assigneeValue?: string;
   poolId?: string;
-  escalationDays?: number;
+  /* SLA */
+  slaValue?: number;
+  slaUnit?: "hours" | "days";
+  slaHours?: number; // legacy
+  /* Escalation */
+  escalationValue?: number;
+  escalationUnit?: "hours" | "days";
+  escalationDays?: number; // legacy
   escalationTo?: string;
-  slaHours?: number;
+  /* Reminder */
+  reminderValue?: number;
+  reminderUnit?: "hours" | "days";
+  reminderDays?: number; // legacy
   requiredAction?: "approve" | "reject" | "return" | "any";
   parallelApproval?: boolean;
   approvalRule?: "all" | "any" | "majority";
   formTemplateId?: string;
   notifyOnAssign?: boolean;
   notifyOnComplete?: boolean;
-  reminderDays?: number;
   /* Per-step form layout fields */
   fieldConfig?: FieldConfig[];
   actionButtons?: ActionButton[];
@@ -64,7 +73,11 @@ export interface SystemNodeData {
     | "send_webhook"
     | "update_metadata"
     | "create_notification"
-    | "assign_classification";
+    | "assign_classification"
+    | "lookup_form_data"
+    | "update_form_data"
+    | "create_delegation"
+    | "year_end_carry_forward";
   actionConfig: Record<string, unknown>;
 }
 
@@ -101,6 +114,7 @@ interface ConditionItem {
 
 interface NodeConfigPanelProps {
   node: Node;
+  nodes?: Node[];
   onUpdate: (nodeId: string, data: Record<string, unknown>) => void;
   onDelete: (nodeId: string) => void;
 }
@@ -401,33 +415,66 @@ const nodeLabels: Record<string, { name: string; subtitle: string }> = {
 /*  Action-button presets                                              */
 /* ================================================================== */
 
-const ACTION_PRESETS: Record<string, ActionButton[]> = {
-  approval: [
-    { id: "approve", label: "Approve", action: "APPROVED", color: "green", requiresComment: false, requiresUserSelect: false },
-    { id: "reject", label: "Reject", action: "REJECTED", color: "red", requiresComment: true, requiresUserSelect: false },
-  ],
-  recommendation: [
-    { id: "recommend", label: "Recommend", action: "APPROVED", color: "green", requiresComment: false, requiresUserSelect: false },
-    { id: "return", label: "Return", action: "RETURNED", color: "amber", requiresComment: true, requiresUserSelect: false },
-    { id: "reject", label: "Reject", action: "REJECTED", color: "red", requiresComment: true, requiresUserSelect: false },
-  ],
-  review: [
-    { id: "acknowledge", label: "Acknowledge", action: "APPROVED", color: "blue", requiresComment: false, requiresUserSelect: false },
-  ],
-  circulation: [
-    { id: "circulate", label: "Circulate", action: "DELEGATED", color: "purple", requiresComment: false, requiresUserSelect: true },
-  ],
+const ACTION_PRESETS: Record<string, { label: string; description: string; buttons: ActionButton[] }> = {
+  approve_return_reject: {
+    label: "Approve · Return · Reject",
+    description: "3-button: approve, send back for changes, or decline",
+    buttons: [
+      { id: "approve", label: "Approve", action: "APPROVED", color: "green", requiresComment: false, requiresUserSelect: false },
+      { id: "return", label: "Return for Amendments", action: "RETURNED", color: "amber", requiresComment: true, requiresUserSelect: false },
+      { id: "reject", label: "Reject", action: "REJECTED", color: "red", requiresComment: true, requiresUserSelect: false },
+    ],
+  },
+  approve_reject: {
+    label: "Approve · Reject",
+    description: "2-button: approve or decline",
+    buttons: [
+      { id: "approve", label: "Approve", action: "APPROVED", color: "green", requiresComment: false, requiresUserSelect: false },
+      { id: "reject", label: "Reject", action: "REJECTED", color: "red", requiresComment: true, requiresUserSelect: false },
+    ],
+  },
+  submit_withdraw: {
+    label: "Resubmit · Withdraw",
+    description: "2-button: resubmit amended request or cancel",
+    buttons: [
+      { id: "resubmit", label: "Resubmit", action: "APPROVED", color: "green", requiresComment: false, requiresUserSelect: false },
+      { id: "withdraw", label: "Withdraw", action: "REJECTED", color: "red", requiresComment: false, requiresUserSelect: false },
+    ],
+  },
+  acknowledge: {
+    label: "Acknowledge",
+    description: "1-button: confirm receipt or review",
+    buttons: [
+      { id: "acknowledge", label: "Acknowledge", action: "APPROVED", color: "blue", requiresComment: false, requiresUserSelect: false },
+    ],
+  },
+  circulate: {
+    label: "Circulate",
+    description: "1-button: route to another user",
+    buttons: [
+      { id: "circulate", label: "Circulate", action: "DELEGATED", color: "purple", requiresComment: false, requiresUserSelect: true },
+    ],
+  },
 };
 
-const BUTTON_COLORS: ActionButton["color"][] = ["green", "red", "amber", "blue", "purple", "gray"];
+const BUTTON_COLORS: ActionButton["color"][] = [
+  "green", "red", "amber", "blue", "purple", "gray",
+  "orange", "teal", "pink", "indigo", "cyan", "yellow",
+];
 
 const colorChipCls: Record<ActionButton["color"], string> = {
-  green: "bg-green-500",
-  red: "bg-red-500",
-  amber: "bg-amber-500",
-  blue: "bg-blue-500",
+  green:  "bg-green-500",
+  red:    "bg-red-500",
+  amber:  "bg-amber-500",
+  blue:   "bg-blue-500",
   purple: "bg-purple-500",
-  gray: "bg-gray-500",
+  gray:   "bg-gray-500",
+  orange: "bg-orange-500",
+  teal:   "bg-teal-500",
+  pink:   "bg-pink-500",
+  indigo: "bg-indigo-500",
+  cyan:   "bg-cyan-500",
+  yellow: "bg-yellow-400",
 };
 
 /* ------------------------------------------------------------------ */
@@ -439,6 +486,202 @@ interface FormTemplateField {
   name: string;
   label: string;
   type: string;
+}
+
+/* ================================================================== */
+/*  Custom Fields Tab Component                                        */
+/* ================================================================== */
+
+interface CustomField {
+  id: string;
+  label: string;
+  type: "text" | "textarea" | "number" | "select" | "checkbox" | "date" | "file";
+  required: boolean;
+  placeholder?: string;
+  options?: string;
+}
+
+const FIELD_TYPES: { value: CustomField["type"]; label: string }[] = [
+  { value: "text", label: "Text" },
+  { value: "textarea", label: "Long Text" },
+  { value: "number", label: "Number" },
+  { value: "select", label: "Dropdown" },
+  { value: "checkbox", label: "Checkbox" },
+  { value: "date", label: "Date" },
+  { value: "file", label: "File Upload" },
+];
+
+function CustomFieldsTab({
+  data,
+  onUpdate,
+  nodeId,
+}: {
+  data: TaskNodeDataExtended & Record<string, unknown>;
+  onUpdate: (nodeId: string, data: Record<string, unknown>) => void;
+  nodeId: string;
+}) {
+  const fields: CustomField[] = (data.customFields as CustomField[]) ?? [];
+
+  function save(next: CustomField[]) {
+    onUpdate(nodeId, { ...data, customFields: next });
+  }
+
+  function addField() {
+    save([
+      ...fields,
+      { id: `cf_${Date.now()}`, label: "New Field", type: "text", required: false, placeholder: "" },
+    ]);
+  }
+
+  function updateField(id: string, patch: Partial<CustomField>) {
+    save(fields.map((f) => (f.id === id ? { ...f, ...patch } : f)));
+  }
+
+  function removeField(id: string) {
+    save(fields.filter((f) => f.id !== id));
+  }
+
+  function moveField(idx: number, dir: "up" | "down") {
+    if (dir === "up" && idx === 0) return;
+    if (dir === "down" && idx === fields.length - 1) return;
+    const next = [...fields];
+    const swap = dir === "up" ? idx - 1 : idx + 1;
+    [next[idx], next[swap]] = [next[swap], next[idx]];
+    save(next);
+  }
+
+  return (
+    <div className="space-y-3">
+      <div className="flex items-center justify-between">
+        <p className="text-[11px] text-gray-500 dark:text-gray-400 leading-relaxed">
+          Define custom form fields that assignees fill when completing this step.
+        </p>
+        {fields.length > 0 && (
+          <span className="text-[10px] font-semibold text-gray-400 bg-gray-100 dark:bg-gray-800 px-2 py-0.5 rounded-full">
+            {fields.length}
+          </span>
+        )}
+      </div>
+
+      {fields.length === 0 ? (
+        <div className="py-6 text-center rounded-xl border-2 border-dashed border-gray-200 dark:border-gray-700">
+          <svg className="w-8 h-8 text-gray-300 dark:text-gray-600 mx-auto mb-2" fill="none" viewBox="0 0 24 24" strokeWidth={1} stroke="currentColor">
+            <path strokeLinecap="round" strokeLinejoin="round" d="M8.25 6.75h7.5M8.25 12h7.5m-7.5 5.25h7.5M3.75 6.75h.007v.008H3.75V6.75Zm.375 0a.375.375 0 1 1-.75 0 .375.375 0 0 1 .75 0ZM3.75 12h.007v.008H3.75V12Zm.375 0a.375.375 0 1 1-.75 0 .375.375 0 0 1 .75 0Zm-.375 5.25h.007v.008H3.75v-.008Zm.375 0a.375.375 0 1 1-.75 0 .375.375 0 0 1 .75 0Z" />
+          </svg>
+          <p className="text-xs text-gray-400 dark:text-gray-500">No custom fields yet</p>
+        </div>
+      ) : (
+        <div className="space-y-2">
+          {fields.map((field, idx) => (
+            <div
+              key={field.id}
+              className="p-3 bg-gray-50 dark:bg-gray-800/50 rounded-xl border border-gray-200 dark:border-gray-700 space-y-2"
+            >
+              {/* Field header */}
+              <div className="flex items-center justify-between gap-1">
+                <span className="text-[11px] font-semibold text-gray-700 dark:text-gray-300 truncate flex-1">
+                  {field.label || "Untitled Field"}
+                </span>
+                <div className="flex items-center gap-0.5 flex-shrink-0">
+                  <button type="button" onClick={() => moveField(idx, "up")} disabled={idx === 0}
+                    className="p-1 rounded text-gray-400 hover:text-gray-600 dark:hover:text-gray-300 disabled:opacity-30 transition-colors" title="Move up">
+                    <svg className="w-3 h-3" fill="none" viewBox="0 0 24 24" strokeWidth={2} stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" d="M4.5 15.75l7.5-7.5 7.5 7.5" /></svg>
+                  </button>
+                  <button type="button" onClick={() => moveField(idx, "down")} disabled={idx === fields.length - 1}
+                    className="p-1 rounded text-gray-400 hover:text-gray-600 dark:hover:text-gray-300 disabled:opacity-30 transition-colors" title="Move down">
+                    <svg className="w-3 h-3" fill="none" viewBox="0 0 24 24" strokeWidth={2} stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" d="M19.5 8.25l-7.5 7.5-7.5-7.5" /></svg>
+                  </button>
+                  <button type="button" onClick={() => removeField(field.id)}
+                    className="p-1 rounded text-gray-400 hover:text-red-500 dark:hover:text-red-400 transition-colors" title="Remove">
+                    <svg className="w-3 h-3" fill="none" viewBox="0 0 24 24" strokeWidth={2} stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" d="M6 18L18 6M6 6l12 12" /></svg>
+                  </button>
+                </div>
+              </div>
+
+              {/* Label + Type */}
+              <div className="grid grid-cols-2 gap-2">
+                <div className="space-y-1">
+                  <label className={labelCls}>Label</label>
+                  <input
+                    type="text"
+                    value={field.label}
+                    onChange={(e) => updateField(field.id, { label: e.target.value })}
+                    placeholder="Field label"
+                    className={inputCls}
+                  />
+                </div>
+                <div className="space-y-1">
+                  <label className={labelCls}>Type</label>
+                  <select
+                    value={field.type}
+                    onChange={(e) => updateField(field.id, { type: e.target.value as CustomField["type"] })}
+                    className={selectCls}
+                  >
+                    {FIELD_TYPES.map((t) => (
+                      <option key={t.value} value={t.value}>{t.label}</option>
+                    ))}
+                  </select>
+                </div>
+              </div>
+
+              {/* Placeholder (not for checkbox/file) */}
+              {field.type !== "checkbox" && field.type !== "file" && (
+                <div className="space-y-1">
+                  <label className={labelCls}>Placeholder</label>
+                  <input
+                    type="text"
+                    value={field.placeholder ?? ""}
+                    onChange={(e) => updateField(field.id, { placeholder: e.target.value })}
+                    placeholder="e.g. Enter value..."
+                    className={inputCls}
+                  />
+                </div>
+              )}
+
+              {/* Options (select only) */}
+              {field.type === "select" && (
+                <div className="space-y-1">
+                  <label className={labelCls}>Options <span className="text-gray-400 font-normal">(comma-separated)</span></label>
+                  <input
+                    type="text"
+                    value={field.options ?? ""}
+                    onChange={(e) => updateField(field.id, { options: e.target.value })}
+                    placeholder="Option 1, Option 2, Option 3"
+                    className={inputCls}
+                  />
+                </div>
+              )}
+
+              {/* Required toggle */}
+              <div className="flex items-center gap-2">
+                <input
+                  type="checkbox"
+                  id={`req_${field.id}`}
+                  checked={field.required}
+                  onChange={(e) => updateField(field.id, { required: e.target.checked })}
+                  className={checkboxCls}
+                />
+                <label htmlFor={`req_${field.id}`} className="text-xs text-gray-600 dark:text-gray-400">
+                  Required field
+                </label>
+              </div>
+            </div>
+          ))}
+        </div>
+      )}
+
+      <button
+        type="button"
+        onClick={addField}
+        className="w-full px-3 py-2 rounded-xl border border-dashed border-gray-300 dark:border-gray-600 text-xs font-medium text-gray-500 dark:text-gray-400 hover:border-karu-green hover:text-karu-green dark:hover:border-karu-green dark:hover:text-karu-green transition-colors flex items-center justify-center gap-1.5"
+      >
+        <svg className="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" strokeWidth={2} stroke="currentColor">
+          <path strokeLinecap="round" strokeLinejoin="round" d="M12 4.5v15m7.5-7.5h-15" />
+        </svg>
+        Add Field
+      </button>
+    </div>
+  );
 }
 
 /* ================================================================== */
@@ -461,7 +704,6 @@ function FormLayoutTab({
   const [fieldsError, setFieldsError] = useState<string | null>(null);
 
   const fieldConfig: FieldConfig[] = (data.fieldConfig as FieldConfig[]) ?? [];
-  const actionButtons: ActionButton[] = (data.actionButtons as ActionButton[]) ?? [];
 
   /* Fetch form template fields when formTemplateId changes */
   useEffect(() => {
@@ -528,43 +770,6 @@ function FormLayoutTab({
   /* ---- Helper: get current visibility for a field ---- */
   function getFieldVisibility(fieldName: string): FieldConfig["visibility"] {
     return fieldConfig.find((f) => f.fieldName === fieldName)?.visibility ?? "visible";
-  }
-
-  /* ---- Action button helpers ---- */
-  function addActionButton() {
-    const id = `btn_${Date.now()}`;
-    const next: ActionButton[] = [
-      ...actionButtons,
-      { id, label: "New Action", action: "APPROVED", color: "green", requiresComment: false, requiresUserSelect: false },
-    ];
-    onUpdate(nodeId, { ...data, actionButtons: next });
-  }
-
-  function removeActionButton(id: string) {
-    const next = actionButtons.filter((b) => b.id !== id);
-    onUpdate(nodeId, { ...data, actionButtons: next });
-  }
-
-  function updateActionButton(id: string, patch: Partial<ActionButton>) {
-    const next = actionButtons.map((b) => (b.id === id ? { ...b, ...patch } : b));
-    onUpdate(nodeId, { ...data, actionButtons: next });
-  }
-
-  function moveActionButton(idx: number, direction: "up" | "down") {
-    if (direction === "up" && idx === 0) return;
-    if (direction === "down" && idx === actionButtons.length - 1) return;
-    const next = [...actionButtons];
-    const swapIdx = direction === "up" ? idx - 1 : idx + 1;
-    [next[idx], next[swapIdx]] = [next[swapIdx], next[idx]];
-    onUpdate(nodeId, { ...data, actionButtons: next });
-  }
-
-  function applyPreset(presetKey: string) {
-    const preset = ACTION_PRESETS[presetKey];
-    if (preset) {
-      const stamped = preset.map((b) => ({ ...b, id: `${b.id}_${Date.now()}` }));
-      onUpdate(nodeId, { ...data, actionButtons: stamped });
-    }
   }
 
   return (
@@ -750,177 +955,6 @@ function FormLayoutTab({
         )}
       </CollapsibleSection>
 
-      <Divider />
-
-      {/* ---- Action Buttons ---- */}
-      <CollapsibleSection title="Action Buttons" defaultOpen={true}>
-        {/* Presets */}
-        <div className="space-y-1.5">
-          <span className="text-[10px] font-medium text-gray-500 dark:text-gray-400 uppercase tracking-wider">
-            Quick Presets
-          </span>
-          <div className="flex gap-1.5 flex-wrap">
-            {(
-              [
-                ["approval", "Approval"],
-                ["recommendation", "Recommendation"],
-                ["review", "Review"],
-                ["circulation", "Circulation"],
-              ] as const
-            ).map(([key, label]) => (
-              <button
-                key={key}
-                type="button"
-                onClick={() => applyPreset(key)}
-                className="px-2 py-1 rounded-md text-[10px] font-medium border border-gray-200 dark:border-gray-700 text-gray-600 dark:text-gray-400 hover:border-karu-green hover:text-karu-green dark:hover:border-karu-green dark:hover:text-karu-green transition-colors"
-              >
-                {label}
-              </button>
-            ))}
-          </div>
-        </div>
-
-        {/* Button list */}
-        {actionButtons.length === 0 && (
-          <p className="text-xs text-gray-400 dark:text-gray-500 italic">
-            No action buttons configured. Select a preset or add buttons manually.
-          </p>
-        )}
-
-        {actionButtons.map((btn, idx) => (
-          <div
-            key={btn.id}
-            className="p-3 bg-gray-50 dark:bg-gray-800/50 rounded-lg border border-gray-200 dark:border-gray-700 space-y-2"
-          >
-            <div className="flex items-center justify-between">
-              <div className="flex items-center gap-1.5">
-                <span className={`w-2.5 h-2.5 rounded-full ${colorChipCls[btn.color]}`} />
-                <span className="text-[11px] font-semibold text-gray-600 dark:text-gray-300">
-                  {btn.label || "Button"}
-                </span>
-              </div>
-              <div className="flex items-center gap-0.5">
-                {/* Up */}
-                <button
-                  type="button"
-                  onClick={() => moveActionButton(idx, "up")}
-                  disabled={idx === 0}
-                  className="p-1 rounded text-gray-400 hover:text-gray-600 dark:hover:text-gray-300 disabled:opacity-30 transition-colors"
-                  title="Move up"
-                >
-                  <svg className="w-3 h-3" fill="none" viewBox="0 0 24 24" strokeWidth={2} stroke="currentColor">
-                    <path strokeLinecap="round" strokeLinejoin="round" d="M4.5 15.75l7.5-7.5 7.5 7.5" />
-                  </svg>
-                </button>
-                {/* Down */}
-                <button
-                  type="button"
-                  onClick={() => moveActionButton(idx, "down")}
-                  disabled={idx === actionButtons.length - 1}
-                  className="p-1 rounded text-gray-400 hover:text-gray-600 dark:hover:text-gray-300 disabled:opacity-30 transition-colors"
-                  title="Move down"
-                >
-                  <svg className="w-3 h-3" fill="none" viewBox="0 0 24 24" strokeWidth={2} stroke="currentColor">
-                    <path strokeLinecap="round" strokeLinejoin="round" d="M19.5 8.25l-7.5 7.5-7.5-7.5" />
-                  </svg>
-                </button>
-                {/* Remove */}
-                <button
-                  type="button"
-                  onClick={() => removeActionButton(btn.id)}
-                  className="p-1 rounded text-gray-400 hover:text-red-500 dark:hover:text-red-400 transition-colors"
-                  title="Remove button"
-                >
-                  <svg className="w-3 h-3" fill="none" viewBox="0 0 24 24" strokeWidth={2} stroke="currentColor">
-                    <path strokeLinecap="round" strokeLinejoin="round" d="M6 18L18 6M6 6l12 12" />
-                  </svg>
-                </button>
-              </div>
-            </div>
-
-            <div className="grid grid-cols-2 gap-2">
-              <Field>
-                <Label>Label</Label>
-                <input
-                  type="text"
-                  value={btn.label}
-                  onChange={(e) => updateActionButton(btn.id, { label: e.target.value })}
-                  placeholder="Button text"
-                  className={inputCls}
-                />
-              </Field>
-              <Field>
-                <Label>Action</Label>
-                <select
-                  value={btn.action}
-                  onChange={(e) => updateActionButton(btn.id, { action: e.target.value })}
-                  className={selectCls}
-                >
-                  <option value="APPROVED">APPROVED</option>
-                  <option value="REJECTED">REJECTED</option>
-                  <option value="RETURNED">RETURNED</option>
-                  <option value="DELEGATED">DELEGATED</option>
-                  <option value="CUSTOM">Custom...</option>
-                </select>
-              </Field>
-            </div>
-
-            <Field>
-              <Label>Color</Label>
-              <div className="flex gap-1.5">
-                {BUTTON_COLORS.map((c) => (
-                  <button
-                    key={c}
-                    type="button"
-                    onClick={() => updateActionButton(btn.id, { color: c })}
-                    className={`w-6 h-6 rounded-full border-2 transition-all ${colorChipCls[c]} ${
-                      btn.color === c
-                        ? "border-gray-900 dark:border-white scale-110 ring-2 ring-offset-1 ring-gray-400 dark:ring-gray-500 dark:ring-offset-gray-900"
-                        : "border-transparent opacity-60 hover:opacity-100"
-                    }`}
-                    title={c}
-                  />
-                ))}
-              </div>
-            </Field>
-
-            <div className="flex gap-4">
-              <div className="flex items-center gap-1.5">
-                <input
-                  type="checkbox"
-                  id={`reqComment_${btn.id}`}
-                  checked={btn.requiresComment}
-                  onChange={(e) => updateActionButton(btn.id, { requiresComment: e.target.checked })}
-                  className={checkboxCls}
-                />
-                <label htmlFor={`reqComment_${btn.id}`} className="text-[11px] text-gray-600 dark:text-gray-400">
-                  Require comment
-                </label>
-              </div>
-              <div className="flex items-center gap-1.5">
-                <input
-                  type="checkbox"
-                  id={`reqUser_${btn.id}`}
-                  checked={btn.requiresUserSelect}
-                  onChange={(e) => updateActionButton(btn.id, { requiresUserSelect: e.target.checked })}
-                  className={checkboxCls}
-                />
-                <label htmlFor={`reqUser_${btn.id}`} className="text-[11px] text-gray-600 dark:text-gray-400">
-                  Require user select
-                </label>
-              </div>
-            </div>
-          </div>
-        ))}
-
-        <button
-          type="button"
-          onClick={addActionButton}
-          className="w-full px-3 py-2 rounded-lg border border-dashed border-gray-300 dark:border-gray-600 text-xs font-medium text-gray-500 dark:text-gray-400 hover:border-karu-green hover:text-karu-green dark:hover:border-karu-green dark:hover:text-karu-green transition-colors"
-        >
-          + Add Action Button
-        </button>
-      </CollapsibleSection>
     </div>
   );
 }
@@ -931,16 +965,102 @@ function FormLayoutTab({
 
 export default function NodeConfigPanel({
   node,
+  nodes = [],
   onUpdate,
   onDelete,
 }: NodeConfigPanelProps) {
   const [taskTab, setTaskTab] = useState<
-    "general" | "assignment" | "sla" | "notifications" | "form_layout"
+    "general" | "assignment" | "sla" | "notifications" | "form_layout" | "custom_fields"
   >("general");
+
+  /* ── Workflow pools ── */
+  const [pools, setPools] = useState<{ id: string; name: string; _count?: { members: number } }[]>([]);
+
+  useEffect(() => {
+    fetch("/api/workflows/pools")
+      .then((r) => r.ok ? r.json() : { pools: [] })
+      .then((d) => setPools(d.pools ?? []));
+  }, []);
+
+  /* ── System roles (for Escalate To) ── */
+  const [systemRoles, setSystemRoles] = useState<{ id: string; name: string }[]>([]);
+
+  useEffect(() => {
+    fetch("/api/admin/roles")
+      .then((r) => r.ok ? r.json() : { roles: [] })
+      .then((d) => setSystemRoles(d.roles ?? []));
+  }, []);
+
+  /* ── Form templates (for condition field pickers + create_delegation) ── */
+  const [formTemplates, setFormTemplates] = useState<{
+    id: string;
+    name: string;
+    fields: { name: string; label: string; type: string; options?: string[] }[];
+  }[]>([]);
+
+  useEffect(() => {
+    fetch("/api/forms?active=true")
+      .then((r) => r.ok ? r.json() : { templates: [] })
+      .then((d) => setFormTemplates(
+        (d.templates ?? []).map((t: { id: string; name: string; fields: unknown }) => ({
+          id: t.id,
+          name: t.name,
+          fields: Array.isArray(t.fields)
+            ? (t.fields as { name: string; label: string; type: string; options?: string[] }[]).filter(
+                (f) => f.type !== "section" && f.type !== "divider"
+              )
+            : [],
+        }))
+      ));
+  }, []);
+
+  /* ── Form Data datasets (for lookup/update system nodes + condition field picker) ── */
+  const [fdDatasets, setFdDatasets] = useState<{
+    id: string; name: string; slug: string;
+    fields: { name: string; label: string; type: string; options?: string[] }[];
+  }[]>([]);
+  const [fdFields, setFdFields] = useState<Record<string, string[]>>({});
+
+  useEffect(() => {
+    fetch("/api/admin/form-data")
+      .then((r) => r.ok ? r.json() : { schemas: [] })
+      .then((d) => setFdDatasets(
+        (d.schemas ?? []).map((s: {
+          id: string; name: string; slug: string;
+          fields?: { name: string; label: string; type: string; options?: string[] }[];
+        }) => ({
+          id: s.id,
+          name: s.name,
+          slug: s.slug,
+          fields: Array.isArray(s.fields)
+            ? (s.fields as { name: string; label: string; type: string; options?: string[] }[])
+            : [],
+        }))
+      ));
+  }, []);
+
+  const loadFieldsForSlug = useCallback((slug: string) => {
+    if (!slug || fdFields[slug]) return;
+    const ds = fdDatasets.find((d) => d.slug === slug);
+    if (!ds) return;
+    fetch(`/api/admin/form-data/${ds.id}`)
+      .then((r) => r.ok ? r.json() : { schema: null })
+      .then((d) => {
+        const fields = (d.schema?.fields ?? []).map((f: { name: string }) => f.name) as string[];
+        setFdFields((prev) => ({ ...prev, [slug]: fields }));
+      });
+  }, [fdDatasets, fdFields]);
 
   const updateField = useCallback(
     (field: string, value: unknown) => {
       onUpdate(node.id, { ...node.data, [field]: value });
+    },
+    [node.id, node.data, onUpdate]
+  );
+
+  const updateFields = useCallback(
+    (updates: Record<string, unknown>) => {
+      onUpdate(node.id, { ...node.data, ...updates });
     },
     [node.id, node.data, onUpdate]
   );
@@ -1032,13 +1152,80 @@ export default function NodeConfigPanel({
   /*  END NODE                                                         */
   /* ================================================================ */
   if (nodeType === "end") {
+    const data = node.data as { label?: string; outcome?: string } & Record<string, unknown>;
+
+    const OUTCOME_PRESETS: { outcome: string; label: string; dot: string }[] = [
+      { outcome: "approved",  label: "✓ End: Approved",       dot: "bg-green-500" },
+      { outcome: "rejected",  label: "✗ End: Rejected",       dot: "bg-red-500" },
+      { outcome: "withdrawn", label: "End: Withdrawn",        dot: "bg-gray-400" },
+      { outcome: "cancelled", label: "End: Cancelled",        dot: "bg-gray-400" },
+      { outcome: "error",     label: "End: Not Processed",    dot: "bg-orange-500" },
+    ];
+
     return (
       <div className="space-y-4">
         <PanelHeader />
-        <p className="text-xs text-gray-500 dark:text-gray-400 leading-relaxed">
-          This marks the completion of a workflow path. You can have multiple end
-          nodes for different outcomes (e.g., approved path and rejected path).
-        </p>
+
+        {/* Presets */}
+        <div className="space-y-1.5">
+          <span className="text-[10px] font-medium text-gray-500 dark:text-gray-400 uppercase tracking-wider">
+            Quick Presets
+          </span>
+          <div className="grid grid-cols-1 gap-1">
+            {OUTCOME_PRESETS.map((p) => (
+              <button
+                key={p.outcome}
+                type="button"
+                onClick={() => onUpdate(node.id, { ...data, label: p.label, outcome: p.outcome })}
+                className={`flex items-center gap-2 px-3 py-2 rounded-lg border text-left transition-all group ${
+                  data.outcome === p.outcome
+                    ? "border-karu-green bg-karu-green/5 dark:bg-karu-green/10"
+                    : "border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-800 hover:border-karu-green hover:bg-karu-green/5 dark:hover:bg-karu-green/10"
+                }`}
+              >
+                <span className={`w-2 h-2 rounded-full shrink-0 ${p.dot}`} />
+                <span className={`text-[11px] font-semibold ${
+                  data.outcome === p.outcome
+                    ? "text-karu-green"
+                    : "text-gray-700 dark:text-gray-200 group-hover:text-karu-green"
+                }`}>
+                  {p.label}
+                </span>
+              </button>
+            ))}
+          </div>
+        </div>
+
+        <Divider />
+
+        <Field>
+          <Label>Label</Label>
+          <input
+            type="text"
+            value={(data.label as string) ?? ""}
+            onChange={(e) => updateField("label", e.target.value)}
+            placeholder="e.g. ✓ End: Approved"
+            className={inputCls}
+          />
+          <HelpText>Shown below the node on the canvas.</HelpText>
+        </Field>
+
+        <Field>
+          <Label>Outcome Type</Label>
+          <select
+            value={(data.outcome as string) ?? "rejected"}
+            onChange={(e) => updateField("outcome", e.target.value)}
+            className={selectCls}
+          >
+            <option value="approved">Approved — green</option>
+            <option value="rejected">Rejected — red</option>
+            <option value="withdrawn">Withdrawn — gray</option>
+            <option value="cancelled">Cancelled — gray</option>
+            <option value="error">Not Processed / Error — orange</option>
+          </select>
+          <HelpText>Controls the node colour on the canvas.</HelpText>
+        </Field>
+
         <DeleteFooter />
       </div>
     );
@@ -1062,6 +1249,7 @@ export default function NodeConfigPanel({
               ["assignment", "Assignment"],
               ["sla", "SLA"],
               ["notifications", "Notify"],
+              ["custom_fields", "Fields"],
               ["form_layout", "Layout"],
             ] as const
           ).map(([key, label]) => (
@@ -1077,7 +1265,36 @@ export default function NodeConfigPanel({
         </div>
 
         {/* ---- General Tab ---- */}
-        {taskTab === "general" && (
+        {taskTab === "general" && (() => {
+          const actionButtons: ActionButton[] = (data.actionButtons as ActionButton[]) ?? [];
+
+          function addActionButton() {
+            const id = `btn_${Date.now()}`;
+            onUpdate(node.id, { ...data, actionButtons: [...actionButtons, { id, label: "New Action", action: "APPROVED", color: "green", requiresComment: false, requiresUserSelect: false }] });
+          }
+          function removeActionButton(id: string) {
+            onUpdate(node.id, { ...data, actionButtons: actionButtons.filter((b) => b.id !== id) });
+          }
+          function updateActionButton(id: string, patch: Partial<ActionButton>) {
+            onUpdate(node.id, { ...data, actionButtons: actionButtons.map((b) => (b.id === id ? { ...b, ...patch } : b)) });
+          }
+          function moveActionButton(idx: number, dir: "up" | "down") {
+            if (dir === "up" && idx === 0) return;
+            if (dir === "down" && idx === actionButtons.length - 1) return;
+            const next = [...actionButtons];
+            const swap = dir === "up" ? idx - 1 : idx + 1;
+            [next[idx], next[swap]] = [next[swap], next[idx]];
+            onUpdate(node.id, { ...data, actionButtons: next });
+          }
+          function applyPreset(presetKey: string) {
+            const preset = ACTION_PRESETS[presetKey];
+            if (preset) {
+              const stamped = preset.buttons.map((b) => ({ ...b, id: `${b.id}_${Date.now()}` }));
+              onUpdate(node.id, { ...data, actionButtons: stamped });
+            }
+          }
+
+          return (
           <div className="space-y-3">
             <Field>
               <Label required>Step Name</Label>
@@ -1109,7 +1326,7 @@ export default function NodeConfigPanel({
               <textarea
                 value={data.description ?? ""}
                 onChange={(e) => updateField("description", e.target.value)}
-                rows={3}
+                rows={2}
                 placeholder="What should the assignee do?"
                 className={textareaCls}
               />
@@ -1128,8 +1345,150 @@ export default function NodeConfigPanel({
                 <option value="any">Any</option>
               </select>
             </Field>
+
+            <Divider />
+
+            {/* ---- Action Buttons ---- */}
+            <CollapsibleSection title="Action Buttons" defaultOpen={true}>
+              {/* Presets */}
+              <div className="space-y-1.5">
+                <span className="text-[10px] font-medium text-gray-500 dark:text-gray-400 uppercase tracking-wider">
+                  Quick Presets
+                </span>
+                <div className="grid grid-cols-1 gap-1">
+                  {Object.entries(ACTION_PRESETS).map(([key, preset]) => (
+                    <button
+                      key={key}
+                      type="button"
+                      onClick={() => applyPreset(key)}
+                      className="flex items-center justify-between px-3 py-2 rounded-lg border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-800 hover:border-karu-green hover:bg-karu-green/5 dark:hover:border-karu-green dark:hover:bg-karu-green/10 transition-all group text-left"
+                    >
+                      <div>
+                        <span className="text-[11px] font-semibold text-gray-700 dark:text-gray-200 group-hover:text-karu-green block">
+                          {preset.label}
+                        </span>
+                        <span className="text-[10px] text-gray-400 dark:text-gray-500">
+                          {preset.description}
+                        </span>
+                      </div>
+                      <div className="flex gap-1 ml-2 shrink-0">
+                        {preset.buttons.map((b) => (
+                          <span key={b.id} className={`w-2 h-2 rounded-full ${colorChipCls[b.color]}`} />
+                        ))}
+                      </div>
+                    </button>
+                  ))}
+                </div>
+              </div>
+
+              {/* Button list */}
+              {actionButtons.length === 0 && (
+                <p className="text-xs text-gray-400 dark:text-gray-500 italic">
+                  No buttons yet. Click a preset above or add manually.
+                </p>
+              )}
+
+              {actionButtons.map((btn, idx) => (
+                <div
+                  key={btn.id}
+                  className="p-3 bg-gray-50 dark:bg-gray-800/50 rounded-lg border border-gray-200 dark:border-gray-700 space-y-2"
+                >
+                  <div className="flex items-center justify-between">
+                    <div className="flex items-center gap-1.5">
+                      <span className={`w-2.5 h-2.5 rounded-full ${colorChipCls[btn.color]}`} />
+                      <span className="text-[11px] font-semibold text-gray-600 dark:text-gray-300">
+                        {btn.label || "Button"}
+                      </span>
+                    </div>
+                    <div className="flex items-center gap-0.5">
+                      <button type="button" onClick={() => moveActionButton(idx, "up")} disabled={idx === 0}
+                        className="p-1 rounded text-gray-400 hover:text-gray-600 dark:hover:text-gray-300 disabled:opacity-30 transition-colors" title="Move up">
+                        <svg className="w-3 h-3" fill="none" viewBox="0 0 24 24" strokeWidth={2} stroke="currentColor">
+                          <path strokeLinecap="round" strokeLinejoin="round" d="M4.5 15.75l7.5-7.5 7.5 7.5" />
+                        </svg>
+                      </button>
+                      <button type="button" onClick={() => moveActionButton(idx, "down")} disabled={idx === actionButtons.length - 1}
+                        className="p-1 rounded text-gray-400 hover:text-gray-600 dark:hover:text-gray-300 disabled:opacity-30 transition-colors" title="Move down">
+                        <svg className="w-3 h-3" fill="none" viewBox="0 0 24 24" strokeWidth={2} stroke="currentColor">
+                          <path strokeLinecap="round" strokeLinejoin="round" d="M19.5 8.25l-7.5 7.5-7.5-7.5" />
+                        </svg>
+                      </button>
+                      <button type="button" onClick={() => removeActionButton(btn.id)}
+                        className="p-1 rounded text-gray-400 hover:text-red-500 dark:hover:text-red-400 transition-colors" title="Remove button">
+                        <svg className="w-3 h-3" fill="none" viewBox="0 0 24 24" strokeWidth={2} stroke="currentColor">
+                          <path strokeLinecap="round" strokeLinejoin="round" d="M6 18L18 6M6 6l12 12" />
+                        </svg>
+                      </button>
+                    </div>
+                  </div>
+
+                  <div className="grid grid-cols-2 gap-2">
+                    <Field>
+                      <Label>Label</Label>
+                      <input type="text" value={btn.label}
+                        onChange={(e) => updateActionButton(btn.id, { label: e.target.value })}
+                        placeholder="Button text" className={inputCls} />
+                    </Field>
+                    <Field>
+                      <Label>Action</Label>
+                      <select value={btn.action}
+                        onChange={(e) => updateActionButton(btn.id, { action: e.target.value })}
+                        className={selectCls}>
+                        <option value="APPROVED">APPROVED</option>
+                        <option value="REJECTED">REJECTED</option>
+                        <option value="RETURNED">RETURNED</option>
+                        <option value="DELEGATED">DELEGATED</option>
+                        <option value="CUSTOM">Custom...</option>
+                      </select>
+                    </Field>
+                  </div>
+
+                  <Field>
+                    <Label>Color</Label>
+                    <div className="flex flex-wrap gap-1.5">
+                      {BUTTON_COLORS.map((c) => (
+                        <button key={c} type="button"
+                          onClick={() => updateActionButton(btn.id, { color: c })}
+                          className={`w-5 h-5 rounded-full border-2 transition-all ${colorChipCls[c]} ${
+                            btn.color === c
+                              ? "border-gray-900 dark:border-white scale-110 ring-2 ring-offset-1 ring-gray-400 dark:ring-gray-500 dark:ring-offset-gray-900"
+                              : "border-transparent opacity-60 hover:opacity-100"
+                          }`}
+                          title={c}
+                        />
+                      ))}
+                    </div>
+                  </Field>
+
+                  <div className="flex gap-4">
+                    <div className="flex items-center gap-1.5">
+                      <input type="checkbox" id={`reqComment_${btn.id}`} checked={btn.requiresComment}
+                        onChange={(e) => updateActionButton(btn.id, { requiresComment: e.target.checked })}
+                        className={checkboxCls} />
+                      <label htmlFor={`reqComment_${btn.id}`} className="text-[11px] text-gray-600 dark:text-gray-400">
+                        Require comment
+                      </label>
+                    </div>
+                    <div className="flex items-center gap-1.5">
+                      <input type="checkbox" id={`reqUser_${btn.id}`} checked={btn.requiresUserSelect}
+                        onChange={(e) => updateActionButton(btn.id, { requiresUserSelect: e.target.checked })}
+                        className={checkboxCls} />
+                      <label htmlFor={`reqUser_${btn.id}`} className="text-[11px] text-gray-600 dark:text-gray-400">
+                        Require user select
+                      </label>
+                    </div>
+                  </div>
+                </div>
+              ))}
+
+              <button type="button" onClick={addActionButton}
+                className="w-full px-3 py-2 rounded-lg border border-dashed border-gray-300 dark:border-gray-600 text-xs font-medium text-gray-500 dark:text-gray-400 hover:border-karu-green hover:text-karu-green dark:hover:border-karu-green dark:hover:text-karu-green transition-colors">
+                + Add Action Button
+              </button>
+            </CollapsibleSection>
           </div>
-        )}
+          );
+        })()}
 
         {/* ---- Assignment Tab ---- */}
         {taskTab === "assignment" && (
@@ -1189,17 +1548,30 @@ export default function NodeConfigPanel({
 
             {data.assigneeRule === "pool" && (
               <Field>
-                <Label>Pool Name</Label>
-                <input
-                  type="text"
-                  value={data.assigneeValue ?? ""}
-                  onChange={(e) => updateField("assigneeValue", e.target.value)}
-                  placeholder="e.g. Legal Review Queue"
-                  className={inputCls}
-                />
-                <HelpText>
-                  The exact name of the WorkflowPool. Tasks land in this shared queue and any pool member can claim and complete them.
-                </HelpText>
+                <Label>Pool</Label>
+                {pools.length === 0 ? (
+                  <div className="flex items-center gap-2 h-9 px-3 rounded-lg border border-gray-200 dark:border-gray-700 bg-gray-50 dark:bg-gray-800/50">
+                    <svg className="animate-spin w-3.5 h-3.5 text-gray-400 shrink-0" viewBox="0 0 24 24" fill="none">
+                      <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4"/>
+                      <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z"/>
+                    </svg>
+                    <span className="text-xs text-gray-400">Loading pools…</span>
+                  </div>
+                ) : (
+                  <select
+                    value={(data.assigneeValue as string) ?? ""}
+                    onChange={(e) => updateField("assigneeValue", e.target.value)}
+                    className={selectCls}
+                  >
+                    <option value="">— select a pool —</option>
+                    {pools.map((p) => (
+                      <option key={p.id} value={p.name}>
+                        {p.name}{p._count?.members ? ` (${p._count.members} members)` : ""}
+                      </option>
+                    ))}
+                  </select>
+                )}
+                <HelpText>Tasks land in this shared queue — any pool member can claim and complete them.</HelpText>
               </Field>
             )}
 
@@ -1270,84 +1642,353 @@ export default function NodeConfigPanel({
         )}
 
         {/* ---- SLA Tab ---- */}
-        {taskTab === "sla" && (
-          <div className="space-y-3">
-            <Field>
-              <Label>SLA Target (hours)</Label>
-              <input
-                type="number"
-                min={0}
-                max={720}
-                value={(data.slaHours as number) ?? 0}
-                onChange={(e) =>
-                  updateField("slaHours", parseInt(e.target.value) || 0)
-                }
-                className={inputCls}
-              />
-              <HelpText>
-                Expected completion time. Set to 0 for no SLA.
-              </HelpText>
-            </Field>
+        {taskTab === "sla" && (() => {
+          // slaValue is the user-facing number; never fall back to slaHours (which is in hours, not days)
+          const slaUnit = (data.slaUnit as "hours" | "days") ?? "hours";
+          const slaValue = data.slaValue != null ? (data.slaValue as number) : (data.slaHours as number) ?? 0;
+          const escalationUnit = (data.escalationUnit as "hours" | "days") ?? "days";
+          const escalationValue = data.escalationValue != null ? (data.escalationValue as number) : (data.escalationDays as number) ?? 0;
+          const reminderUnit = (data.reminderUnit as "hours" | "days") ?? "days";
+          const reminderValue = data.reminderValue != null ? (data.reminderValue as number) : (data.reminderDays as number) ?? 0;
 
-            <Divider />
+          const unitSelectCls = "h-9 flex-shrink-0 rounded-lg border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-800 px-2 text-sm text-gray-900 dark:text-gray-100 outline-none focus:border-karu-green focus:ring-2 focus:ring-karu-green/20 transition-colors";
 
-            <CollapsibleSection title="Escalation" defaultOpen={true}>
+          return (
+            <div className="space-y-3">
               <Field>
-                <Label>Escalation After (days)</Label>
-                <input
-                  type="number"
-                  min={0}
-                  max={90}
-                  value={data.escalationDays ?? 0}
-                  onChange={(e) =>
-                    updateField(
-                      "escalationDays",
-                      parseInt(e.target.value) || 0
-                    )
-                  }
-                  className={inputCls}
-                />
+                <Label>SLA Target</Label>
+                <div className="flex gap-2">
+                  <input
+                    type="text"
+                    inputMode="numeric"
+                    value={slaValue || ""}
+                    onChange={(e) => {
+                      const v = parseInt(e.target.value) || 0;
+                      updateFields({
+                        slaValue: v,
+                        slaUnit,
+                        slaHours: slaUnit === "hours" ? v : v * 8,
+                      });
+                    }}
+                    placeholder="e.g. 2"
+                    className={inputCls}
+                  />
+                  <select
+                    value={slaUnit}
+                    onChange={(e) => {
+                      const u = e.target.value as "hours" | "days";
+                      updateFields({
+                        slaUnit: u,
+                        slaValue,
+                        slaHours: u === "hours" ? slaValue : slaValue * 8,
+                      });
+                    }}
+                    className={unitSelectCls}
+                  >
+                    <option value="hours">Business Hours</option>
+                    <option value="days">Business Days</option>
+                  </select>
+                </div>
                 <HelpText>
-                  Auto-escalate if not completed. Set to 0 to disable.
+                  Expected completion time in business {slaUnit}. Leave empty for no SLA.
                 </HelpText>
               </Field>
 
-              {(data.escalationDays ?? 0) > 0 && (
+              <Divider />
+
+              <CollapsibleSection title="Escalation" defaultOpen={escalationValue > 0}>
                 <Field>
-                  <Label>Escalate To</Label>
-                  <input
-                    type="text"
-                    value={(data.escalationTo as string) ?? ""}
-                    onChange={(e) =>
-                      updateField("escalationTo", e.target.value)
-                    }
-                    placeholder="User or role to escalate to..."
-                    className={inputCls}
-                  />
+                  <Label>Escalation After</Label>
+                  <div className="flex gap-2">
+                    <input
+                      type="text"
+                      inputMode="numeric"
+                      value={escalationValue || ""}
+                      onChange={(e) => {
+                        const v = parseInt(e.target.value) || 0;
+                        updateFields({
+                          escalationValue: v,
+                          escalationUnit,
+                          escalationDays: escalationUnit === "days" ? v : Math.ceil(v / 8),
+                        });
+                      }}
+                      placeholder="e.g. 2"
+                      className={inputCls}
+                    />
+                    <select
+                      value={escalationUnit}
+                      onChange={(e) => {
+                        const u = e.target.value as "hours" | "days";
+                        updateFields({
+                          escalationUnit: u,
+                          escalationValue,
+                          escalationDays: u === "days" ? escalationValue : Math.ceil(escalationValue / 8),
+                        });
+                      }}
+                      className={unitSelectCls}
+                    >
+                      <option value="hours">Business Hours</option>
+                      <option value="days">Business Days</option>
+                    </select>
+                  </div>
+                  <HelpText>
+                    Auto-escalate if not completed within this time. Leave empty to disable.
+                  </HelpText>
                 </Field>
-              )}
-            </CollapsibleSection>
 
-            <Divider />
+                {escalationValue > 0 && (
+                  <Field>
+                    <Label>Escalate To</Label>
+                    <select
+                      value={(data.escalationTo as string) ?? ""}
+                      onChange={(e) => updateField("escalationTo", e.target.value)}
+                      className={selectCls}
+                    >
+                      <option value="">— select a role —</option>
+                      {systemRoles.map((r) => (
+                        <option key={r.id} value={r.name}>{r.name}</option>
+                      ))}
+                    </select>
+                    <HelpText>
+                      Tasks will be escalated to any user holding this role.
+                    </HelpText>
+                  </Field>
+                )}
 
-            <Field>
-              <Label>Reminder (days before escalation)</Label>
-              <input
-                type="number"
-                min={0}
-                max={30}
-                value={(data.reminderDays as number) ?? 0}
-                onChange={(e) =>
-                  updateField("reminderDays", parseInt(e.target.value) || 0)
-                }
-                className={inputCls}
-              />
-              <HelpText>
-                Send a reminder N days before the escalation deadline.
-              </HelpText>
-            </Field>
-          </div>
-        )}
+                {escalationValue > 0 && (
+                  <Field>
+                    <Label>Reminder Before Escalation</Label>
+                    <div className="flex gap-2">
+                      <input
+                        type="text"
+                        inputMode="numeric"
+                        value={reminderValue || ""}
+                        onChange={(e) => {
+                          const v = parseInt(e.target.value) || 0;
+                          updateFields({
+                            reminderValue: v,
+                            reminderUnit,
+                            reminderDays: reminderUnit === "days" ? v : Math.ceil(v / 8),
+                          });
+                        }}
+                        placeholder="e.g. 1"
+                        className={inputCls}
+                      />
+                      <select
+                        value={reminderUnit}
+                        onChange={(e) => {
+                          const u = e.target.value as "hours" | "days";
+                          updateFields({
+                            reminderUnit: u,
+                            reminderValue,
+                            reminderDays: u === "days" ? reminderValue : Math.ceil(reminderValue / 8),
+                          });
+                        }}
+                        className={unitSelectCls}
+                      >
+                        <option value="hours">Business Hours</option>
+                        <option value="days">Business Days</option>
+                      </select>
+                    </div>
+                    <HelpText>
+                      Send a reminder this many business {reminderUnit} before the escalation deadline.
+                    </HelpText>
+                  </Field>
+                )}
+              </CollapsibleSection>
+
+              <Divider />
+
+              {/* ── Deadline ── */}
+              {(() => {
+                const deadlineType = (data.deadlineType as string) ?? "none";
+                const deadlineRelativeValue = (data.deadlineRelativeValue as number) ?? 0;
+                const deadlineRelativeUnit = (data.deadlineRelativeUnit as "hours" | "days") ?? "days";
+                const deadlineFromField = (data.deadlineFromField as string) ?? "";
+                const deadlineOffsetValue = (data.deadlineOffsetValue as number) ?? 0;
+                const deadlineOffsetUnit = (data.deadlineOffsetUnit as "hours" | "days") ?? "days";
+                const deadlineNotifyBefore = !!(data.deadlineNotifyBefore);
+                const deadlineNotifyBeforeValue = (data.deadlineNotifyBeforeValue as number) ?? 1;
+                const deadlineNotifyBeforeUnit = (data.deadlineNotifyBeforeUnit as "hours" | "days") ?? "days";
+                const deadlineNotifyOverdue = !!(data.deadlineNotifyOverdue);
+                const deadlineNotifyOverdueRole = (data.deadlineNotifyOverdueRole as string) ?? "";
+
+                return (
+                  <CollapsibleSection title="Deadline" defaultOpen={deadlineType !== "none"}>
+                    <Field>
+                      <Label>Deadline Type</Label>
+                      <select
+                        value={deadlineType}
+                        onChange={(e) => updateField("deadlineType", e.target.value)}
+                        className={selectCls}
+                      >
+                        <option value="none">No hard deadline</option>
+                        <option value="relative">Relative — X hours/days after assignment</option>
+                        <option value="from_field">From form field — dynamic date</option>
+                      </select>
+                      <HelpText>
+                        SLA Target is a soft benchmark. A deadline is a hard cutoff tied to a real date (e.g. employee departure, contract expiry).
+                      </HelpText>
+                    </Field>
+
+                    {deadlineType === "relative" && (
+                      <Field>
+                        <Label>Deadline After Assignment</Label>
+                        <div className="flex gap-2">
+                          <input
+                            type="text"
+                            inputMode="numeric"
+                            value={deadlineRelativeValue || ""}
+                            onChange={(e) => updateFields({
+                              deadlineRelativeValue: parseInt(e.target.value) || 0,
+                              deadlineRelativeUnit,
+                            })}
+                            placeholder="e.g. 3"
+                            className={inputCls}
+                          />
+                          <select
+                            value={deadlineRelativeUnit}
+                            onChange={(e) => updateFields({
+                              deadlineRelativeUnit: e.target.value as "hours" | "days",
+                              deadlineRelativeValue,
+                            })}
+                            className="h-9 flex-shrink-0 rounded-lg border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-800 px-2 text-sm text-gray-900 dark:text-gray-100 outline-none focus:border-karu-green focus:ring-2 focus:ring-karu-green/20 transition-colors"
+                          >
+                            <option value="hours">Business Hours</option>
+                            <option value="days">Business Days</option>
+                          </select>
+                        </div>
+                        <HelpText>Task must be completed within this time from when it was assigned.</HelpText>
+                      </Field>
+                    )}
+
+                    {deadlineType === "from_field" && (
+                      <>
+                        <Field>
+                          <Label>Date Field</Label>
+                          <input
+                            type="text"
+                            value={deadlineFromField}
+                            onChange={(e) => updateField("deadlineFromField", e.target.value)}
+                            placeholder="e.g. formData.departure_date"
+                            className={inputCls}
+                          />
+                          <HelpText>Workflow variable holding the deadline date, e.g. <code>formData.travel_date</code> or <code>formData.contract_expiry</code>.</HelpText>
+                        </Field>
+                        <Field>
+                          <Label>Offset Before Field Date</Label>
+                          <div className="flex gap-2">
+                            <input
+                              type="text"
+                              inputMode="numeric"
+                              value={deadlineOffsetValue || ""}
+                              onChange={(e) => updateFields({
+                                deadlineOffsetValue: parseInt(e.target.value) || 0,
+                                deadlineOffsetUnit,
+                              })}
+                              placeholder="0"
+                              className={inputCls}
+                            />
+                            <select
+                              value={deadlineOffsetUnit}
+                              onChange={(e) => updateFields({
+                                deadlineOffsetUnit: e.target.value as "hours" | "days",
+                                deadlineOffsetValue,
+                              })}
+                              className="h-9 flex-shrink-0 rounded-lg border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-800 px-2 text-sm text-gray-900 dark:text-gray-100 outline-none focus:border-karu-green focus:ring-2 focus:ring-karu-green/20 transition-colors"
+                            >
+                              <option value="hours">Hours Before</option>
+                              <option value="days">Days Before</option>
+                            </select>
+                          </div>
+                          <HelpText>Deadline = field date minus this offset. Set to 0 to use the field date directly.</HelpText>
+                        </Field>
+                      </>
+                    )}
+
+                    {deadlineType !== "none" && (
+                      <>
+                        <Divider />
+                        <p className="text-[11px] font-semibold text-gray-500 dark:text-gray-400 uppercase tracking-wide">Deadline Notifications</p>
+
+                        <div className="flex items-start gap-2">
+                          <input
+                            type="checkbox"
+                            id="deadlineNotifyBefore"
+                            checked={deadlineNotifyBefore}
+                            onChange={(e) => updateField("deadlineNotifyBefore", e.target.checked)}
+                            className={checkboxCls}
+                          />
+                          <div className="flex-1">
+                            <label htmlFor="deadlineNotifyBefore" className="text-xs text-gray-700 dark:text-gray-300 cursor-pointer">
+                              Remind assignee before deadline
+                            </label>
+                            {deadlineNotifyBefore && (
+                              <div className="flex gap-2 mt-1.5">
+                                <input
+                                  type="text"
+                                  inputMode="numeric"
+                                  value={deadlineNotifyBeforeValue || ""}
+                                  onChange={(e) => updateFields({
+                                    deadlineNotifyBeforeValue: parseInt(e.target.value) || 1,
+                                    deadlineNotifyBeforeUnit,
+                                  })}
+                                  placeholder="1"
+                                  className="flex-1 h-8 rounded-lg border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-800 px-2 text-xs text-gray-900 dark:text-gray-100 outline-none focus:border-karu-green"
+                                />
+                                <select
+                                  value={deadlineNotifyBeforeUnit}
+                                  onChange={(e) => updateFields({
+                                    deadlineNotifyBeforeUnit: e.target.value as "hours" | "days",
+                                    deadlineNotifyBeforeValue,
+                                  })}
+                                  className="h-8 flex-shrink-0 rounded-lg border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-800 px-2 text-xs text-gray-900 dark:text-gray-100 outline-none focus:border-karu-green"
+                                >
+                                  <option value="hours">Hours Before</option>
+                                  <option value="days">Days Before</option>
+                                </select>
+                              </div>
+                            )}
+                          </div>
+                        </div>
+
+                        <div className="flex items-start gap-2">
+                          <input
+                            type="checkbox"
+                            id="deadlineNotifyOverdue"
+                            checked={deadlineNotifyOverdue}
+                            onChange={(e) => updateField("deadlineNotifyOverdue", e.target.checked)}
+                            className={checkboxCls}
+                          />
+                          <div className="flex-1">
+                            <label htmlFor="deadlineNotifyOverdue" className="text-xs text-gray-700 dark:text-gray-300 cursor-pointer">
+                              Notify when deadline is missed
+                            </label>
+                            {deadlineNotifyOverdue && (
+                              <div className="mt-1.5">
+                                <select
+                                  value={deadlineNotifyOverdueRole}
+                                  onChange={(e) => updateField("deadlineNotifyOverdueRole", e.target.value)}
+                                  className="w-full h-8 rounded-lg border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-800 px-2 text-xs text-gray-900 dark:text-gray-100 outline-none focus:border-karu-green"
+                                >
+                                  <option value="">— notify assignee only —</option>
+                                  {systemRoles.map((r) => (
+                                    <option key={r.id} value={r.name}>{r.name}</option>
+                                  ))}
+                                </select>
+                                <p className="text-[10px] text-gray-400 mt-0.5">Also notify this role when the deadline passes without completion.</p>
+                              </div>
+                            )}
+                          </div>
+                        </div>
+                      </>
+                    )}
+                  </CollapsibleSection>
+                );
+              })()}
+            </div>
+          );
+        })()}
 
         {/* ---- Notifications Tab ---- */}
         {taskTab === "notifications" && (
@@ -1401,6 +2042,10 @@ export default function NodeConfigPanel({
         {/* ---- Form Layout Tab ---- */}
         {taskTab === "form_layout" && (
           <FormLayoutTab data={data} updateField={updateField} onUpdate={onUpdate} nodeId={node.id} />
+        )}
+
+        {taskTab === "custom_fields" && (
+          <CustomFieldsTab data={data} onUpdate={onUpdate} nodeId={node.id} />
         )}
 
         <DeleteFooter />
@@ -1522,127 +2167,278 @@ export default function NodeConfigPanel({
 
         {/* Condition builder */}
         <CollapsibleSection title="Condition Rules" defaultOpen={conditions.length > 0}>
+          {/* Source form template picker */}
+          <Field>
+            <Label>Condition Source</Label>
+            <select
+              value={(data.sourceFormTemplateId as string) ?? ""}
+              onChange={(e) => updateField("sourceFormTemplateId", e.target.value)}
+              className={selectCls}
+            >
+              <option value="">— select source to populate field list —</option>
+              {formTemplates.length > 0 && (
+                <optgroup label="Form Templates / Casefolders">
+                  {formTemplates.map((t) => (
+                    <option key={t.id} value={`ft:${t.id}`}>{t.name}</option>
+                  ))}
+                </optgroup>
+              )}
+              {fdDatasets.length > 0 && (
+                <optgroup label="Data Registry">
+                  {fdDatasets.map((d) => (
+                    <option key={d.id} value={`fd:${d.slug}`}>{d.name}</option>
+                  ))}
+                </optgroup>
+              )}
+            </select>
+            <HelpText>Fields from this source will appear in the Field dropdown below.</HelpText>
+          </Field>
+
           {conditions.length === 0 && (
             <p className="text-xs text-gray-400 dark:text-gray-500 italic">
-              No conditions configured. Add a rule to enable expression-based
-              routing.
+              No conditions yet. Add a rule to enable expression-based routing.
             </p>
           )}
 
-          {conditions.map((cond, idx) => (
-            <div
-              key={cond.id}
-              className="p-3 bg-gray-50 dark:bg-gray-800/50 rounded-lg border border-gray-200 dark:border-gray-700 space-y-2"
-            >
-              <div className="flex items-center justify-between">
-                <span className="text-[11px] font-semibold text-gray-500 dark:text-gray-400 uppercase">
-                  Rule {idx + 1}
-                </span>
-                <button
-                  type="button"
-                  onClick={() => removeCondition(idx)}
-                  className="text-gray-400 hover:text-red-500 dark:hover:text-red-400 transition-colors"
-                  title="Remove rule"
+          {(() => {
+            const srcRaw = (data.sourceFormTemplateId as string) ?? "";
+            const isFd = srcRaw.startsWith("fd:");
+            const isFt = srcRaw.startsWith("ft:");
+
+            let templateFields: { name: string; label: string; type: string; options?: string[] }[] = [];
+            let fieldGroupLabel = "Form Fields";
+
+            if (isFt) {
+              const ftId = srcRaw.slice(3);
+              const srcTemplate = formTemplates.find((t) => t.id === ftId);
+              templateFields = srcTemplate?.fields ?? [];
+            } else if (isFd) {
+              const slug = srcRaw.slice(3);
+              const ds = fdDatasets.find((d) => d.slug === slug);
+              if (ds) {
+                templateFields = ds.fields.map((f) => ({
+                  ...f,
+                  name: `_lookup_${slug}.${f.name}`,
+                }));
+                fieldGroupLabel = `Data Registry: ${ds.name}`;
+              }
+            } else if (srcRaw && !isFt && !isFd) {
+              // legacy bare id — treat as form template
+              const srcTemplate = formTemplates.find((t) => t.id === srcRaw);
+              templateFields = srcTemplate?.fields ?? [];
+            }
+
+            // Derive _lookup_* vars from lookup_form_data actions in other nodes
+            const lookupVars: { name: string; label: string; type: string }[] = [];
+            for (const n of nodes) {
+              const actions = Array.isArray(n.data?.systemActions) ? n.data.systemActions as { type?: string; config?: Record<string, unknown> }[] : [];
+              for (const a of actions) {
+                if (a.type !== "lookup_form_data") continue;
+                const prefix = (a.config?.resultPrefix as string) ?? "";
+                const slug = (a.config?.slug as string) ?? "";
+                if (!prefix || !slug) continue;
+                const ds = fdDatasets.find((d) => d.slug === slug);
+                for (const f of (ds?.fields ?? [])) {
+                  lookupVars.push({
+                    name: `_lookup_${prefix}.${f.name}`,
+                    label: `${prefix} · ${f.label}`,
+                    type: f.type,
+                  });
+                }
+              }
+            }
+
+            const CONTEXT_VARS: { name: string; label: string; type: string }[] = [
+              ...lookupVars,
+              { name: "_action", label: "Last Action (APPROVED / RETURNED …)", type: "text" },
+              { name: "instance.status", label: "Workflow Status", type: "text" },
+            ];
+
+            const allFields = [
+              ...templateFields.map((f) => ({ ...f, group: "form" as const })),
+              ...CONTEXT_VARS.map((v) => ({ ...v, group: "ctx" as const, options: undefined })),
+            ];
+
+            function operatorsFor(fieldName: string) {
+              const f = allFields.find((x) => x.name === fieldName);
+              const t = f?.type ?? "text";
+              if (t === "number") return [
+                ["equals", "="],
+                ["not_equals", "≠"],
+                ["greater_than", ">"],
+                ["greater_than_or_equal", "≥"],
+                ["less_than", "<"],
+                ["less_than_or_equal", "≤"],
+                ["not_empty", "is set"],
+                ["empty", "is empty"],
+              ];
+              if (t === "date" || t === "datetime") return [
+                ["equals", "Equals"],
+                ["not_equals", "Not equals"],
+                ["greater_than", "After"],
+                ["less_than", "Before"],
+                ["not_empty", "Is set"],
+                ["empty", "Is empty"],
+              ];
+              if (t === "select" || t === "radio") return [
+                ["equals", "Equals"],
+                ["not_equals", "Not equals"],
+                ["in_list", "In list"],
+                ["not_empty", "Is set"],
+                ["empty", "Is empty"],
+              ];
+              return [
+                ["equals", "Equals"],
+                ["not_equals", "Not equals"],
+                ["contains", "Contains"],
+                ["not_contains", "Does not contain"],
+                ["not_empty", "Is set"],
+                ["empty", "Is empty"],
+                ["in_list", "In list"],
+              ];
+            }
+
+            function valueOptionsFor(fieldName: string): string[] {
+              const f = allFields.find((x) => x.name === fieldName);
+              return (f as { options?: string[] })?.options ?? [];
+            }
+
+            return conditions.map((cond, idx) => {
+              const ops = operatorsFor(cond.field);
+              const valueOptions = valueOptionsFor(cond.field);
+              const needsValue = cond.operator !== "empty" && cond.operator !== "not_empty";
+
+              return (
+                <div
+                  key={cond.id}
+                  className="p-3 bg-gray-50 dark:bg-gray-800/50 rounded-lg border border-gray-200 dark:border-gray-700 space-y-2"
                 >
-                  <svg
-                    className="w-3.5 h-3.5"
-                    fill="none"
-                    viewBox="0 0 24 24"
-                    strokeWidth={2}
-                    stroke="currentColor"
-                  >
-                    <path
-                      strokeLinecap="round"
-                      strokeLinejoin="round"
-                      d="M6 18 18 6M6 6l12 12"
+                  <div className="flex items-center justify-between">
+                    <span className="text-[11px] font-semibold text-gray-500 dark:text-gray-400 uppercase">
+                      Rule {idx + 1}
+                    </span>
+                    <button
+                      type="button"
+                      onClick={() => removeCondition(idx)}
+                      className="text-gray-400 hover:text-red-500 dark:hover:text-red-400 transition-colors"
+                      title="Remove rule"
+                    >
+                      <svg className="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" strokeWidth={2} stroke="currentColor">
+                        <path strokeLinecap="round" strokeLinejoin="round" d="M6 18 18 6M6 6l12 12" />
+                      </svg>
+                    </button>
+                  </div>
+
+                  <Field>
+                    <Label>Label</Label>
+                    <input
+                      type="text"
+                      value={cond.label}
+                      onChange={(e) => updateCondition(idx, "label", e.target.value)}
+                      placeholder="Condition name"
+                      className={inputCls}
                     />
-                  </svg>
-                </button>
-              </div>
+                  </Field>
 
-              <Field>
-                <Label>Label</Label>
-                <input
-                  type="text"
-                  value={cond.label}
-                  onChange={(e) =>
-                    updateCondition(idx, "label", e.target.value)
-                  }
-                  placeholder="Condition name"
-                  className={inputCls}
-                />
-              </Field>
+                  <Field>
+                    <Label>Field</Label>
+                    {allFields.length > 0 ? (
+                      <select
+                        value={cond.field}
+                        onChange={(e) => updateCondition(idx, "field", e.target.value)}
+                        className={selectCls}
+                      >
+                        <option value="">— select a field —</option>
+                        {templateFields.length > 0 && (
+                          <optgroup label={fieldGroupLabel}>
+                            {templateFields.map((f) => (
+                              <option key={f.name} value={f.name}>
+                                {f.label} ({f.type})
+                              </option>
+                            ))}
+                          </optgroup>
+                        )}
+                        <optgroup label="Workflow Context">
+                          {CONTEXT_VARS.map((v) => (
+                            <option key={v.name} value={v.name}>{v.label}</option>
+                          ))}
+                        </optgroup>
+                        {/* keep manual value if it doesn't match any known field */}
+                        {cond.field && !allFields.find((f) => f.name === cond.field) && (
+                          <option value={cond.field}>{cond.field} (manual)</option>
+                        )}
+                      </select>
+                    ) : (
+                      <input
+                        type="text"
+                        value={cond.field}
+                        onChange={(e) => updateCondition(idx, "field", e.target.value)}
+                        placeholder="e.g. leave_days"
+                        className={inputCls}
+                      />
+                    )}
+                    {allFields.length === 0 && (
+                      <HelpText>Select a Condition Source above to pick from a list, or type a field name manually.</HelpText>
+                    )}
+                  </Field>
 
-              <div className="grid grid-cols-2 gap-2">
-                <Field>
-                  <Label>Field</Label>
-                  <input
-                    type="text"
-                    value={cond.field}
-                    onChange={(e) =>
-                      updateCondition(idx, "field", e.target.value)
-                    }
-                    placeholder="e.g. amount"
-                    className={inputCls}
-                  />
-                </Field>
-                <Field>
-                  <Label>Operator</Label>
-                  <select
-                    value={cond.operator}
-                    onChange={(e) =>
-                      updateCondition(idx, "operator", e.target.value)
-                    }
-                    className={selectCls}
-                  >
-                    <option value="equals">Equals</option>
-                    <option value="not_equals">Not Equals</option>
-                    <option value="greater_than">Greater Than</option>
-                    <option value="less_than">Less Than</option>
-                    <option value="contains">Contains</option>
-                    <option value="not_empty">Not Empty</option>
-                    <option value="empty">Empty</option>
-                    <option value="in_list">In List</option>
-                  </select>
-                </Field>
-              </div>
+                  <div className="grid grid-cols-2 gap-2">
+                    <Field>
+                      <Label>Operator</Label>
+                      <select
+                        value={cond.operator}
+                        onChange={(e) => updateCondition(idx, "operator", e.target.value)}
+                        className={selectCls}
+                      >
+                        {ops.map(([val, lbl]) => (
+                          <option key={val} value={val}>{lbl}</option>
+                        ))}
+                      </select>
+                    </Field>
 
-              {/* Value not needed for empty / not_empty */}
-              {cond.operator !== "empty" && cond.operator !== "not_empty" && (
-                <Field>
-                  <Label>Value</Label>
-                  <input
-                    type="text"
-                    value={cond.value}
-                    onChange={(e) =>
-                      updateCondition(idx, "value", e.target.value)
-                    }
-                    placeholder={
-                      cond.operator === "in_list"
-                        ? "comma,separated,values"
-                        : "Comparison value"
-                    }
-                    className={inputCls}
-                  />
-                </Field>
-              )}
+                    {needsValue && (
+                      <Field>
+                        <Label>Value</Label>
+                        {valueOptions.length > 0 ? (
+                          <select
+                            value={cond.value}
+                            onChange={(e) => updateCondition(idx, "value", e.target.value)}
+                            className={selectCls}
+                          >
+                            <option value="">— select —</option>
+                            {valueOptions.map((o) => (
+                              <option key={o} value={o}>{o}</option>
+                            ))}
+                          </select>
+                        ) : (
+                          <input
+                            type="text"
+                            value={cond.value}
+                            onChange={(e) => updateCondition(idx, "value", e.target.value)}
+                            placeholder={cond.operator === "in_list" ? "val1,val2,val3" : "e.g. 5 or {{formData.leave_days}}"}
+                            className={inputCls}
+                          />
+                        )}
+                      </Field>
+                    )}
+                  </div>
 
-              <Field>
-                <Label>Route To Handle</Label>
-                <select
-                  value={cond.handleId}
-                  onChange={(e) =>
-                    updateCondition(idx, "handleId", e.target.value)
-                  }
-                  className={selectCls}
-                >
-                  <option value="yes">Yes (right)</option>
-                  <option value="no">No (left)</option>
-                  <option value="default">Default (bottom)</option>
-                </select>
-              </Field>
-            </div>
-          ))}
+                  <Field>
+                    <Label>Route To Handle</Label>
+                    <select
+                      value={cond.handleId}
+                      onChange={(e) => updateCondition(idx, "handleId", e.target.value)}
+                      className={selectCls}
+                    >
+                      <option value="yes">Yes (right)</option>
+                      <option value="no">No (left)</option>
+                      <option value="default">Default (bottom)</option>
+                    </select>
+                  </Field>
+                </div>
+              );
+            });
+          })()}
 
           <button
             type="button"
@@ -1885,6 +2681,34 @@ export default function NodeConfigPanel({
           </div>
         </CollapsibleSection>
 
+        <Divider />
+
+        <CollapsibleSection title="CTA Button" defaultOpen={false}>
+          <Field>
+            <Label>Button Label</Label>
+            <input
+              type="text"
+              value={(data.ctaLabel as string) ?? ""}
+              onChange={(e) => updateField("ctaLabel", e.target.value)}
+              placeholder="View Workflow (default)"
+              className={inputCls}
+            />
+          </Field>
+          <Field>
+            <Label>Button URL</Label>
+            <input
+              type="text"
+              value={(data.ctaUrl as string) ?? ""}
+              onChange={(e) => updateField("ctaUrl", e.target.value)}
+              placeholder="{{instance.url}} (default)"
+              className={inputCls}
+            />
+            <HelpText>
+              Leave blank to auto-link to the workflow instance. Available variables: &#123;&#123;instance.url&#125;&#125;, &#123;&#123;instance.referenceNumber&#125;&#125;, &#123;&#123;appUrl&#125;&#125;, &#123;&#123;formData.fieldName&#125;&#125;.
+            </HelpText>
+          </Field>
+        </CollapsibleSection>
+
         <DeleteFooter />
       </div>
     );
@@ -2059,6 +2883,10 @@ export default function NodeConfigPanel({
             <option value="assign_classification">
               Assign Classification
             </option>
+            <option value="lookup_form_data">Lookup Form Data</option>
+            <option value="update_form_data">Update Form Data</option>
+            <option value="create_delegation">Create Delegation</option>
+            <option value="year_end_carry_forward">Year-End Leave Carry-Forward</option>
           </select>
         </Field>
 
@@ -2276,6 +3104,409 @@ export default function NodeConfigPanel({
                   <option value="restricted">Restricted</option>
                 </select>
               </Field>
+            </>
+          )}
+
+          {actionType === "lookup_form_data" && (() => {
+            const slug = (config.slug as string) ?? "";
+            const dsDataset = fdDatasets.find((d) => d.slug === slug);
+            const dsFields = dsDataset?.fields ?? [];
+            const filters: { field: string; value: string }[] =
+              Array.isArray(config.filters) ? config.filters as { field: string; value: string }[] : [];
+
+            return (
+              <>
+                <Field>
+                  <Label required>Dataset</Label>
+                  <select
+                    value={slug}
+                    onChange={(e) => updateConfig("slug", e.target.value)}
+                    className={selectCls}
+                  >
+                    <option value="">— select a dataset —</option>
+                    {fdDatasets.map((d) => (
+                      <option key={d.id} value={d.slug}>{d.name}</option>
+                    ))}
+                  </select>
+                  <HelpText>Datasets are managed in Admin → Form Data.</HelpText>
+                </Field>
+
+                <Field>
+                  <div className="flex items-center justify-between mb-1">
+                    <Label>Filter Conditions</Label>
+                    <button
+                      type="button"
+                      onClick={() => updateConfig("filters", [...filters, { field: "", value: "" }])}
+                      className="text-xs text-[#02773b] hover:underline"
+                    >
+                      + Add Filter
+                    </button>
+                  </div>
+                  {filters.length === 0 && (
+                    <p className="text-xs text-gray-400 italic">No filters — returns first record. Add filters to match specific rows.</p>
+                  )}
+                  <div className="space-y-2">
+                    {filters.map((f, i) => (
+                      <div key={i} className="flex gap-1 items-center">
+                        {dsFields.length > 0 ? (
+                          <select
+                            value={f.field}
+                            onChange={(e) => {
+                              const updated = filters.map((r, j) => j === i ? { ...r, field: e.target.value } : r);
+                              updateConfig("filters", updated);
+                            }}
+                            className="flex-1 h-8 rounded-lg border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-800 px-2 text-xs text-gray-900 dark:text-gray-100 outline-none focus:border-[#02773b]"
+                          >
+                            <option value="">— field —</option>
+                            {dsFields.map((df) => (
+                              <option key={df.name} value={df.name}>{df.label} ({df.name})</option>
+                            ))}
+                          </select>
+                        ) : (
+                          <input
+                            type="text"
+                            value={f.field}
+                            onChange={(e) => {
+                              const updated = filters.map((r, j) => j === i ? { ...r, field: e.target.value } : r);
+                              updateConfig("filters", updated);
+                            }}
+                            placeholder="field name"
+                            className="flex-1 h-8 rounded-lg border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-800 px-2 text-xs text-gray-900 dark:text-gray-100 placeholder:text-gray-400 outline-none focus:border-[#02773b]"
+                          />
+                        )}
+                        <input
+                          type="text"
+                          value={f.value}
+                          onChange={(e) => {
+                            const updated = filters.map((r, j) => j === i ? { ...r, value: e.target.value } : r);
+                            updateConfig("filters", updated);
+                          }}
+                          placeholder="{{formData.field}} or literal"
+                          className="flex-1 h-8 rounded-lg border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-800 px-2 text-xs text-gray-900 dark:text-gray-100 placeholder:text-gray-400 outline-none focus:border-[#02773b]"
+                        />
+                        <button
+                          type="button"
+                          onClick={() => updateConfig("filters", filters.filter((_, j) => j !== i))}
+                          className="text-gray-400 hover:text-red-500 transition-colors flex-shrink-0"
+                        >
+                          <svg className="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" strokeWidth={2} stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" d="M6 18 18 6M6 6l12 12" /></svg>
+                        </button>
+                      </div>
+                    ))}
+                  </div>
+                  <HelpText>Use &#123;&#123;formData.fieldName&#125;&#125; to match submitted values. All conditions must match (AND).</HelpText>
+                </Field>
+
+                <Field>
+                  <Label>Result Variable Prefix</Label>
+                  <input
+                    type="text"
+                    value={(config.resultPrefix as string) ?? ""}
+                    onChange={(e) => updateConfig("resultPrefix", e.target.value)}
+                    placeholder="e.g. balance"
+                    className={inputCls}
+                  />
+                  <HelpText>
+                    Fields inject as <code>_lookup_&#123;prefix&#125;.fieldName</code> — e.g. <code>_lookup_balance.days_remaining</code>
+                  </HelpText>
+                </Field>
+              </>
+            );
+          })()}
+
+          {actionType === "update_form_data" && (() => {
+            const slug = (config.slug as string) ?? "";
+            const fields = fdFields[slug] ?? [];
+            const matchConditions: { field: string; value: string }[] =
+              Array.isArray(config.matchConditions) ? config.matchConditions as { field: string; value: string }[] : [];
+
+            return (
+              <>
+                <Field>
+                  <Label required>Dataset</Label>
+                  <select
+                    value={slug}
+                    onChange={(e) => {
+                      updateConfig("slug", e.target.value);
+                      loadFieldsForSlug(e.target.value);
+                    }}
+                    onFocus={() => loadFieldsForSlug(slug)}
+                    className={selectCls}
+                  >
+                    <option value="">— select a dataset —</option>
+                    {fdDatasets.map((d) => (
+                      <option key={d.id} value={d.slug}>{d.name} ({d.slug})</option>
+                    ))}
+                  </select>
+                </Field>
+
+                <Field>
+                  <div className="flex items-center justify-between mb-1">
+                    <Label>Match Conditions</Label>
+                    <button
+                      type="button"
+                      onClick={() => updateConfig("matchConditions", [...matchConditions, { field: "", value: "" }])}
+                      className="text-xs text-[#02773b] hover:underline"
+                    >
+                      + Add Condition
+                    </button>
+                  </div>
+                  {matchConditions.length === 0 && (
+                    <p className="text-xs text-gray-400 italic">No conditions — will update the first record. Add conditions to target a specific row.</p>
+                  )}
+                  <div className="space-y-2">
+                    {matchConditions.map((c, i) => (
+                      <div key={i} className="flex gap-1 items-center">
+                        <select
+                          value={c.field}
+                          onChange={(e) => {
+                            const updated = matchConditions.map((r, j) => j === i ? { ...r, field: e.target.value } : r);
+                            updateConfig("matchConditions", updated);
+                          }}
+                          className="flex-1 h-8 rounded-lg border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-800 px-2 text-xs text-gray-900 dark:text-gray-100 outline-none focus:border-[#02773b]"
+                        >
+                          <option value="">— field —</option>
+                          {fields.map((fn) => <option key={fn} value={fn}>{fn}</option>)}
+                        </select>
+                        <input
+                          type="text"
+                          value={c.value}
+                          onChange={(e) => {
+                            const updated = matchConditions.map((r, j) => j === i ? { ...r, value: e.target.value } : r);
+                            updateConfig("matchConditions", updated);
+                          }}
+                          placeholder="{{formData.field}} or value"
+                          className="flex-1 h-8 rounded-lg border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-800 px-2 text-xs text-gray-900 dark:text-gray-100 placeholder:text-gray-400 outline-none focus:border-[#02773b]"
+                        />
+                        <button
+                          type="button"
+                          onClick={() => updateConfig("matchConditions", matchConditions.filter((_, j) => j !== i))}
+                          className="text-gray-400 hover:text-red-500 transition-colors flex-shrink-0"
+                        >
+                          <svg className="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" strokeWidth={2} stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" d="M6 18 18 6M6 6l12 12" /></svg>
+                        </button>
+                      </div>
+                    ))}
+                  </div>
+                  <HelpText>All conditions must match the same record (AND). Use &#123;&#123;formData.field&#125;&#125; for dynamic values.</HelpText>
+                </Field>
+
+                <Field>
+                  <Label>Fields to Update (JSON)</Label>
+                  <textarea
+                    value={(config.updates as string) ?? ""}
+                    onChange={(e) => updateConfig("updates", e.target.value)}
+                    rows={4}
+                    placeholder={'{"days_remaining": "{{_lookup_balance.days_remaining - formData.days_requested}}"}'}
+                    className={textareaCls}
+                  />
+                  <HelpText>
+                    JSON object of field names → new values. Supports &#123;&#123;variable&#125;&#125; syntax.
+                  </HelpText>
+                </Field>
+              </>
+            );
+          })()}
+
+          {actionType === "create_delegation" && (() => {
+            const srcRaw = (config.sourceFormTemplateId as string) ?? "";
+            const isFd = srcRaw.startsWith("fd:");
+            const isFt = srcRaw.startsWith("ft:");
+
+            // Derive all fields from whatever source is selected
+            let allFields: { name: string; label: string; type: string }[] = [];
+            if (isFt) {
+              const ft = formTemplates.find((t) => t.id === srcRaw.slice(3));
+              allFields = ft?.fields ?? [];
+            } else if (isFd) {
+              const slug = srcRaw.slice(3);
+              const ds = fdDatasets.find((d) => d.slug === slug);
+              allFields = (ds?.fields ?? []).map((f) => ({
+                ...f,
+                name: `_lookup_${slug}.${f.name}`,
+              }));
+            } else if (srcRaw) {
+              // legacy bare id
+              const ft = formTemplates.find((t) => t.id === srcRaw);
+              allFields = ft?.fields ?? [];
+            }
+
+            const hasSource = !!srcRaw;
+
+            function FieldSelect({
+              configKey,
+              placeholder,
+              hint,
+            }: {
+              configKey: string;
+              placeholder: string;
+              hint?: string;
+            }) {
+              const val = (config[configKey] as string) ?? "";
+              return hasSource ? (
+                <select
+                  value={val}
+                  onChange={(e) => updateConfig(configKey, e.target.value)}
+                  className={selectCls}
+                >
+                  <option value="">— select field —</option>
+                  {allFields.map((f) => (
+                    <option key={f.name} value={f.name}>
+                      {f.label} ({f.type})
+                    </option>
+                  ))}
+                  {val && !allFields.find((f) => f.name === val) && (
+                    <option value={val}>{val} (manual)</option>
+                  )}
+                </select>
+              ) : (
+                <input
+                  type="text"
+                  value={val}
+                  onChange={(e) => updateConfig(configKey, e.target.value)}
+                  placeholder={placeholder}
+                  className={inputCls}
+                />
+              );
+            }
+
+            return (
+              <>
+                <Field>
+                  <Label>Data Source</Label>
+                  <select
+                    value={srcRaw}
+                    onChange={(e) => updateConfig("sourceFormTemplateId", e.target.value)}
+                    className={selectCls}
+                  >
+                    <option value="">— pick a source to load fields —</option>
+                    {formTemplates.length > 0 && (
+                      <optgroup label="Forms / Casefolders">
+                        {formTemplates.map((t) => (
+                          <option key={t.id} value={`ft:${t.id}`}>{t.name}</option>
+                        ))}
+                      </optgroup>
+                    )}
+                    {fdDatasets.length > 0 && (
+                      <optgroup label="Data Registry">
+                        {fdDatasets.map((d) => (
+                          <option key={d.id} value={`fd:${d.slug}`}>{d.name}</option>
+                        ))}
+                      </optgroup>
+                    )}
+                  </select>
+                  <HelpText>Fields from this source will populate the dropdowns below.</HelpText>
+                </Field>
+
+                <Field>
+                  <Label required>Acting Officer Field</Label>
+                  <FieldSelect configKey="delegateField" placeholder="e.g. acting_officer_id" />
+                  <HelpText>Field containing the acting officer&apos;s user ID.</HelpText>
+                </Field>
+
+                <Field>
+                  <Label required>Start Date Field</Label>
+                  <FieldSelect configKey="startDateField" placeholder="e.g. leave_start_date" />
+                </Field>
+
+                <Field>
+                  <Label required>End Date Field</Label>
+                  <FieldSelect configKey="endDateField" placeholder="e.g. leave_end_date" />
+                </Field>
+
+                <Field>
+                  <Label>Delegation Reason</Label>
+                  <input
+                    type="text"
+                    value={(config.reason as string) ?? ""}
+                    onChange={(e) => updateConfig("reason", e.target.value)}
+                    placeholder="e.g. Annual Leave Delegation"
+                    className={inputCls}
+                  />
+                  <HelpText>Use {"{{formData.field_name}}"} to pull values from submitted data.</HelpText>
+                </Field>
+
+                {hasSource && allFields.length === 0 && (
+                  <p className="text-[11px] text-amber-600 dark:text-amber-400 italic">
+                    No fields found in this source.
+                  </p>
+                )}
+
+                <div className="rounded-lg bg-indigo-50 dark:bg-indigo-950/30 border border-indigo-200 dark:border-indigo-800 p-3 space-y-1">
+                  <p className="text-[10px] font-semibold text-indigo-700 dark:text-indigo-300 uppercase tracking-wide">How it works</p>
+                  <p className="text-[10px] text-indigo-600 dark:text-indigo-400 leading-relaxed">
+                    At runtime the system reads the selected fields, deactivates any overlapping delegations for the initiator, then creates a Delegation routing their tasks to the acting officer for the specified period.
+                  </p>
+                </div>
+              </>
+            );
+          })()}
+
+          {actionType === "year_end_carry_forward" && (
+            <>
+              <Field>
+                <Label>From Year (field name or static)</Label>
+                <input
+                  type="text"
+                  value={(config.fromYear as string) ?? ""}
+                  onChange={(e) => updateConfig("fromYear", e.target.value)}
+                  placeholder="e.g. 2026 or form field name"
+                  className={inputCls}
+                />
+                <HelpText>Enter a static year (e.g. 2026) or a form field name that holds the year.</HelpText>
+              </Field>
+              <Field>
+                <Label>To Year (field name or static)</Label>
+                <input
+                  type="text"
+                  value={(config.toYear as string) ?? ""}
+                  onChange={(e) => updateConfig("toYear", e.target.value)}
+                  placeholder="e.g. 2027 or form field name"
+                  className={inputCls}
+                />
+              </Field>
+              <Field>
+                <Label>Balances Dataset Slug</Label>
+                <input
+                  type="text"
+                  value={(config.balancesSlug as string) ?? "leave-balances"}
+                  onChange={(e) => updateConfig("balancesSlug", e.target.value)}
+                  placeholder="leave-balances"
+                  className={inputCls}
+                />
+              </Field>
+              <Field>
+                <Label>Leave Types Dataset Slug</Label>
+                <input
+                  type="text"
+                  value={(config.typesSlug as string) ?? "leave-types"}
+                  onChange={(e) => updateConfig("typesSlug", e.target.value)}
+                  placeholder="leave-types"
+                  className={inputCls}
+                />
+              </Field>
+              <Field>
+                <Label>Carry-Forward Rules (JSON)</Label>
+                <textarea
+                  value={(config.rules as string) ?? ""}
+                  onChange={(e) => updateConfig("rules", e.target.value)}
+                  rows={6}
+                  placeholder={`[
+  {"leaveType":"Annual Leave","enabled":true,"cap":10},
+  {"leaveType":"Sick Leave","enabled":false,"cap":0}
+]`}
+                  className={textareaCls}
+                />
+                <HelpText>
+                  JSON array — one object per leave type. <code>enabled</code>: whether this type carries forward. <code>cap</code>: maximum days that can carry over.
+                </HelpText>
+              </Field>
+              <div className="rounded-lg bg-amber-50 dark:bg-amber-950/30 border border-amber-200 dark:border-amber-800 p-3 space-y-1">
+                <p className="text-[10px] font-semibold text-amber-700 dark:text-amber-300 uppercase tracking-wide">Tip</p>
+                <p className="text-[10px] text-amber-600 dark:text-amber-400 leading-relaxed">
+                  Use this node after an &quot;HR Director Approves&quot; task to automate the year-end rollover. The engine skips employees who already have a toYear balance record, so the action is safe to re-run. Use <strong>Admin → Leave Management</strong> for a preview before running.
+                </p>
+              </div>
             </>
           )}
         </CollapsibleSection>

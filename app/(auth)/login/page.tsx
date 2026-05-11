@@ -107,11 +107,11 @@ export default function LoginPage() {
       <div className="text-center mb-6 lg:mb-8">
         <div className="flex justify-center mb-5 animate-scale-in">
           <Image
-            src="/karu-crest.png"
-            alt="Karatina University Crest"
-            width={112}
-            height={112}
-            className="h-14 w-auto drop-shadow-sm"
+            src="/karu-logo-v2.png"
+            alt="Karatina University Logo"
+            width={360}
+            height={144}
+            className="h-24 w-auto drop-shadow-sm"
             priority
           />
         </div>

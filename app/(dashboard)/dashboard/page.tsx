@@ -21,6 +21,14 @@ import {
 import { Can } from "@/components/auth/can";
 import { usePermissions } from "@/lib/use-permissions";
 
+interface WorkflowModule {
+  id: string;
+  name: string;
+  slug: string;
+  instanceName: string | null;
+  sidebarIcon: string | null;
+}
+
 interface DashboardStats {
   totalDocuments: number;
   activeWorkflows: number;
@@ -292,6 +300,7 @@ export default function DashboardPage() {
   const [analytics, setAnalytics] = useState<MemoAnalytics | null>(null);
   const [isLoadingAnalytics, setIsLoadingAnalytics] = useState(true);
   const [isLoadingStats, setIsLoadingStats] = useState(true);
+  const [workflowModules, setWorkflowModules] = useState<WorkflowModule[]>([]);
 
   const canReadDocuments = can("documents:read");
   const canReadWorkflows = can("workflows:read");
@@ -300,6 +309,14 @@ export default function DashboardPage() {
   const visibleQuickActions = quickActions.filter((a) => can(a.permission));
   const showTasksPanel = canReadWorkflows;
   const showMemosPanel = canReadMemos;
+
+  // Fetch workflow modules independently — sidebar API only requires auth, no specific permission
+  useEffect(() => {
+    fetch("/api/workflows/sidebar")
+      .then((r) => r.ok ? r.json() : null)
+      .then((data) => { if (data?.modules) setWorkflowModules(data.modules); })
+      .catch(() => null);
+  }, []);
 
   useEffect(() => {
     if (!ready) return;
@@ -512,6 +529,58 @@ export default function DashboardPage() {
       </div>
       )}
 
+      {/* Published Workflow Modules */}
+      {workflowModules.length > 0 && (
+        <section className="animate-slide-up delay-350">
+          <div className="flex items-center justify-between mb-3">
+            <h2 className="text-lg font-semibold text-gray-900 dark:text-gray-100">Workflow Services</h2>
+            <Link href="/workflows" className="text-xs text-karu-green hover:underline">
+              My Tasks →
+            </Link>
+          </div>
+          <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-3">
+            {workflowModules.map((mod) => {
+              const instanceLabel = mod.instanceName ?? mod.name;
+              const base = `/w/${mod.slug}`;
+              return (
+                <div
+                  key={mod.id}
+                  className="bg-white dark:bg-gray-900 rounded-xl border border-gray-200 dark:border-gray-800 p-4 hover:border-karu-green/40 hover:shadow-sm transition-all group"
+                >
+                  <div className="flex items-start gap-3">
+                    <div className="w-10 h-10 rounded-lg bg-karu-green/10 flex items-center justify-center text-karu-green flex-shrink-0">
+                      <svg className="w-5 h-5" fill="none" viewBox="0 0 24 24" strokeWidth={1.5} stroke="currentColor">
+                        <path strokeLinecap="round" strokeLinejoin="round" d="M3.75 12h16.5m-16.5 3.75h16.5M3.75 8.25h16.5m-16.5-4.5h16.5" />
+                      </svg>
+                    </div>
+                    <div className="flex-1 min-w-0">
+                      <h3 className="text-sm font-semibold text-gray-900 dark:text-gray-100 truncate group-hover:text-karu-green transition-colors">
+                        {mod.name}
+                      </h3>
+                      <p className="text-xs text-gray-500 dark:text-gray-400 mt-0.5 truncate">{instanceLabel}</p>
+                    </div>
+                  </div>
+                  <div className="mt-3 flex gap-2">
+                    <Link
+                      href={`${base}/create`}
+                      className="flex-1 h-8 rounded-lg bg-karu-green text-white text-xs font-medium flex items-center justify-center hover:bg-karu-green-dark transition-colors"
+                    >
+                      + New
+                    </Link>
+                    <Link
+                      href={`${base}/inbox`}
+                      className="flex-1 h-8 rounded-lg border border-gray-200 dark:border-gray-700 text-xs text-gray-600 dark:text-gray-400 flex items-center justify-center hover:bg-gray-50 dark:hover:bg-gray-800 transition-colors"
+                    >
+                      My Inbox
+                    </Link>
+                  </div>
+                </div>
+              );
+            })}
+          </div>
+        </section>
+      )}
+
       {/* Memo Analytics */}
       <Can permission="memos:read">
         <section className="animate-slide-up delay-350">
@@ -614,7 +683,7 @@ export default function DashboardPage() {
                   },
                   {
                     label: "Avg Turnaround",
-                    value: `${analytics.kpis.avgTurnaroundHours.toFixed(1)}h`,
+                    value: analytics.kpis.avgTurnaroundHours != null ? `${analytics.kpis.avgTurnaroundHours.toFixed(1)}h` : "—",
                     color: "text-purple-600 dark:text-purple-400",
                     bg: "bg-purple-50 dark:bg-purple-900/20",
                     icon: (
@@ -850,13 +919,13 @@ export default function DashboardPage() {
                   <h3 className="text-sm font-semibold text-gray-900 dark:text-gray-100 mb-3">
                     Top Initiators
                   </h3>
-                  {analytics.topInitiators.length === 0 ? (
+                  {(analytics.topInitiators ?? []).length === 0 ? (
                     <p className="text-sm text-gray-500 dark:text-gray-400">
                       No initiators yet.
                     </p>
                   ) : (
                     (() => {
-                      const initData = analytics.topInitiators.slice(0, 6);
+                      const initData = (analytics.topInitiators ?? []).slice(0, 6);
                       // Truncate only very long names; the YAxis width below
                       // is generous so most names render in full.
                       const truncate = (s: string) =>
@@ -929,13 +998,13 @@ export default function DashboardPage() {
                   <h3 className="text-sm font-semibold text-gray-900 dark:text-gray-100 mb-3">
                     Memos by Department
                   </h3>
-                  {analytics.byDepartment.length === 0 ? (
+                  {(analytics.byDepartment ?? []).length === 0 ? (
                     <p className="text-sm text-gray-500 dark:text-gray-400">
                       No department data.
                     </p>
                   ) : (
                     (() => {
-                      const deptData = analytics.byDepartment.slice(0, 8);
+                      const deptData = (analytics.byDepartment ?? []).slice(0, 8);
                       // Truncate only very long names; the YAxis width below
                       // is generous so most departments render in full.
                       const truncate = (s: string) =>
@@ -1005,13 +1074,13 @@ export default function DashboardPage() {
                   <h3 className="text-sm font-semibold text-gray-900 dark:text-gray-100 mb-3">
                     Top Recommenders
                   </h3>
-                  {analytics.topRecommenders.length === 0 ? (
+                  {(analytics.topRecommenders ?? []).length === 0 ? (
                     <p className="text-sm text-gray-500 dark:text-gray-400">
                       No recommender activity.
                     </p>
                   ) : (
                     <ul className="space-y-2.5">
-                      {analytics.topRecommenders.slice(0, 6).map((r, idx) => (
+                      {(analytics.topRecommenders ?? []).slice(0, 6).map((r, idx) => (
                         <li
                           key={r.name}
                           className="flex items-center gap-3 text-xs"
@@ -1028,7 +1097,7 @@ export default function DashboardPage() {
                             {r.count} memo{r.count === 1 ? "" : "s"}
                           </span>
                           <span className="inline-flex items-center px-2 py-0.5 rounded-full text-[10px] font-medium bg-gray-200 dark:bg-gray-700 text-gray-600 dark:text-gray-300 flex-shrink-0">
-                            {r.avgHours.toFixed(1)}h avg
+                            {r.avgHours != null ? `${r.avgHours.toFixed(1)}h avg` : "—"}
                           </span>
                         </li>
                       ))}
