@@ -800,15 +800,30 @@ export function FormRenderer({
       [k: string]: unknown;
     };
 
+    const now = new Date();
+    const currentYear = now.getFullYear();
     const tokenMap: Record<string, string> = {
       "user.employeeId": u.employeeId ?? "",
       "user.department": u.department ?? "",
-      currentYear: String(new Date().getFullYear()),
+      currentYear: String(currentYear),
+      nextYear: String(currentYear + 1),
+      prevYear: String(currentYear - 1),
     };
 
     const resolveToken = (token: string): string => {
       if (token in tokenMap) return tokenMap[token];
       return String(formData[token] ?? "");
+    };
+
+    const fetchFirstRecord = async (
+      slug: string,
+      qs: URLSearchParams
+    ): Promise<Record<string, unknown> | null> => {
+      const res = await fetch(`/api/form-data/${slug}?${qs}`);
+      if (!res.ok) return null;
+      const data = await res.json();
+      const records = (data.records ?? []) as { data: Record<string, unknown> }[];
+      return records[0]?.data ?? null;
     };
 
     (async () => {
@@ -822,32 +837,49 @@ export function FormRenderer({
           continue;
         }
 
-        // Don't query if required extra filter values are missing
-        const extraEntries = Object.entries(cfg.extraFilters ?? {});
-        const resolvedExtras = extraEntries.map(([k, v]) => [k, resolveToken(v)] as [string, string]);
-        const missingRequired = resolvedExtras.some(([, v]) => !v);
-        if (missingRequired) continue;
-
         try {
-          const qs = new URLSearchParams();
-          // Primary match
           const datasetField = cfg.matchDatasetField?.trim() || cfg.matchField;
-          qs.set(`filter_${datasetField}`, triggerValue);
-          // Extra filters
-          for (const [dsField, val] of resolvedExtras) {
-            if (val) qs.set(`filter_${dsField}`, val);
-          }
-          qs.set("limit", "10");
+          const extraEntries = Object.entries(cfg.extraFilters ?? {});
+          const resolvedExtras = extraEntries.map(
+            ([k, v]) => [k, resolveToken(v)] as [string, string]
+          );
 
-          const res = await fetch(`/api/form-data/${cfg.slug}?${qs}`);
+          // Identify which extra filters are year-type tokens so we can fall back
+          const yearTokens = new Set(["currentYear", "nextYear", "prevYear"]);
+          const yearFilters = extraEntries
+            .filter(([, v]) => yearTokens.has(v))
+            .map(([k]) => k);
+
+          const buildQs = (skipYearFields: boolean) => {
+            const qs = new URLSearchParams();
+            qs.set(`filter_${datasetField}`, triggerValue);
+            for (const [dsField, val] of resolvedExtras) {
+              if (skipYearFields && yearFilters.includes(dsField)) continue;
+              if (val) qs.set(`filter_${dsField}`, val);
+            }
+            qs.set("limit", "20");
+            // When not filtering by year, sort by year desc to get the latest
+            if (skipYearFields && yearFilters.length > 0) {
+              qs.set("sort_by", yearFilters[0]);
+              qs.set("sort_order", "desc");
+            }
+            return qs;
+          };
+
           if (cancelled) return;
-          if (!res.ok) { onChange(field.name, ""); continue; }
 
-          const data = await res.json();
-          const records = (data.records ?? []) as { data: Record<string, unknown> }[];
-          const first = records[0];
-          const val = first ? String(first.data[cfg.returnField] ?? "") : "";
-          if (!cancelled) onChange(field.name, val);
+          // Primary attempt — with all filters including year
+          let record = await fetchFirstRecord(cfg.slug, buildQs(false));
+
+          // Fallback — if nothing found and we had a year filter, retry without
+          // the year constraint and take the most recent year's record instead
+          if (!record && yearFilters.length > 0) {
+            record = await fetchFirstRecord(cfg.slug, buildQs(true));
+          }
+
+          if (!cancelled) {
+            onChange(field.name, record ? String(record[cfg.returnField] ?? "") : "");
+          }
         } catch {
           // silent — leave field empty
         }

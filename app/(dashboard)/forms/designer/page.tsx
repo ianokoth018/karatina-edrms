@@ -2045,7 +2045,9 @@ function PropertiesPanel({
         const TOKEN_OPTIONS = [
           { value: "user.employeeId", label: "Current user — Employee ID" },
           { value: "user.department",  label: "Current user — Department" },
-          { value: "currentYear",      label: "Current year" },
+          { value: "currentYear",      label: "Current year (auto-falls back to nearest if no match)" },
+          { value: "nextYear",         label: "Next year (auto-falls back to nearest if no match)" },
+          { value: "prevYear",         label: "Previous year" },
         ];
 
         const SELECT_CLS =

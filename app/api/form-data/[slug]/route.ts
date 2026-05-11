@@ -51,6 +51,11 @@ export async function GET(req: NextRequest, { params }: Ctx) {
     });
     if (!schema) return NextResponse.json({ error: "Dataset not found" }, { status: 404 });
 
+    // Optional: sort by a JSON field after client-side filter
+    // sort_by=FIELDNAME&sort_order=asc|desc
+    const sortBy = url.searchParams.get("sort_by");
+    const sortOrder = url.searchParams.get("sort_order") ?? "asc";
+
     const rawRecords = await db.formDataEntry.findMany({
       where: { schemaId: schema.id },
       orderBy: { createdAt: "asc" },
@@ -59,7 +64,7 @@ export async function GET(req: NextRequest, { params }: Ctx) {
 
     // Apply all filters client-side (case-insensitive string match)
     const filterEntries = Object.entries(filters);
-    const records = filterEntries.length > 0
+    let records = filterEntries.length > 0
       ? rawRecords.filter((r) => {
           const d = r.data as Record<string, unknown>;
           return filterEntries.every(([field, val]) =>
@@ -67,6 +72,19 @@ export async function GET(req: NextRequest, { params }: Ctx) {
           );
         })
       : rawRecords;
+
+    // Client-side sort by JSON field (e.g. sort_by=year&sort_order=desc)
+    if (sortBy) {
+      records = [...records].sort((a, b) => {
+        const da = a.data as Record<string, unknown>;
+        const db_ = b.data as Record<string, unknown>;
+        const va = Number(da[sortBy] ?? 0) || String(da[sortBy] ?? "");
+        const vb = Number(db_[sortBy] ?? 0) || String(db_[sortBy] ?? "");
+        if (va < vb) return sortOrder === "desc" ? 1 : -1;
+        if (va > vb) return sortOrder === "desc" ? -1 : 1;
+        return 0;
+      });
+    }
 
     return NextResponse.json({
       schema: { id: schema.id, name: schema.name, slug: schema.slug, fields: schema.fields },
