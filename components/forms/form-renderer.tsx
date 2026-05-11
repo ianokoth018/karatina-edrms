@@ -780,15 +780,13 @@ export function FormRenderer({
   // ------------------------------------------------------------------
 
   const lookupFields = useMemo(
-    () => fields.filter((f) => !!f.lookupFormData),
+    () => fields.filter((f) => !!f.lookupFormData?.slug && !!f.lookupFormData?.returnField && !!f.lookupFormData?.matchField),
     [fields]
   );
 
-  // Build a stable key from all trigger-field values so we detect changes
-  const lookupTriggerKey = useMemo(
-    () => lookupFields.map((f) => String(formData[f.lookupFormData!.matchField] ?? "")).join("|"),
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-    [lookupFields, ...lookupFields.map((f) => formData[f.lookupFormData!.matchField])]
+  // Serialize trigger values to a stable string dep — avoids dynamic spread
+  const lookupTriggerSerial = JSON.stringify(
+    lookupFields.map((f) => [f.name, formData[f.lookupFormData!.matchField] ?? ""])
   );
 
   useEffect(() => {
@@ -797,46 +795,58 @@ export function FormRenderer({
 
     let cancelled = false;
 
-    const u = session.user;
+    const u = session.user as {
+      employeeId?: string; department?: string;
+      [k: string]: unknown;
+    };
+
     const tokenMap: Record<string, string> = {
       "user.employeeId": u.employeeId ?? "",
       "user.department": u.department ?? "",
       currentYear: String(new Date().getFullYear()),
     };
 
-    const resolveValue = (token: string): string => {
+    const resolveToken = (token: string): string => {
       if (token in tokenMap) return tokenMap[token];
-      // Treat as a form field name
       return String(formData[token] ?? "");
     };
 
     (async () => {
       for (const field of lookupFields) {
         const cfg = field.lookupFormData!;
-        const triggerValue = String(formData[cfg.matchField] ?? "");
+        const triggerValue = String(formData[cfg.matchField] ?? "").trim();
+
+        // Clear when trigger is empty
         if (!triggerValue) {
-          // Clear the field when trigger is empty
           if (!cancelled) onChange(field.name, "");
           continue;
         }
 
+        // Don't query if required extra filter values are missing
+        const extraEntries = Object.entries(cfg.extraFilters ?? {});
+        const resolvedExtras = extraEntries.map(([k, v]) => [k, resolveToken(v)] as [string, string]);
+        const missingRequired = resolvedExtras.some(([, v]) => !v);
+        if (missingRequired) continue;
+
         try {
           const qs = new URLSearchParams();
           // Primary match
-          const datasetField = cfg.matchDatasetField ?? cfg.matchField;
+          const datasetField = cfg.matchDatasetField?.trim() || cfg.matchField;
           qs.set(`filter_${datasetField}`, triggerValue);
           // Extra filters
-          for (const [dsField, token] of Object.entries(cfg.extraFilters ?? {})) {
-            const val = resolveValue(token);
+          for (const [dsField, val] of resolvedExtras) {
             if (val) qs.set(`filter_${dsField}`, val);
           }
-          qs.set("limit", "5");
+          qs.set("limit", "10");
 
           const res = await fetch(`/api/form-data/${cfg.slug}?${qs}`);
-          if (!res.ok || cancelled) continue;
+          if (cancelled) return;
+          if (!res.ok) { onChange(field.name, ""); continue; }
+
           const data = await res.json();
-          const first = (data.records as { data: Record<string, unknown> }[])?.[0];
-          const val = first ? (first.data[cfg.returnField] ?? "") : "";
+          const records = (data.records ?? []) as { data: Record<string, unknown> }[];
+          const first = records[0];
+          const val = first ? String(first.data[cfg.returnField] ?? "") : "";
           if (!cancelled) onChange(field.name, val);
         } catch {
           // silent — leave field empty
@@ -845,8 +855,10 @@ export function FormRenderer({
     })();
 
     return () => { cancelled = true; };
+  // lookupTriggerSerial is a JSON string of [fieldName, triggerValue] pairs —
+  // it changes whenever any trigger field value changes.
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [lookupTriggerKey, session]);
+  }, [lookupTriggerSerial, session?.user?.id]);
 
   // ------------------------------------------------------------------
   // Cross-field validation — evaluated live on every formData change

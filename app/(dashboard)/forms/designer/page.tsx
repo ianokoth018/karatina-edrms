@@ -2036,8 +2036,8 @@ function PropertiesPanel({
         </CollapsibleSection>
       )}
 
-      {/* Form Data Lookup (number + text fields) */}
-      {(isNumber || field.type === "text") && (() => {
+      {/* Form Data Lookup — available on any input field */}
+      {!isLayout && !isAnyUserPicker && (() => {
         const selSchema = formDataSchemas.find((s) => s.slug === field.lookupFormData?.slug);
         const dsFields = selSchema?.fields ?? [];
 
