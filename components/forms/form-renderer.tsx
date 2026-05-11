@@ -86,6 +86,40 @@ export interface FormField {
     startField: string;
     endField: string;
   };
+  /**
+   * Look up a value from a FormData dataset and auto-populate this field.
+   * The lookup fires whenever `matchField` changes.
+   *
+   * Built-in filter tokens (resolved automatically):
+   *   "user.employeeId" — current user's employee ID
+   *   "user.department" — current user's department
+   *   "currentYear"     — current calendar year as a string
+   *
+   * Any other filter value is treated as a form field name and its current
+   * value is used.
+   */
+  lookupFormData?: {
+    /** Slug of the FormDataSchema to query (e.g. "leave_balances") */
+    slug: string;
+    /** The field name in the dataset whose value to return (e.g. "days_remaining") */
+    returnField: string;
+    /**
+     * The form field whose change triggers the lookup (e.g. "type_of_leave").
+     * Its current value is sent as `filter_{matchDatasetField}`.
+     */
+    matchField: string;
+    /**
+     * The dataset field name to match `matchField` value against.
+     * Defaults to the same name as `matchField` when omitted.
+     */
+    matchDatasetField?: string;
+    /**
+     * Additional static filters applied to every lookup.
+     * Values can be "user.employeeId", "user.department", "currentYear",
+     * or any form field name.
+     */
+    extraFilters?: Record<string, string>;
+  };
 }
 
 /**
@@ -739,6 +773,80 @@ export function FormRenderer({
       formData[f.autoCalculate!.endField],
     ]),
   ]);
+
+  // ------------------------------------------------------------------
+  // lookupFormData — fetch a value from a FormData dataset whenever
+  // the trigger field changes (e.g. leave type → leave balance)
+  // ------------------------------------------------------------------
+
+  const lookupFields = useMemo(
+    () => fields.filter((f) => !!f.lookupFormData),
+    [fields]
+  );
+
+  // Build a stable key from all trigger-field values so we detect changes
+  const lookupTriggerKey = useMemo(
+    () => lookupFields.map((f) => String(formData[f.lookupFormData!.matchField] ?? "")).join("|"),
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [lookupFields, ...lookupFields.map((f) => formData[f.lookupFormData!.matchField])]
+  );
+
+  useEffect(() => {
+    if (lookupFields.length === 0) return;
+    if (!session?.user) return;
+
+    let cancelled = false;
+
+    const u = session.user;
+    const tokenMap: Record<string, string> = {
+      "user.employeeId": u.employeeId ?? "",
+      "user.department": u.department ?? "",
+      currentYear: String(new Date().getFullYear()),
+    };
+
+    const resolveValue = (token: string): string => {
+      if (token in tokenMap) return tokenMap[token];
+      // Treat as a form field name
+      return String(formData[token] ?? "");
+    };
+
+    (async () => {
+      for (const field of lookupFields) {
+        const cfg = field.lookupFormData!;
+        const triggerValue = String(formData[cfg.matchField] ?? "");
+        if (!triggerValue) {
+          // Clear the field when trigger is empty
+          if (!cancelled) onChange(field.name, "");
+          continue;
+        }
+
+        try {
+          const qs = new URLSearchParams();
+          // Primary match
+          const datasetField = cfg.matchDatasetField ?? cfg.matchField;
+          qs.set(`filter_${datasetField}`, triggerValue);
+          // Extra filters
+          for (const [dsField, token] of Object.entries(cfg.extraFilters ?? {})) {
+            const val = resolveValue(token);
+            if (val) qs.set(`filter_${dsField}`, val);
+          }
+          qs.set("limit", "5");
+
+          const res = await fetch(`/api/form-data/${cfg.slug}?${qs}`);
+          if (!res.ok || cancelled) continue;
+          const data = await res.json();
+          const first = (data.records as { data: Record<string, unknown> }[])?.[0];
+          const val = first ? (first.data[cfg.returnField] ?? "") : "";
+          if (!cancelled) onChange(field.name, val);
+        } catch {
+          // silent — leave field empty
+        }
+      }
+    })();
+
+    return () => { cancelled = true; };
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [lookupTriggerKey, session]);
 
   // ------------------------------------------------------------------
   // Cross-field validation — evaluated live on every formData change

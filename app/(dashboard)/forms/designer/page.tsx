@@ -85,6 +85,14 @@ interface FormField {
     startField: string;
     endField: string;
   };
+  /** Look up a value from a FormData dataset and auto-populate this field when a trigger field changes. */
+  lookupFormData?: {
+    slug: string;
+    returnField: string;
+    matchField: string;
+    matchDatasetField?: string;
+    extraFilters?: Record<string, string>;
+  };
   // Casefolder / XML mapping
   fieldLevel?: "casefolder" | "document"; // batch-level = casefolder, document-level = per-file
   xmlFieldName?: string; // exact XML field name from scanner (e.g., "Student Name", "Document Description")
@@ -1997,6 +2005,91 @@ function PropertiesPanel({
               <p className="text-[10px] text-gray-400 dark:text-gray-500 leading-relaxed">
                 This field will auto-populate with the number of business days between the two selected dates, using the configured Work Calendar (Admin → Work Calendar). Weekends and public holidays are excluded automatically.
               </p>
+            </>
+          )}
+        </CollapsibleSection>
+      )}
+
+      {/* Form Data Lookup (number + text fields) */}
+      {(isNumber || field.type === "text") && (
+        <CollapsibleSection title="Form Data Lookup">
+          <PropCheckbox
+            label="Auto-populate from a Form Data dataset"
+            checked={!!field.lookupFormData}
+            onChange={(v) =>
+              onUpdate({
+                lookupFormData: v
+                  ? { slug: "", returnField: "", matchField: "", matchDatasetField: "", extraFilters: { employee_id: "user.employeeId", year: "currentYear" } }
+                  : undefined,
+                readOnly: v ? true : field.readOnly,
+              })
+            }
+          />
+          {field.lookupFormData && (
+            <>
+              <div>
+                <PropLabel>Dataset Slug</PropLabel>
+                <PropInput
+                  value={field.lookupFormData.slug}
+                  onChange={(v) => onUpdate({ lookupFormData: { ...field.lookupFormData!, slug: v } })}
+                  placeholder="e.g. leave_balances"
+                />
+                <p className="text-[10px] text-gray-400 dark:text-gray-500 mt-1">The slug of the Form Data dataset to query.</p>
+              </div>
+              <div>
+                <PropLabel>Trigger Field</PropLabel>
+                <select
+                  value={field.lookupFormData.matchField}
+                  onChange={(e) => onUpdate({ lookupFormData: { ...field.lookupFormData!, matchField: e.target.value } })}
+                  className="w-full h-8 rounded-md border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-800 px-2 text-xs text-gray-900 dark:text-gray-100 focus:border-[#02773b] focus:ring-1 focus:ring-[#02773b]/30 outline-none"
+                >
+                  <option value="">— pick a field —</option>
+                  {allFields
+                    .filter((f) => f.id !== field.id)
+                    .map((f) => (
+                      <option key={f.id} value={f.name}>{f.label} ({f.name})</option>
+                    ))}
+                </select>
+                <p className="text-[10px] text-gray-400 dark:text-gray-500 mt-1">When this field changes the lookup fires.</p>
+              </div>
+              <div>
+                <PropLabel>Dataset Field to Match</PropLabel>
+                <PropInput
+                  value={field.lookupFormData.matchDatasetField ?? ""}
+                  onChange={(v) => onUpdate({ lookupFormData: { ...field.lookupFormData!, matchDatasetField: v || undefined } })}
+                  placeholder={`defaults to trigger field name`}
+                />
+                <p className="text-[10px] text-gray-400 dark:text-gray-500 mt-1">The column in the dataset to compare the trigger value against (leave blank if same name).</p>
+              </div>
+              <div>
+                <PropLabel>Return Field</PropLabel>
+                <PropInput
+                  value={field.lookupFormData.returnField}
+                  onChange={(v) => onUpdate({ lookupFormData: { ...field.lookupFormData!, returnField: v } })}
+                  placeholder="e.g. days_remaining"
+                />
+                <p className="text-[10px] text-gray-400 dark:text-gray-500 mt-1">The dataset column whose value is written into this field.</p>
+              </div>
+              <div>
+                <PropLabel>Extra Filters (JSON)</PropLabel>
+                <textarea
+                  rows={4}
+                  value={JSON.stringify(field.lookupFormData.extraFilters ?? {}, null, 2)}
+                  onChange={(e) => {
+                    try {
+                      const parsed = JSON.parse(e.target.value);
+                      onUpdate({ lookupFormData: { ...field.lookupFormData!, extraFilters: parsed } });
+                    } catch {
+                      // ignore parse errors while typing
+                    }
+                  }}
+                  className="w-full rounded-md border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-800 px-2 py-1.5 text-xs font-mono text-gray-900 dark:text-gray-100 focus:border-[#02773b] focus:ring-1 focus:ring-[#02773b]/30 outline-none resize-none"
+                  spellCheck={false}
+                />
+                <p className="text-[10px] text-gray-400 dark:text-gray-500 mt-1 leading-relaxed">
+                  <strong>Keys</strong>: dataset field names. <strong>Values</strong>: <code>user.employeeId</code>, <code>user.department</code>, <code>currentYear</code>, or any form field name.
+                </p>
+              </div>
             </>
           )}
         </CollapsibleSection>

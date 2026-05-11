@@ -6,16 +6,20 @@ import { logger } from "@/lib/logger";
 type Ctx = { params: Promise<{ slug: string }> };
 
 /**
- * GET /api/form-data/[slug]?filter_field=x&filter_value=y
+ * GET /api/form-data/[slug]
  *
  * Fetches records from a FormDataSchema by slug.
- * Optional query params:
- *   filter_field  — field name to filter on (e.g. "employee_id")
- *   filter_value  — value to match (e.g. "KU/1234")
- *   limit         — max records (default 100)
  *
- * Used by the BusinessDayRangePicker, workflow engine, and any authenticated
- * page that needs to read reference data.
+ * Filter query params (two styles, both supported):
+ *   filter_field / filter_value — legacy single-field filter
+ *   filter_FIELDNAME=VALUE      — multi-field filter (e.g. filter_leave_type=Annual+Leave&filter_year=2026)
+ *   limit                       — max records (default 100)
+ *
+ * All filters are case-insensitive string matches applied client-side
+ * (Prisma JSON columns don't support server-side equality filtering).
+ *
+ * Used by the BusinessDayRangePicker, workflow engine, FormRenderer
+ * lookupFormData lookups, and any authenticated page that needs reference data.
  */
 export async function GET(req: NextRequest, { params }: Ctx) {
   try {
@@ -24,9 +28,23 @@ export async function GET(req: NextRequest, { params }: Ctx) {
 
     const { slug } = await params;
     const url = req.nextUrl;
-    const filterField = url.searchParams.get("filter_field");
-    const filterValue = url.searchParams.get("filter_value");
     const limit = Math.min(500, Math.max(1, Number(url.searchParams.get("limit") ?? 100)));
+
+    // Collect all active filters.
+    // Legacy style: filter_field + filter_value → single entry.
+    // Multi style:  any param starting with "filter_" except "filter_field"/"filter_value".
+    const filters: Record<string, string> = {};
+    const legacyField = url.searchParams.get("filter_field");
+    const legacyValue = url.searchParams.get("filter_value");
+    if (legacyField && legacyValue !== null) {
+      filters[legacyField] = legacyValue;
+    }
+    for (const [key, value] of url.searchParams.entries()) {
+      if (key.startsWith("filter_") && key !== "filter_field" && key !== "filter_value") {
+        const fieldName = key.slice("filter_".length); // strip prefix
+        filters[fieldName] = value;
+      }
+    }
 
     const schema = await db.formDataSchema.findUnique({
       where: { slug, isActive: true },
@@ -39,11 +57,14 @@ export async function GET(req: NextRequest, { params }: Ctx) {
       take: limit,
     });
 
-    // Apply filter client-side (JSON column — no DB-level filter)
-    const records = filterField && filterValue
+    // Apply all filters client-side (case-insensitive string match)
+    const filterEntries = Object.entries(filters);
+    const records = filterEntries.length > 0
       ? rawRecords.filter((r) => {
           const d = r.data as Record<string, unknown>;
-          return String(d[filterField] ?? "").toLowerCase() === filterValue.toLowerCase();
+          return filterEntries.every(([field, val]) =>
+            String(d[field] ?? "").toLowerCase() === val.toLowerCase()
+          );
         })
       : rawRecords;
 
