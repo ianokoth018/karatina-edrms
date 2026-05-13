@@ -92,6 +92,7 @@ model User {
   redactionsCreated         DocumentRedaction[]     @relation("RedactionCreator")
   documentSubscriptions     DocumentSubscription[]  @relation("DocumentWatcher")
   memoDrafts                MemoDraft[]             @relation("MemoDraftAuthor")
+  presenceHeartbeats        PresenceHeartbeat[]
 
   /// Distinguished name returned by the LDAP/AD directory on the user's
   /// most recent successful bind. Allows re-syncing without an additional
@@ -352,9 +353,33 @@ model DocumentFile {
   encryptionTag String?
   renditionPath   String?   // PDF rendition for non-PDF files (Word/Excel/PPT)
   renditionStatus String    @default("NONE") // NONE, PENDING, DONE, FAILED
+  /// Storage tier ("hot" | "warm" | "archive"). Set by the tiering worker.
+  storageTier    String   @default("hot")
+  /// Updated on each successful read; used by the tiering policy to decide
+  /// when a file is cold enough to demote to a slower tier.
+  lastAccessedAt DateTime?
+  /// When this file last changed tier (used for cooldown / audit).
+  tierMovedAt    DateTime?
   uploadedAt   DateTime @default(now())
 
+  @@index([storageTier, lastAccessedAt])
   @@map("document_files")
+}
+
+/// Active tiering policy. Single-row by convention (isActive=true).
+model StorageTierPolicy {
+  id              String   @id @default(cuid())
+  name            String   @unique
+  isActive        Boolean  @default(true)
+  /// Move to warm if hot + lastAccessed older than this many days.
+  demoteToWarmDays    Int  @default(90)
+  /// Move to archive if warm + lastAccessed older than this many days.
+  demoteToArchiveDays Int  @default(365)
+  /// Restore-on-access strategy when archive is read: "auto" | "manual"
+  restoreStrategy String  @default("auto")
+  createdAt       DateTime @default(now())
+  updatedAt       DateTime @updatedAt
+  @@map("storage_tier_policies")
 }
 
 model DocumentVersion {
@@ -1550,4 +1575,97 @@ model MemoDraft {
 
   @@index([userId, updatedAt])
   @@map("memo_drafts")
+}
+
+// === Presence ===
+// Lightweight "who is currently viewing this resource" indicators.
+// Clients heartbeat every ~10s while viewing a document/memo/workflow/form
+// detail page; viewers active in the last 30s are considered present.
+// Rows older than 24h are pruned by the cleanup worker.
+model PresenceHeartbeat {
+  id           String   @id @default(cuid())
+  userId       String
+  user         User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  resourceType String   // "document" | "memo" | "workflow" | "form"
+  resourceId   String
+  lastSeenAt   DateTime @default(now())
+
+  @@unique([userId, resourceType, resourceId])
+  @@index([resourceType, resourceId, lastSeenAt])
+  @@map("presence_heartbeats")
+}
+
+// === Translation Cache ===
+// LLM-generated translations for strings missing from the static SW
+// dictionary. Source-of-truth keys still live in `lib/i18n/locales/*.ts`;
+// this table backs the runtime auto-translate fallback. Cached forever —
+// admins can re-translate from the admin UI when the source dictionary
+// changes.
+// ─── Digitisation: Records survey + scan batch QA ────────────────────────────
+// One-time pre-digitisation inventory of physical records, plus per-batch
+// QA counters filled in by operators as they scan. This is the operational
+// layer that lives alongside the existing CaptureProfile capture pipeline —
+// CaptureProfile handles automatic file ingest; these models handle the
+// manual quality-assurance workflow that auditors require.
+model RecordsSurvey {
+  id              String   @id @default(cuid())
+  name            String
+  location        String                            // e.g. "HQ Main Registry — Cabinet 4"
+  estimatedVolume Int      @default(0)              // estimated document count
+  actualVolume    Int      @default(0)              // counted during survey
+  boxCount        Int      @default(0)
+  earliestDate    String?                           // free text e.g. "1972"
+  latestDate      String?
+  condition       String   @default("FAIR")         // GOOD | FAIR | POOR
+  notes           String?
+  status          String   @default("PLANNED")      // PLANNED | IN_PROGRESS | COMPLETED
+  createdById     String
+  createdAt       DateTime @default(now())
+  updatedAt       DateTime @updatedAt
+  scanBatches     ScanBatch[]
+
+  @@map("records_surveys")
+}
+
+model ScanBatch {
+  id               String   @id @default(cuid())
+  surveyId         String?
+  survey           RecordsSurvey? @relation(fields: [surveyId], references: [id])
+  batchNumber      String   @unique
+  operator         String                           // staff name
+  scanner          String                           // make/model
+  startedAt        DateTime @default(now())
+  finishedAt       DateTime?
+  expectedPages    Int      @default(0)
+  actualPages      Int      @default(0)
+  legibleCount     Int      @default(0)
+  illegibleCount   Int      @default(0)
+  skewedCount      Int      @default(0)
+  blankCount       Int      @default(0)
+  missingCount     Int      @default(0)
+  notes            String?
+  status           String   @default("IN_PROGRESS") // IN_PROGRESS | COMPLETED | REJECTED
+  createdById      String
+
+  @@map("scan_batches")
+}
+
+model TranslationCache {
+  id            String   @id @default(cuid())
+  sourceLocale  String   // "en"
+  targetLocale  String   // "sw"
+  sourceText    String   @db.Text
+  targetText    String   @db.Text
+  /// sha256(sourceLocale + "|" + targetLocale + "|" + sourceText) — keeps
+  /// the unique constraint workable when sourceText is large.
+  keyHash       String
+  /// When non-null, the cache entry was overridden by a human admin and
+  /// should be left alone by bulk re-translate runs.
+  createdById   String?
+  createdAt     DateTime @default(now())
+  updatedAt     DateTime @updatedAt
+
+  @@unique([keyHash])
+  @@index([targetLocale])
+  @@map("translation_cache")
 }

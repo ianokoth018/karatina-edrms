@@ -161,6 +161,7 @@ const navItems: NavItem[] = [
       { label: "Physical Records",href: "/records/physical",      permission: "records_physical:read" },
       { label: "Disposition",     href: "/records/disposition",   permission: "records_disposition:read" },
       { label: "Auto Capture",    href: "/records/capture",       permission: "records_capture:read" },
+      { label: "Digitisation",    href: "/admin/digitisation",    permission: "admin:manage" },
     ],
   },
   {
@@ -226,8 +227,10 @@ const navItems: NavItem[] = [
       { label: "Escalation Matrix", href: "/admin/escalation-matrix" },
       { label: "Leave Management", href: "/admin/leave-management" },
       { label: "Audit Trail", href: "/admin/audit" },
+      { label: "Compliance", href: "/admin/compliance" },
       { label: "Email Integration", href: "/admin/email" },
       { label: "DocuSign Integration", href: "/admin/integrations/docusign" },
+      { label: "Translations", href: "/admin/translations" },
     ],
   },
 ];

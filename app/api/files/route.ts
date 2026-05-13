@@ -6,6 +6,11 @@ import { getEffectiveDocumentPermissions } from "@/lib/document-permissions";
 import { writeAudit } from "@/lib/audit";
 import { logger } from "@/lib/logger";
 import { applyWatermark } from "@/lib/watermark";
+import {
+  resolveTierPath,
+  moveFileToTier,
+  getActivePolicy,
+} from "@/lib/storage-tier";
 import path from "path";
 import fs from "fs/promises";
 
@@ -49,13 +54,38 @@ export async function GET(req: NextRequest) {
       return new NextResponse("Invalid path", { status: 403 });
     }
 
-    const absolutePath = path.join(process.cwd(), normalised);
-
-    // Look up the DocumentFile record to get encryption IV/tag
-    const docFile = await db.documentFile.findFirst({
+    // Look up the DocumentFile record to get encryption IV/tag + tier info.
+    // We look up by storagePath *or* basename so an old URL that still
+    // references the hot path keeps working after a tier demotion.
+    const basename = path.basename(filePath);
+    let docFile = await db.documentFile.findFirst({
       where: { storagePath: filePath },
-      select: { encryptionIv: true, encryptionTag: true, fileName: true, documentId: true, renditionPath: true },
+      select: {
+        id: true,
+        encryptionIv: true,
+        encryptionTag: true,
+        fileName: true,
+        documentId: true,
+        renditionPath: true,
+        storagePath: true,
+        storageTier: true,
+      },
     });
+    if (!docFile) {
+      docFile = await db.documentFile.findFirst({
+        where: { storagePath: { endsWith: `/${basename}` } },
+        select: {
+          id: true,
+          encryptionIv: true,
+          encryptionTag: true,
+          fileName: true,
+          documentId: true,
+          renditionPath: true,
+          storagePath: true,
+          storageTier: true,
+        },
+      });
+    }
 
     // If the file isn't in the DB, return 404 to avoid leaking existence.
     if (!docFile) {
@@ -82,12 +112,55 @@ export async function GET(req: NextRequest) {
       return new NextResponse("You do not have download permission for this file", { status: 403 });
     }
 
+    // Tiering: if this file is archived, enforce the policy's restore strategy.
+    if (docFile.storageTier === "archive") {
+      const policy = await getActivePolicy();
+      if (policy.restoreStrategy === "manual") {
+        return NextResponse.json(
+          {
+            error: "ARCHIVED",
+            message: "File is archived. Request restore via /admin/storage.",
+          },
+          { status: 409 }
+        );
+      }
+      // auto: promote back to hot before serving
+      try {
+        const full = await db.documentFile.findUnique({ where: { id: docFile.id } });
+        if (full) {
+          await moveFileToTier(full, "hot");
+          docFile.storageTier = "hot";
+          docFile.storagePath = `uploads/edrms/${path.basename(full.storagePath)}`;
+        }
+      } catch (err) {
+        logger.error("storage-tier: auto-restore failed", err, { fileId: docFile.id });
+        return new NextResponse("Failed to restore archived file", { status: 500 });
+      }
+    }
+
+    // Fire-and-forget: bump lastAccessedAt for tiering. Never await; never
+    // let a failure here block the response.
+    void db.documentFile
+      .update({
+        where: { id: docFile.id },
+        data: { lastAccessedAt: new Date() },
+      })
+      .catch(() => {});
+
     const wantRendition = req.nextUrl.searchParams.get("rendition") === "1";
     const wantWatermark = req.nextUrl.searchParams.get("watermark") === "1";
 
-    // If caller wants rendition, resolve the rendition path
+    // Resolve disk path through the tiering layer so a demoted file is read
+    // from its current tier directory, not its original hot path.
+    const absolutePath = resolveTierPath({
+      storagePath: docFile.storagePath,
+      storageTier: docFile.storageTier,
+    });
+
+    // If caller wants rendition, resolve the rendition path.
+    // Renditions are not tiered separately — they sit alongside the source.
     let servePath = absolutePath;
-    let serveStoragePath = filePath;
+    let serveStoragePath = docFile.storagePath;
     if (wantRendition && docFile.renditionPath) {
       servePath = path.join(process.cwd(), docFile.renditionPath);
       serveStoragePath = docFile.renditionPath;

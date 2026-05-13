@@ -42,6 +42,9 @@ export async function GET(req: NextRequest) {
       tasksOverdue,
       retentionDueSoon,
       topCreators,
+      activeBatches,
+      completedBatches,
+      scanAggregate,
     ] = await Promise.all([
       db.document.count(),
       db.document.count({ where: { createdAt: { gte: since } } }),
@@ -91,6 +94,12 @@ export async function GET(req: NextRequest) {
         orderBy: { _count: { createdById: "desc" } },
         take: 10,
       }),
+      // Digitisation QA block — scan-batch tallies for the operational dashboard
+      db.scanBatch.count({ where: { status: "IN_PROGRESS" } }),
+      db.scanBatch.count({ where: { status: "COMPLETED" } }),
+      db.scanBatch.aggregate({
+        _sum: { actualPages: true, legibleCount: true },
+      }),
     ]);
 
     // Resolve creator IDs to display names in one query.
@@ -105,6 +114,10 @@ export async function GET(req: NextRequest) {
       creators.map((c) => [c.id, c.displayName || c.name])
     );
 
+    const totalScannedPages = scanAggregate._sum.actualPages ?? 0;
+    const totalLegiblePages = scanAggregate._sum.legibleCount ?? 0;
+    const passRate = totalScannedPages > 0 ? totalLegiblePages / totalScannedPages : 0;
+
     return NextResponse.json(
       serialise({
         sinceDays,
@@ -114,6 +127,12 @@ export async function GET(req: NextRequest) {
           workflowsInProgress,
           tasksOverdue,
           retentionDueSoon,
+        },
+        digitisation: {
+          activeBatches,
+          completedBatches,
+          totalScannedPages,
+          passRate: Number(passRate.toFixed(4)),
         },
         breakdowns: {
           byType: byType.map((b) => ({ key: b.documentType, count: b._count })),

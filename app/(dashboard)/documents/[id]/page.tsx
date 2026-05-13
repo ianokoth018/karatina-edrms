@@ -8,6 +8,7 @@ import CommentsPanel from "@/components/document/comments-panel";
 import SignaturePanel from "@/components/document/signature-panel";
 import { ShareDialog } from "@/components/document/share-dialog";
 import { Can } from "@/components/auth/can";
+import { PresenceStrip } from "@/components/presence-strip";
 
 /* ---------- types ---------- */
 
@@ -735,7 +736,10 @@ export default function DocumentDetailPage({
               </span>
             )}
           </div>
-          <p className="text-sm text-gray-500 dark:text-gray-400 mt-1 font-mono">{doc.referenceNumber}</p>
+          <div className="flex items-center gap-3 mt-1 flex-wrap">
+            <p className="text-sm text-gray-500 dark:text-gray-400 font-mono">{doc.referenceNumber}</p>
+            <PresenceStrip resourceType="document" resourceId={id} />
+          </div>
         </div>
 
         {/* Action buttons */}
