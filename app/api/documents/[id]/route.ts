@@ -4,6 +4,7 @@ import { db } from "@/lib/db";
 import { writeAudit } from "@/lib/audit";
 import { logger } from "@/lib/logger";
 import { getEffectiveDocumentPermissions } from "@/lib/document-permissions";
+import { isDeclaredRecord } from "@/lib/record-declaration";
 
 /**
  * Custom JSON serialiser that converts BigInt values to strings.
@@ -174,7 +175,12 @@ export async function PATCH(
     // Verify document exists
     const existing = await db.document.findUnique({
       where: { id },
-      select: { id: true, status: true, title: true },
+      select: {
+        id: true,
+        status: true,
+        title: true,
+        declaredAsRecordAt: true,
+      },
     });
 
     if (!existing) {
@@ -185,6 +191,13 @@ export async function PATCH(
       return NextResponse.json(
         { error: "Cannot update a disposed document" },
         { status: 400 }
+      );
+    }
+
+    if (isDeclaredRecord(existing)) {
+      return NextResponse.json(
+        { error: "This document is a declared record and cannot be modified." },
+        { status: 423 },
       );
     }
 
@@ -286,7 +299,13 @@ export async function DELETE(
 
     const existing = await db.document.findUnique({
       where: { id },
-      select: { id: true, status: true, referenceNumber: true, isOnLegalHold: true },
+      select: {
+        id: true,
+        status: true,
+        referenceNumber: true,
+        isOnLegalHold: true,
+        declaredAsRecordAt: true,
+      },
     });
 
     if (!existing) {
@@ -304,6 +323,16 @@ export async function DELETE(
       return NextResponse.json(
         { error: "Cannot dispose a document under legal hold" },
         { status: 400 }
+      );
+    }
+
+    if (isDeclaredRecord(existing)) {
+      return NextResponse.json(
+        {
+          error:
+            "Declared records can only be disposed via the formal disposition workflow. Generate a disposition certificate instead of a direct delete.",
+        },
+        { status: 423 },
       );
     }
 

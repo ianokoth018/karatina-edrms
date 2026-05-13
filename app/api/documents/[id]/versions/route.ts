@@ -9,6 +9,7 @@ import {
   shouldRejectIngest,
   describeScanResult,
 } from "@/lib/antivirus";
+import { isDeclaredRecord } from "@/lib/record-declaration";
 import fs from "fs/promises";
 import path from "path";
 
@@ -111,11 +112,26 @@ export async function POST(
 
     const document = await db.document.findUnique({
       where: { id },
-      select: { id: true, referenceNumber: true, status: true },
+      select: {
+        id: true,
+        referenceNumber: true,
+        status: true,
+        declaredAsRecordAt: true,
+      },
     });
 
     if (!document) {
       return NextResponse.json({ error: "Document not found" }, { status: 404 });
+    }
+
+    if (isDeclaredRecord(document)) {
+      return NextResponse.json(
+        {
+          error:
+            "Declared records are immutable. Create a new document or undeclare this one before uploading a new version.",
+        },
+        { status: 423 },
+      );
     }
 
     if (document.status === "DISPOSED") {

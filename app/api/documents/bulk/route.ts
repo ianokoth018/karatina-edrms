@@ -43,7 +43,7 @@ export async function POST(req: NextRequest) {
     // Verify documents exist
     const docs = await db.document.findMany({
       where: { id: { in: documentIds } },
-      select: { id: true, status: true },
+      select: { id: true, status: true, declaredAsRecordAt: true, referenceNumber: true },
     });
 
     if (docs.length !== documentIds.length) {
@@ -51,6 +51,23 @@ export async function POST(req: NextRequest) {
         { error: `Found ${docs.length} of ${documentIds.length} documents` },
         { status: 404 }
       );
+    }
+
+    // Declared records are immutable. Tagging is a non-mutating annotation
+    // and is left alone; everything else (classify, transfer, archive,
+    // delete) refuses to touch declared rows.
+    const mutatingActions = new Set(["classify", "transfer", "archive", "delete"]);
+    if (mutatingActions.has(action)) {
+      const declared = docs.filter((d) => d.declaredAsRecordAt !== null);
+      if (declared.length > 0) {
+        return NextResponse.json(
+          {
+            error: `${declared.length} document(s) are declared records and cannot be ${action === "delete" ? "deleted" : action + "d"} in bulk. Undeclare them first.`,
+            declaredRefs: declared.map((d) => d.referenceNumber),
+          },
+          { status: 423 },
+        );
+      }
     }
 
     let affected = 0;

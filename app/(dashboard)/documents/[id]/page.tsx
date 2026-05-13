@@ -118,6 +118,9 @@ interface DocumentDetail {
   isVitalRecord: boolean;
   isOnLegalHold: boolean;
   legalHoldReason: string | null;
+  declaredAsRecordAt: string | null;
+  declaredById: string | null;
+  recordDeclarationReason: string | null;
   checkoutUserId: string | null;
   checkoutAt: string | null;
   contentHash: string | null;
@@ -327,6 +330,11 @@ export default function DocumentDetailPage({
   const [legalHoldReason, setLegalHoldReason] = useState("");
   const [isTogglingHold, setIsTogglingHold] = useState(false);
 
+  /* record declaration */
+  const [showDeclareDialog, setShowDeclareDialog] = useState<"declare" | "undeclare" | null>(null);
+  const [declareReason, setDeclareReason] = useState("");
+  const [isDeclaring, setIsDeclaring] = useState(false);
+
   /* OCR */
   const [ocrText, setOcrText] = useState<string | null>(null);
   const [isRunningOcr, setIsRunningOcr] = useState(false);
@@ -472,6 +480,30 @@ export default function DocumentDetailPage({
       setError(err instanceof Error ? err.message : "Legal hold action failed");
     } finally {
       setIsTogglingHold(false);
+    }
+  }
+
+  async function handleSubmitDeclaration() {
+    if (!doc || !showDeclareDialog) return;
+    setIsDeclaring(true);
+    try {
+      const url = `/api/documents/${id}/${showDeclareDialog}`;
+      const res = await fetch(url, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ reason: declareReason.trim() || undefined }),
+      });
+      if (!res.ok) {
+        const payload = await res.json().catch(() => null);
+        throw new Error(payload?.error ?? "Record-declaration action failed");
+      }
+      setShowDeclareDialog(null);
+      setDeclareReason("");
+      fetchDocument();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Record-declaration action failed");
+    } finally {
+      setIsDeclaring(false);
     }
   }
 
@@ -807,6 +839,21 @@ export default function DocumentDetailPage({
                 Legal Hold
               </span>
             )}
+            {doc.declaredAsRecordAt && (
+              <span
+                title={
+                  doc.recordDeclarationReason
+                    ? `Declared on ${new Date(doc.declaredAsRecordAt).toLocaleDateString()} — ${doc.recordDeclarationReason}`
+                    : `Declared on ${new Date(doc.declaredAsRecordAt).toLocaleDateString()}`
+                }
+                className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-xs font-medium bg-emerald-50 text-emerald-700 dark:bg-emerald-950/40 dark:text-emerald-400"
+              >
+                <svg className="w-3 h-3" fill="none" viewBox="0 0 24 24" strokeWidth={2} stroke="currentColor">
+                  <path strokeLinecap="round" strokeLinejoin="round" d="M9 12.75 11.25 15 15 9.75M21 12a9 9 0 1 1-18 0 9 9 0 0 1 18 0Z" />
+                </svg>
+                Declared Record
+              </span>
+            )}
           </div>
           <div className="flex items-center gap-3 mt-1 flex-wrap">
             <p className="text-sm text-gray-500 dark:text-gray-400 font-mono">{doc.referenceNumber}</p>
@@ -902,6 +949,29 @@ export default function DocumentDetailPage({
                 </button>
               )}
 
+              <Can anyOf={["records:declare", "records:manage", "admin:manage"]}>
+                <button
+                  onClick={() =>
+                    setShowDeclareDialog(doc.declaredAsRecordAt ? "undeclare" : "declare")
+                  }
+                  className={`inline-flex items-center gap-1.5 h-9 px-3 rounded-lg border text-sm font-medium transition-colors ${
+                    doc.declaredAsRecordAt
+                      ? "border-emerald-300 text-emerald-700 dark:text-emerald-300 hover:bg-emerald-50 dark:hover:bg-emerald-950/30"
+                      : "border-gray-200 dark:border-gray-700 text-gray-700 dark:text-gray-300 hover:bg-gray-50 dark:hover:bg-gray-800"
+                  }`}
+                  title={
+                    doc.declaredAsRecordAt
+                      ? "Undeclare record (records officer only)"
+                      : "Declare as a formal record — makes the document immutable"
+                  }
+                >
+                  <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" strokeWidth={1.5} stroke="currentColor">
+                    <path strokeLinecap="round" strokeLinejoin="round" d="M9 12.75 11.25 15 15 9.75M21 12a9 9 0 1 1-18 0 9 9 0 0 1 18 0Z" />
+                  </svg>
+                  {doc.declaredAsRecordAt ? "Undeclare" : "Declare Record"}
+                </button>
+              </Can>
+
               {perms.canDelete && (
                 <Can anyOf={["documents:delete", "documents:manage"]}>
                   <button
@@ -933,6 +1003,57 @@ export default function DocumentDetailPage({
       )}
 
       {/* Delete confirmation modal */}
+      {showDeclareDialog && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 backdrop-blur-sm">
+          <div className="bg-white dark:bg-gray-900 rounded-2xl shadow-xl border border-gray-200 dark:border-gray-800 p-6 w-full max-w-md animate-scale-in">
+            <h3 className="text-lg font-semibold text-gray-900 dark:text-gray-100">
+              {showDeclareDialog === "declare" ? "Declare as Record" : "Undeclare Record"}
+            </h3>
+            <p className="text-sm text-gray-500 dark:text-gray-400 mt-2">
+              {showDeclareDialog === "declare"
+                ? "Once declared, this document becomes immutable: edits, deletes, version uploads, and reclassification will be rejected. Disposition still flows through the formal disposition workflow."
+                : "Reversing a record declaration is a meaningful records-management event. Provide a justification (≥ 5 characters) — the original declaration is preserved in the audit log."}
+            </p>
+            <textarea
+              value={declareReason}
+              onChange={(e) => setDeclareReason(e.target.value)}
+              rows={3}
+              placeholder={
+                showDeclareDialog === "declare"
+                  ? "Reason (optional) — e.g. 'Approved minutes, retention 10y'"
+                  : "Required justification — e.g. 'Misclassified; needs correction'"
+              }
+              className="mt-3 w-full rounded-lg border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-800 px-3 py-2 text-sm focus:border-karu-green focus:ring-2 focus:ring-karu-green/20 outline-none"
+            />
+            <div className="flex items-center justify-end gap-3 mt-5">
+              <button
+                onClick={() => {
+                  setShowDeclareDialog(null);
+                  setDeclareReason("");
+                }}
+                className="h-9 px-4 rounded-lg border border-gray-200 dark:border-gray-700 text-sm font-medium text-gray-700 dark:text-gray-300 hover:bg-gray-50 dark:hover:bg-gray-800 transition-colors"
+              >
+                Cancel
+              </button>
+              <button
+                onClick={handleSubmitDeclaration}
+                disabled={
+                  isDeclaring ||
+                  (showDeclareDialog === "undeclare" && declareReason.trim().length < 5)
+                }
+                className="h-9 px-4 rounded-lg bg-karu-green text-white text-sm font-medium hover:bg-karu-green-dark transition-colors disabled:opacity-50"
+              >
+                {isDeclaring
+                  ? "Working…"
+                  : showDeclareDialog === "declare"
+                    ? "Declare"
+                    : "Undeclare"}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
       {showDeleteConfirm && (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 backdrop-blur-sm">
           <div className="bg-white dark:bg-gray-900 rounded-2xl shadow-xl border border-gray-200 dark:border-gray-800 p-6 w-full max-w-sm animate-scale-in">

@@ -4,6 +4,7 @@ import { db } from "@/lib/db";
 import { writeAudit } from "@/lib/audit";
 import { logger } from "@/lib/logger";
 import { markLatest } from "@/lib/version-control";
+import { isDeclaredRecord } from "@/lib/record-declaration";
 import fs from "fs/promises";
 import path from "path";
 
@@ -26,7 +27,12 @@ export async function POST(
     const [document, targetVersion] = await Promise.all([
       db.document.findUnique({
         where: { id },
-        select: { id: true, referenceNumber: true, status: true },
+        select: {
+          id: true,
+          referenceNumber: true,
+          status: true,
+          declaredAsRecordAt: true,
+        },
       }),
       db.documentVersion.findFirst({ where: { id: versionId, documentId: id } }),
     ]);
@@ -36,6 +42,12 @@ export async function POST(
     }
     if (!targetVersion) {
       return NextResponse.json({ error: "Version not found" }, { status: 404 });
+    }
+    if (isDeclaredRecord(document)) {
+      return NextResponse.json(
+        { error: "Declared records are immutable — rollback is not permitted." },
+        { status: 423 },
+      );
     }
     if (document.status === "DISPOSED") {
       return NextResponse.json({ error: "Cannot rollback a disposed document" }, { status: 400 });

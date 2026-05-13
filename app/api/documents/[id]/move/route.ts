@@ -3,6 +3,7 @@ import { auth } from "@/lib/auth";
 import { db } from "@/lib/db";
 import { writeAudit } from "@/lib/audit";
 import { logger } from "@/lib/logger";
+import { isDeclaredRecord } from "@/lib/record-declaration";
 
 // POST /api/documents/[id]/move
 // Body: { department?, classificationNodeId?, casefolderMetadata? }
@@ -28,10 +29,30 @@ export async function POST(
 
     const doc = await db.document.findUnique({
       where: { id },
-      select: { id: true, referenceNumber: true, department: true, classificationNodeId: true, status: true },
+      select: {
+        id: true,
+        referenceNumber: true,
+        department: true,
+        classificationNodeId: true,
+        status: true,
+        declaredAsRecordAt: true,
+      },
     });
     if (!doc) return NextResponse.json({ error: "Document not found" }, { status: 404 });
     if (doc.status === "DISPOSED") return NextResponse.json({ error: "Cannot move a disposed document" }, { status: 400 });
+
+    // Move-in-place modifies department / classification — both records-management
+    // attributes that cannot change once a record is declared. Copy is allowed
+    // (it produces a brand-new document that isn't declared).
+    if (!body.copy && isDeclaredRecord(doc)) {
+      return NextResponse.json(
+        {
+          error:
+            "Declared records cannot be moved or reclassified. Copy the document instead, or undeclare it via records:manage.",
+        },
+        { status: 423 },
+      );
+    }
 
     if (body.classificationNodeId !== undefined) {
       // Verify node exists if provided

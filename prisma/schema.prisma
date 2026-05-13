@@ -71,6 +71,7 @@ model User {
 
   roles             UserRole[]
   createdDocuments  Document[]     @relation("CreatedBy")
+  declaredRecords   Document[]     @relation("RecordDeclarer")
   auditLogs         AuditLog[]
   workflowTasks          WorkflowTask[]      @relation("Assignee")
   claimedTasks           WorkflowTask[]      @relation("TaskClaimer")
@@ -221,6 +222,15 @@ model Document {
   sourceSystem         String?  // STUDENT_PORTAL, ERP, MANUAL, EMAIL
   sourceId             String?  // external ID from source system
   isVitalRecord        Boolean  @default(false)
+  /// Record declaration (DoD 5015.2 / ISO 16175 cornerstone). Once set, the
+  /// document becomes immutable: edits, deletes, new versions, retention or
+  /// classification changes are all rejected by /lib/record-declaration.
+  /// Reversal requires `records:manage` (or admin) + a reason and is fully
+  /// audited. Disposition still flows through the formal disposition engine.
+  declaredAsRecordAt   DateTime?
+  declaredById         String?
+  declaredBy           User?    @relation("RecordDeclarer", fields: [declaredById], references: [id])
+  recordDeclarationReason String?
   isOnLegalHold        Boolean  @default(false)
   legalHoldReason      String?
   legalHoldAt          DateTime?
