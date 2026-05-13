@@ -368,6 +368,19 @@ export default function DocumentDetailPage({
   } | null>(null);
   const [isComparing, setIsComparing] = useState(false);
 
+  /* Watch / subscribe — kept here above the early returns to satisfy
+   * Rules of Hooks. The actual fetch + render is lower in the tree. */
+  const [subscription, setSubscription] = useState<
+    { events: string[] } | null | undefined
+  >(undefined);
+  const [watchLoading, setWatchLoading] = useState(false);
+  useEffect(() => {
+    fetch(`/api/documents/${id}/subscribe`)
+      .then((r) => (r.ok ? r.json() : null))
+      .then(setSubscription)
+      .catch(() => setSubscription(null));
+  }, [id]);
+
   /* access control search */
   function searchGrantTarget(query: string) {
     setGrantSearch(query);
@@ -752,17 +765,6 @@ export default function DocumentDetailPage({
     ? `/api/files?path=${encodeURIComponent(primaryFile.storagePath)}${hasRendition && !isPdf ? "&rendition=1" : ""}&watermark=1${PDF_VIEW_HINTS}`
     : null;
   const perms = doc.effectivePermissions ?? VIEW_ONLY_PERMISSIONS;
-
-  // Watch/subscribe state (lazy-loaded)
-  const [subscription, setSubscription] = React.useState<{ events: string[] } | null | undefined>(undefined);
-  const [watchLoading, setWatchLoading] = React.useState(false);
-
-  React.useEffect(() => {
-    fetch(`/api/documents/${id}/subscribe`)
-      .then((r) => r.ok ? r.json() : null)
-      .then(setSubscription)
-      .catch(() => setSubscription(null));
-  }, [id]);
 
   async function toggleWatch() {
     setWatchLoading(true);

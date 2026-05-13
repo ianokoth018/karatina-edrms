@@ -33,7 +33,13 @@ export async function proxy(req: NextRequest) {
     // window's JWT refresh and corrupts the cookie. Verified via
     // envelope ID server-side instead of session.
     /^\/api\/memos\/drafts\/[^/]+\/docusign\/return$/.test(pathname) ||
-    /^\/api\/memos\/[^/]+\/docusign\/return$/.test(pathname);
+    /^\/api\/memos\/[^/]+\/docusign\/return$/.test(pathname) ||
+    // Nitro Sign Connect webhook — vendor HMAC-signs the request.
+    pathname === "/api/nitro/webhook" ||
+    // Nitro Sign embedded-signing return URLs — same race-with-JWT
+    // concern as DocuSign; transaction id is verified server-side.
+    /^\/api\/memos\/drafts\/[^/]+\/nitro\/return$/.test(pathname) ||
+    /^\/api\/memos\/[^/]+\/nitro\/return$/.test(pathname);
 
   if (isPublicRoute) {
     return NextResponse.next();

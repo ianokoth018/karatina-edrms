@@ -294,6 +294,166 @@ export async function getDocusignConfigSafe(): Promise<DocusignConfigSafe> {
   };
 }
 
+// ===========================================================================
+// Nitro Sign
+// ===========================================================================
+//
+// Nitro Sign is Nitro's cloud e-signature service. Auth is OAuth2
+// client-credentials — far simpler than DocuSign JWT (no RSA keypair, no
+// one-time impersonation consent). Admin pastes a client id + secret from
+// the Nitro Sign developer portal; we exchange those for a bearer token
+// at the OAuth endpoint and call the Sign REST API.
+
+export interface NitroConfig {
+  /** Client ID from the Nitro Sign developer portal. */
+  clientId: string;
+  /** Plain client secret (decrypted at read time). */
+  clientSecret: string;
+  /** "sandbox" or "production" — controls default base URLs. */
+  environment: "sandbox" | "production";
+  /** OAuth token endpoint (e.g. https://api.gonitro.com/oauth/token). */
+  oauthTokenUrl: string;
+  /** Sign API base (e.g. https://api.gonitro.com/sign/v2). */
+  apiBaseUrl: string;
+  /** Optional webhook HMAC signing secret — used to verify callbacks. */
+  webhookSecret: string;
+  /** Whether Nitro Sign signing is on. */
+  enabled: boolean;
+}
+
+interface StoredNitro {
+  clientId: string;
+  environment: "sandbox" | "production";
+  oauthTokenUrl: string;
+  apiBaseUrl: string;
+  enabled: boolean;
+  clientSecretCipher?: { encrypted: string; iv: string; tag: string } | null;
+  webhookSecretCipher?: { encrypted: string; iv: string; tag: string } | null;
+}
+
+export interface NitroConfigSafe {
+  clientId: string;
+  environment: "sandbox" | "production";
+  oauthTokenUrl: string;
+  apiBaseUrl: string;
+  enabled: boolean;
+  hasClientSecret: boolean;
+  hasWebhookSecret: boolean;
+  source: "database" | "none";
+}
+
+function decryptCipher(
+  cipher: { encrypted: string; iv: string; tag: string } | null | undefined,
+): string {
+  if (!cipher?.encrypted) return "";
+  try {
+    return decrypt(
+      Buffer.from(cipher.encrypted, "base64"),
+      cipher.iv,
+      cipher.tag,
+    ).toString("utf8");
+  } catch {
+    return "";
+  }
+}
+
+function encryptCipher(plain: string): StoredNitro["clientSecretCipher"] {
+  const enc = encrypt(Buffer.from(plain, "utf8"));
+  return {
+    encrypted: enc.encrypted.toString("base64"),
+    iv: enc.iv,
+    tag: enc.tag,
+  };
+}
+
+export async function getNitroConfig(): Promise<NitroConfig | null> {
+  const row = await db.appSetting.findUnique({ where: { key: NITRO_KEY } });
+  if (!row) return null;
+  const stored = row.value as unknown as StoredNitro;
+  const clientSecret = decryptCipher(stored.clientSecretCipher);
+  if (!clientSecret) return null;
+  return {
+    clientId: stored.clientId,
+    clientSecret,
+    environment: stored.environment,
+    oauthTokenUrl: stored.oauthTokenUrl,
+    apiBaseUrl: stored.apiBaseUrl,
+    webhookSecret: decryptCipher(stored.webhookSecretCipher),
+    enabled: stored.enabled,
+  };
+}
+
+export async function setNitroConfig(
+  cfg: Omit<NitroConfig, "clientSecret" | "webhookSecret"> & {
+    clientSecret?: string;
+    webhookSecret?: string;
+  },
+  updatedById?: string,
+): Promise<void> {
+  const existing = await db.appSetting.findUnique({
+    where: { key: NITRO_KEY },
+  });
+  const prev = existing?.value as unknown as StoredNitro | undefined;
+
+  const clientSecretCipher = cfg.clientSecret?.trim()
+    ? encryptCipher(cfg.clientSecret)
+    : (prev?.clientSecretCipher ?? null);
+
+  const webhookSecretCipher = cfg.webhookSecret?.trim()
+    ? encryptCipher(cfg.webhookSecret)
+    : (prev?.webhookSecretCipher ?? null);
+
+  const stored: StoredNitro = {
+    clientId: cfg.clientId,
+    environment: cfg.environment,
+    oauthTokenUrl: cfg.oauthTokenUrl,
+    apiBaseUrl: cfg.apiBaseUrl,
+    enabled: cfg.enabled,
+    clientSecretCipher,
+    webhookSecretCipher,
+  };
+
+  await db.appSetting.upsert({
+    where: { key: NITRO_KEY },
+    create: {
+      key: NITRO_KEY,
+      value: stored as unknown as Prisma.InputJsonValue,
+      updatedById: updatedById ?? null,
+    },
+    update: {
+      value: stored as unknown as Prisma.InputJsonValue,
+      updatedById: updatedById ?? null,
+    },
+  });
+}
+
+export async function getNitroConfigSafe(): Promise<NitroConfigSafe> {
+  const row = await db.appSetting.findUnique({ where: { key: NITRO_KEY } });
+  if (!row) {
+    return {
+      clientId: "",
+      environment: "sandbox",
+      oauthTokenUrl: "https://api.sandbox.gonitro.com/oauth/token",
+      apiBaseUrl: "https://api.sandbox.gonitro.com/sign/v2",
+      enabled: false,
+      hasClientSecret: false,
+      hasWebhookSecret: false,
+      source: "none",
+    };
+  }
+  const stored = row.value as unknown as StoredNitro;
+  return {
+    clientId: stored.clientId,
+    environment: stored.environment,
+    oauthTokenUrl: stored.oauthTokenUrl,
+    apiBaseUrl: stored.apiBaseUrl,
+    enabled: stored.enabled,
+    hasClientSecret: !!stored.clientSecretCipher,
+    hasWebhookSecret: !!stored.webhookSecretCipher,
+    source: "database",
+  };
+}
+
 export async function getSmtpConfigSafe(): Promise<SmtpConfigSafe> {
   const row = await db.appSetting.findUnique({ where: { key: SMTP_KEY } });
   if (row) {

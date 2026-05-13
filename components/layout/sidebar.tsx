@@ -231,6 +231,7 @@ const navItems: NavItem[] = [
       { label: "Compliance", href: "/admin/compliance" },
       { label: "Email Integration", href: "/admin/email" },
       { label: "DocuSign Integration", href: "/admin/integrations/docusign" },
+      { label: "Nitro Sign Integration", href: "/admin/integrations/nitro" },
       { label: "Translations", href: "/admin/translations" },
     ],
   },

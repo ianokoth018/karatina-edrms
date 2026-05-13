@@ -13,6 +13,9 @@ import {
 } from "reactflow";
 import NodePalette from "@/components/workflow/node-palette";
 import NodeConfigPanel from "@/components/workflow/node-config-panel";
+import VariablesPanel from "@/components/workflow/variables-panel";
+import TriggersDialog from "@/components/workflow/triggers-dialog";
+import SimulatorDialog from "@/components/workflow/simulator-dialog";
 
 const WorkflowCanvas = dynamic(() => import("@/components/workflow/canvas"), {
   ssr: false,
@@ -193,6 +196,8 @@ export default function WorkflowDesignerPage() {
   const [templateName, setTemplateName] = useState("");
   const [templateDescription, setTemplateDescription] = useState("");
   const [templateId, setTemplateId] = useState<string | null>(null);
+  const [showTriggers, setShowTriggers] = useState(false);
+  const [showSimulator, setShowSimulator] = useState(false);
   const [templateVersion, setTemplateVersion] = useState<number>(1);
   const [isPublished, setIsPublished] = useState(false);
   const [templates, setTemplates] = useState<TemplateListItem[]>([]);
@@ -1487,6 +1492,32 @@ export default function WorkflowDesignerPage() {
               <span className="hidden lg:inline">Layout</span>
             </button>
 
+            {/* Triggers */}
+            <button
+              onClick={() => setShowTriggers(true)}
+              disabled={!templateId}
+              className="h-8 px-2.5 rounded-lg text-xs font-medium text-gray-600 dark:text-gray-300 hover:bg-gray-100 dark:hover:bg-gray-800 transition-colors flex items-center gap-1.5 disabled:opacity-40 disabled:cursor-not-allowed"
+              title={templateId ? "Manage triggers" : "Save the template first"}
+            >
+              <svg className="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" strokeWidth={2} stroke="currentColor">
+                <path strokeLinecap="round" strokeLinejoin="round" d="M13 10V3L4 14h7v7l9-11h-7z" />
+              </svg>
+              <span className="hidden lg:inline">Triggers</span>
+            </button>
+
+            {/* Simulate / Test */}
+            <button
+              onClick={() => setShowSimulator(true)}
+              disabled={nodes.length === 0}
+              className="h-8 px-2.5 rounded-lg text-xs font-medium text-gray-600 dark:text-gray-300 hover:bg-gray-100 dark:hover:bg-gray-800 transition-colors flex items-center gap-1.5 disabled:opacity-40 disabled:cursor-not-allowed"
+              title="Dry-run with sample data"
+            >
+              <svg className="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" strokeWidth={2} stroke="currentColor">
+                <path strokeLinecap="round" strokeLinejoin="round" d="M5.25 5.653c0-.856.917-1.398 1.667-.986l11.54 6.347a1.125 1.125 0 0 1 0 1.972l-11.54 6.347a1.125 1.125 0 0 1-1.667-.986V5.653Z" />
+              </svg>
+              <span className="hidden lg:inline">Test</span>
+            </button>
+
             {/* Validate */}
             <button
               onClick={handleValidate}
@@ -2091,6 +2122,9 @@ export default function WorkflowDesignerPage() {
           `}
         >
           <div className="w-72 h-full overflow-y-auto">
+            <div className="p-4 border-b border-gray-200 dark:border-gray-800">
+              <VariablesPanel nodes={nodes} />
+            </div>
             <div className="p-4">
               <h3 className="text-xs font-semibold text-gray-500 dark:text-gray-400 uppercase tracking-wider mb-4">
                 Node Configuration
@@ -2646,6 +2680,22 @@ export default function WorkflowDesignerPage() {
           </div>
         </div>
       )}
+
+      {templateId && (
+        <TriggersDialog
+          open={showTriggers}
+          onClose={() => setShowTriggers(false)}
+          templateId={templateId}
+          templateName={templateName || "(untitled)"}
+        />
+      )}
+
+      <SimulatorDialog
+        open={showSimulator}
+        onClose={() => setShowSimulator(false)}
+        nodes={nodes}
+        edges={edges}
+      />
     </div>
   );
 }
