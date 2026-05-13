@@ -241,6 +241,7 @@ model Document {
   redactions      DocumentRedaction[]
   subscriptions   DocumentSubscription[]
   externalLocks   DocumentExternalLock[]
+  bates           BatesStamp[]
 
   @@index([status])
   @@index([department])
@@ -249,6 +250,60 @@ model Document {
   @@index([createdAt])
   @@index([securityClassification])
   @@map("documents")
+}
+
+// === Bates Numbering & eDiscovery ===
+// Lawyer-grade sequential page identifiers (e.g. "KCAA-000001") for
+// document productions. Each document gets a START and END Bates number;
+// every page is stamped with the next number in the global sequence so a
+// production can cite "KCAA-001247" to point at a specific page.
+
+model BatesSequence {
+  id          String   @id @default(cuid())
+  name        String   @unique          // e.g. "KCAA-PROC-2026"
+  prefix      String                    // e.g. "KCAA"
+  pad         Int      @default(6)      // zero-padding width
+  nextValue   Int      @default(1)      // next number to allocate
+  description String?
+  createdById String
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+  productions BatesProduction[]
+
+  @@map("bates_sequences")
+}
+
+model BatesProduction {
+  id            String   @id @default(cuid())
+  sequenceId    String
+  sequence      BatesSequence @relation(fields: [sequenceId], references: [id])
+  name          String                    // e.g. "First Production – 2026-Q1"
+  startNumber   Int                       // inclusive Bates number where this run starts
+  endNumber     Int?                      // inclusive end, null while in progress
+  documentCount Int      @default(0)
+  pageCount     Int      @default(0)
+  createdById   String
+  createdAt     DateTime @default(now())
+  stamps        BatesStamp[]
+
+  @@map("bates_productions")
+}
+
+model BatesStamp {
+  id            String   @id @default(cuid())
+  productionId  String
+  production    BatesProduction @relation(fields: [productionId], references: [id], onDelete: Cascade)
+  documentId    String
+  document      Document @relation(fields: [documentId], references: [id])
+  startNumber   Int
+  endNumber     Int
+  pageCount     Int
+  stampedPath   String?                   // storage path of the stamped PDF copy
+  stampedAt     DateTime @default(now())
+
+  @@unique([productionId, documentId])
+  @@index([documentId])
+  @@map("bates_stamps")
 }
 
 /// Five-level government-grade security classification.
