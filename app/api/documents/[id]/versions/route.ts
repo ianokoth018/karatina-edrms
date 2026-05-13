@@ -4,6 +4,11 @@ import { db } from "@/lib/db";
 import { writeAudit } from "@/lib/audit";
 import { logger } from "@/lib/logger";
 import { notifyVersionUploaded } from "@/lib/version-notifications";
+import {
+  scanFile,
+  shouldRejectIngest,
+  describeScanResult,
+} from "@/lib/antivirus";
 import fs from "fs/promises";
 import path from "path";
 
@@ -157,13 +162,43 @@ export async function POST(
     const baseName = path.basename(file.name, ext);
     const versionedFileName = `${baseName}_v${nextVersionNum}${ext}`;
     const filePath = path.join(uploadDir, versionedFileName);
+    const stagingPath = `${filePath}.scan-${Date.now()}`;
 
     const { Readable } = await import("stream");
     const { createWriteStream } = await import("fs");
     const { pipeline } = await import("stream/promises");
-    const writeStream = createWriteStream(filePath);
+    const writeStream = createWriteStream(stagingPath);
     const nodeReadable = Readable.fromWeb(file.stream() as import("stream/web").ReadableStream);
     await pipeline(nodeReadable, writeStream);
+
+    // Antivirus scan on the staged file before promoting it to its final path
+    const scan = await scanFile(stagingPath);
+    if (shouldRejectIngest(scan)) {
+      await fs.unlink(stagingPath).catch(() => null);
+      await writeAudit({
+        userId: session.user.id,
+        action: scan.clean ? "document.upload_blocked" : "document.virus_blocked",
+        resourceType: "Document",
+        resourceId: id,
+        metadata: {
+          fileName: versionedFileName,
+          sizeBytes: file.size,
+          scan: describeScanResult(scan),
+          versionNum: nextVersionNum,
+        },
+      }).catch(() => null);
+      const isInfected = !scan.clean && scan.scanned;
+      return NextResponse.json(
+        {
+          error: isInfected
+            ? `Version rejected: malware signature detected (${(scan as { signature: string }).signature}).`
+            : "Antivirus scan unavailable. Upload rejected by policy.",
+        },
+        { status: isInfected ? 415 : 503 }
+      );
+    }
+
+    await fs.rename(stagingPath, filePath);
     const storagePath = `uploads/edrms/${document.referenceNumber}/${versionedFileName}`;
 
     const version = await db.$transaction(async (tx) => {

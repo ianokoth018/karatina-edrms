@@ -7,6 +7,11 @@ import { getDepartmentCode } from "@/lib/departments";
 import { encryptFile } from "@/lib/encryption";
 import { enqueueOcr } from "@/lib/queue";
 import { logger } from "@/lib/logger";
+import {
+  scanBuffer,
+  shouldRejectIngest,
+  describeScanResult,
+} from "@/lib/antivirus";
 import crypto from "crypto";
 import fs from "fs/promises";
 import path from "path";
@@ -132,6 +137,37 @@ export async function POST(req: NextRequest) {
       seenNames.add(safeName);
 
       const buffer = Buffer.from(await f.arrayBuffer());
+
+      const scan = await scanBuffer(buffer);
+      if (shouldRejectIngest(scan)) {
+        // Clean up any earlier files we already wrote for this request.
+        for (const p of prepared) {
+          await fs.unlink(p.diskPath).catch(() => null);
+        }
+        await writeAudit({
+          userId: session.user.id,
+          action: scan.clean ? "document.upload_blocked" : "document.virus_blocked",
+          resourceType: "Document",
+          resourceId: referenceNumber,
+          metadata: {
+            source: "office_ingest",
+            host,
+            fileName: safeName,
+            sizeBytes: buffer.length,
+            scan: describeScanResult(scan),
+          },
+        }).catch(() => null);
+        const isInfected = !scan.clean && scan.scanned;
+        return NextResponse.json(
+          {
+            error: isInfected
+              ? `File rejected: malware signature detected in "${safeName}" (${(scan as { signature: string }).signature}).`
+              : "Antivirus scan unavailable. Upload rejected by policy.",
+          },
+          { status: isInfected ? 415 : 503 }
+        );
+      }
+
       const hash = crypto.createHash("sha256").update(buffer).digest("hex");
       const diskPath = path.join(uploadDir, safeName);
       await fs.writeFile(diskPath, buffer);

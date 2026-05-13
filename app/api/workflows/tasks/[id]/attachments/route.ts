@@ -2,6 +2,12 @@ import { NextRequest, NextResponse } from "next/server";
 import { auth } from "@/lib/auth";
 import { db } from "@/lib/db";
 import { logger } from "@/lib/logger";
+import { writeAudit } from "@/lib/audit";
+import {
+  scanBuffer,
+  shouldRejectIngest,
+  describeScanResult,
+} from "@/lib/antivirus";
 import path from "path";
 import fs from "fs/promises";
 import { randomUUID } from "crypto";
@@ -68,6 +74,31 @@ export async function POST(
     const fullPath = path.join(UPLOAD_DIR, storedName);
 
     const buffer = Buffer.from(await file.arrayBuffer());
+
+    const scan = await scanBuffer(buffer);
+    if (shouldRejectIngest(scan)) {
+      await writeAudit({
+        userId: session.user.id,
+        action: scan.clean ? "task.upload_blocked" : "task.virus_blocked",
+        resourceType: "WorkflowTask",
+        resourceId: id,
+        metadata: {
+          fileName: file.name,
+          sizeBytes: file.size,
+          scan: describeScanResult(scan),
+        },
+      }).catch(() => null);
+      const isInfected = !scan.clean && scan.scanned;
+      return NextResponse.json(
+        {
+          error: isInfected
+            ? `File rejected: malware signature detected (${(scan as { signature: string }).signature}).`
+            : "Antivirus scan unavailable. Upload rejected by policy.",
+        },
+        { status: isInfected ? 415 : 503 }
+      );
+    }
+
     await fs.writeFile(fullPath, buffer);
 
     const attachment = await db.taskAttachment.create({

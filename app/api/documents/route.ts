@@ -5,6 +5,11 @@ import { writeAudit } from "@/lib/audit";
 import { generateReference } from "@/lib/reference";
 import { getDepartmentCode } from "@/lib/departments";
 import { logger } from "@/lib/logger";
+import {
+  scanBuffer,
+  shouldRejectIngest,
+  describeScanResult,
+} from "@/lib/antivirus";
 import crypto from "crypto";
 import fs from "fs/promises";
 import path from "path";
@@ -202,6 +207,32 @@ export async function POST(req: NextRequest) {
     // Read file buffer and compute content hash
     const fileBuffer = Buffer.from(await file.arrayBuffer());
     const contentHash = crypto.createHash("sha256").update(fileBuffer).digest("hex");
+
+    // Antivirus scan before anything touches disk
+    const scan = await scanBuffer(fileBuffer);
+    if (shouldRejectIngest(scan)) {
+      await writeAudit({
+        userId: session.user.id,
+        action: scan.clean ? "document.upload_blocked" : "document.virus_blocked",
+        resourceType: "Document",
+        resourceId: contentHash,
+        metadata: {
+          fileName: file.name,
+          sizeBytes: file.size,
+          contentHash,
+          scan: describeScanResult(scan),
+        },
+      }).catch(() => null);
+      const isInfected = !scan.clean && scan.scanned;
+      return NextResponse.json(
+        {
+          error: isInfected
+            ? `File rejected: malware signature detected (${(scan as { signature: string }).signature}).`
+            : "Antivirus scan unavailable. Upload rejected by policy.",
+        },
+        { status: isInfected ? 415 : 503 }
+      );
+    }
 
     // Check for duplicate by content hash
     const duplicate = await db.document.findFirst({

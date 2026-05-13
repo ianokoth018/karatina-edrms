@@ -24,6 +24,11 @@ import { writeAudit } from "@/lib/audit";
 import { logger } from "@/lib/logger";
 import { generateReference } from "@/lib/reference";
 import { getDepartmentCode } from "@/lib/departments";
+import {
+  scanBuffer,
+  shouldRejectIngest,
+  describeScanResult,
+} from "@/lib/antivirus";
 
 /** Walker rules — applied uniformly across the tree. */
 const MAX_FILE_BYTES = 500 * 1024 * 1024; // 500 MB per file
@@ -279,6 +284,36 @@ export async function runImportJob(jobId: string): Promise<void> {
     try {
       const bytes = await fs.readFile(absSource);
       const contentHash = crypto.createHash("sha256").update(bytes).digest("hex");
+
+      // Antivirus scan before any further processing or dedup. Quarantined
+      // files are marked FAILED with the signature in the error column so
+      // operators see exactly why they were skipped.
+      const avScan = await scanBuffer(bytes);
+      if (shouldRejectIngest(avScan)) {
+        const reason = avScan.clean
+          ? "Antivirus scan unavailable (fail-mode=closed)"
+          : `Malware detected: ${(avScan as { signature: string }).signature}`;
+        await db.bulkImportItem.update({
+          where: { id: item.id },
+          data: { status: "FAILED", error: reason.slice(0, 1000) },
+        });
+        await writeAudit({
+          userId: job.createdById,
+          action: "document.virus_blocked",
+          resourceType: "BulkImportJob",
+          resourceId: jobId,
+          metadata: {
+            bulkImportItemId: item.id,
+            sourceRelPath: entry.relPath,
+            sizeBytes: bytes.length,
+            contentHash,
+            scan: describeScanResult(avScan),
+          },
+        }).catch(() => null);
+        counters.failed += 1;
+        await flushCounters(jobId, counters);
+        continue;
+      }
 
       // Dedup — if a document with the same contentHash exists, skip and
       // point the BulkImportItem at the existing doc.

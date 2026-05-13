@@ -8,6 +8,11 @@ import { writeAudit } from "@/lib/audit";
 import { logger } from "@/lib/logger";
 import { parseXmlBuddyFile as sharedParseXmlBuddyFile } from "@/lib/xml-buddy";
 import { validateMetadata } from "@/lib/capture-validator";
+import {
+  scanFile,
+  shouldRejectIngest,
+  describeScanResult,
+} from "@/lib/antivirus";
 import type { Prisma } from "@prisma/client";
 
 /** Map of common file extensions to MIME types. */
@@ -634,6 +639,33 @@ export async function scanProfile(
           errors++;
           continue;
         }
+      }
+
+      // Antivirus scan before we even compute the dedup hash — if a file is
+      // infected, we want it logged once and quarantined, not silently deduped.
+      const avScan = await scanFile(filePath);
+      if (shouldRejectIngest(avScan)) {
+        await db.captureLog.create({
+          data: {
+            profileId: profile.id,
+            fileName,
+            filePath,
+            fileSize: BigInt(fileSize),
+            status: "ERROR",
+            errorMessage: avScan.clean
+              ? "Antivirus scan unavailable (fail-mode=closed)"
+              : `Malware detected: ${(avScan as { signature: string }).signature}`,
+            metadata: { virus: describeScanResult(avScan) } as Prisma.InputJsonValue,
+            processedAt: new Date(),
+          },
+        });
+        if (profile.errorPath) {
+          await fs.rename(filePath, path.join(profile.errorPath, fileName)).catch(() => null);
+        } else {
+          await fs.unlink(filePath).catch(() => null);
+        }
+        errors++;
+        continue;
       }
 
       // Compute SHA-256 hash for duplicate detection

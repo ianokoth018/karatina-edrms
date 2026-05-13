@@ -5,6 +5,11 @@ import { auth } from "@/lib/auth";
 import { db } from "@/lib/db";
 import { writeAudit } from "@/lib/audit";
 import { logger } from "@/lib/logger";
+import {
+  scanBuffer,
+  shouldRejectIngest,
+  describeScanResult,
+} from "@/lib/antivirus";
 
 const UPLOAD_DIR = path.join(process.cwd(), "uploads", "signatures");
 const STAMP_DIR = path.join(process.cwd(), "uploads", "stamps");
@@ -98,6 +103,30 @@ export async function POST(req: NextRequest) {
       return NextResponse.json(
         { error: `Maximum file size is ${MAX_BYTES / (1024 * 1024)} MiB` },
         { status: 413 },
+      );
+    }
+
+    const scan = await scanBuffer(bytes);
+    if (shouldRejectIngest(scan)) {
+      await writeAudit({
+        userId,
+        action: scan.clean ? "user.upload_blocked" : "user.virus_blocked",
+        resourceType: "user",
+        resourceId: userId,
+        metadata: {
+          target: kind,
+          sizeBytes: bytes.byteLength,
+          scan: describeScanResult(scan),
+        },
+      }).catch(() => null);
+      const isInfected = !scan.clean && scan.scanned;
+      return NextResponse.json(
+        {
+          error: isInfected
+            ? `${kind === "stamp" ? "Stamp" : "Signature"} rejected: malware signature detected (${(scan as { signature: string }).signature}).`
+            : "Antivirus scan unavailable. Upload rejected by policy.",
+        },
+        { status: isInfected ? 415 : 503 }
       );
     }
 

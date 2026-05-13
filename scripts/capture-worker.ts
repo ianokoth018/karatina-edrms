@@ -1024,6 +1024,43 @@ async function processFile(
   // 6. Get file stats
   const stats = await fs.stat(filePath);
 
+  // 6b. Antivirus scan — block infected files before they enter the dedup
+  // index or get copied into uploads/. Quarantined files are moved to
+  // profile.errorPath (or deleted) and logged as ERROR with the signature.
+  {
+    const { scanFile, shouldRejectIngest, describeScanResult } = await import(
+      "../lib/antivirus"
+    );
+    const avScan = await scanFile(filePath);
+    if (shouldRejectIngest(avScan)) {
+      const reason = avScan.clean
+        ? "Antivirus scan unavailable (fail-mode=closed)"
+        : `Malware detected: ${(avScan as { signature: string }).signature}`;
+      log.warn(`AV blocked "${fileName}": ${describeScanResult(avScan)}`);
+      await prisma.captureLog.create({
+        data: {
+          profileId: profile.id,
+          fileName,
+          filePath,
+          fileSize: BigInt(stats.size),
+          status: "ERROR",
+          errorMessage: reason,
+          metadata: { virus: describeScanResult(avScan) },
+        },
+      });
+      if (profile.errorPath) {
+        try {
+          await fs.rename(filePath, path.join(profile.errorPath, fileName));
+        } catch {
+          await fs.unlink(filePath).catch(() => null);
+        }
+      } else {
+        await fs.unlink(filePath).catch(() => null);
+      }
+      return;
+    }
+  }
+
   // 7. Compute SHA-256 hash
   const fileHash = await computeFileHash(filePath);
   log.debug(`Hash for "${fileName}": ${fileHash}`);

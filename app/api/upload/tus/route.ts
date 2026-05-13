@@ -10,6 +10,12 @@ import {
   deleteUpload,
   decodeTusMetadata,
 } from "@/lib/tus-store";
+import {
+  scanFile,
+  shouldRejectIngest,
+  describeScanResult,
+} from "@/lib/antivirus";
+import { writeAudit } from "@/lib/audit";
 import { promises as fs } from "fs";
 import path from "path";
 
@@ -154,8 +160,41 @@ export async function PATCH(req: NextRequest) {
             const destPath = path.join(uploadDir, safeName);
             const storagePath = `uploads/edrms/${safeName}`;
 
+            // Antivirus scan on the assembled file before it leaves the
+            // staging directory. On hit (or scan-unreachable + fail-closed),
+            // the temp file is purged and the upload is dropped without
+            // creating a DocumentFile row.
+            const assembledPath = getAssembledPath(uploadId);
+            const scan = await scanFile(assembledPath);
+            if (shouldRejectIngest(scan)) {
+              await fs.unlink(assembledPath).catch(() => null);
+              await deleteUpload(uploadId).catch(() => null);
+              await writeAudit({
+                userId: session.user.id,
+                action: scan.clean ? "document.upload_blocked" : "document.virus_blocked",
+                resourceType: "Document",
+                resourceId: documentId,
+                metadata: {
+                  uploadId,
+                  fileName,
+                  sizeBytes: upload.length,
+                  scan: describeScanResult(scan),
+                },
+              }).catch(() => null);
+              const isInfected = !scan.clean && scan.scanned;
+              return new NextResponse(
+                isInfected
+                  ? `File rejected: malware signature detected (${(scan as { signature: string }).signature}).`
+                  : "Antivirus scan unavailable. Upload rejected by policy.",
+                {
+                  status: isInfected ? 415 : 503,
+                  headers: tusHeaders({ "Upload-Offset": String(result.newOffset) }),
+                },
+              );
+            }
+
             // Move assembled file from tus temp to uploads/edrms
-            await fs.rename(getAssembledPath(uploadId), destPath);
+            await fs.rename(assembledPath, destPath);
 
             const docFile = await db.documentFile.create({
               data: {

@@ -4,6 +4,11 @@ import { encryptFile } from "@/lib/encryption";
 import { enqueueOcr } from "@/lib/queue";
 import { fireTriggers } from "@/lib/capture-notifications";
 import { validateMetadata } from "@/lib/capture-validator";
+import {
+  scanBuffer,
+  shouldRejectIngest,
+  describeScanResult,
+} from "@/lib/antivirus";
 import bcrypt from "bcryptjs";
 import { createHash } from "crypto";
 import { promises as fs } from "fs";
@@ -79,6 +84,34 @@ export async function POST(req: NextRequest) {
   // Save file bytes
   const bytes = Buffer.from(await file.arrayBuffer());
   const fileHash = createHash("sha256").update(bytes).digest("hex");
+
+  // Antivirus scan
+  const scan = await scanBuffer(bytes);
+  if (shouldRejectIngest(scan)) {
+    await db.captureException
+      .create({
+        data: {
+          profileId,
+          filePath: `[API] ${file.name}`,
+          extractedMetadata: metadata,
+          errors: {
+            virus: describeScanResult(scan),
+            ...(scan.clean ? {} : (scan.scanned ? { signature: (scan as { signature: string }).signature } : { reason: (scan as { reason: string }).reason })),
+          } as never,
+          status: "PENDING",
+        },
+      })
+      .catch(() => null);
+    const isInfected = !scan.clean && scan.scanned;
+    return NextResponse.json(
+      {
+        error: isInfected
+          ? `File rejected: malware signature detected (${(scan as { signature: string }).signature}).`
+          : "Antivirus scan unavailable. Upload rejected by policy.",
+      },
+      { status: isInfected ? 415 : 503 },
+    );
+  }
 
   // Dedup check
   const existing = await db.captureLog.findFirst({ where: { fileHash, status: "CAPTURED" } });

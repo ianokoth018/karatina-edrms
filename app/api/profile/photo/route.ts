@@ -6,6 +6,11 @@ import { auth } from "@/lib/auth";
 import { db } from "@/lib/db";
 import { writeAudit } from "@/lib/audit";
 import { logger } from "@/lib/logger";
+import {
+  scanBuffer,
+  shouldRejectIngest,
+  describeScanResult,
+} from "@/lib/antivirus";
 
 const ALLOWED_MIME = new Set([
   "image/png",
@@ -86,7 +91,34 @@ export async function POST(req: NextRequest) {
     }
 
     const arrayBuffer = await file.arrayBuffer();
-    await fs.writeFile(targetAbs, Buffer.from(arrayBuffer));
+    const photoBuffer = Buffer.from(arrayBuffer);
+
+    const scan = await scanBuffer(photoBuffer);
+    if (shouldRejectIngest(scan)) {
+      await writeAudit({
+        userId: session.user.id,
+        action: scan.clean ? "user.upload_blocked" : "user.virus_blocked",
+        resourceType: "user",
+        resourceId: session.user.id,
+        metadata: {
+          target: "profile_photo",
+          fileName: filename,
+          sizeBytes: file.size,
+          scan: describeScanResult(scan),
+        },
+      }).catch(() => null);
+      const isInfected = !scan.clean && scan.scanned;
+      return NextResponse.json(
+        {
+          error: isInfected
+            ? `Photo rejected: malware signature detected (${(scan as { signature: string }).signature}).`
+            : "Antivirus scan unavailable. Upload rejected by policy.",
+        },
+        { status: isInfected ? 415 : 503 }
+      );
+    }
+
+    await fs.writeFile(targetAbs, photoBuffer);
 
     // Use the relative path (under uploads/) so the existing file-serving
     // patterns can read it back. We append a cache-buster to the URL for
@@ -94,7 +126,7 @@ export async function POST(req: NextRequest) {
     const relPath = path.posix.join("uploads", "avatars", filename);
     const cacheBuster = crypto
       .createHash("sha256")
-      .update(Buffer.from(arrayBuffer))
+      .update(photoBuffer)
       .digest("hex")
       .slice(0, 8);
 

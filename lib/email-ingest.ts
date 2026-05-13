@@ -23,6 +23,11 @@ import { logger } from "@/lib/logger";
 import { generateReference } from "@/lib/reference";
 import { writeAudit } from "@/lib/audit";
 import { decryptSecret, encryptFileStreaming } from "@/lib/encryption";
+import {
+  scanBuffer,
+  shouldRejectIngest,
+  describeScanResult,
+} from "@/lib/antivirus";
 
 const UPLOADS_DIR = path.join(process.cwd(), "uploads", "edrms");
 
@@ -274,6 +279,43 @@ export async function runEmailIngestRule(
 
       try {
         const { textBody, htmlBody, attachments } = await downloadMessageContent(client, msg);
+
+        // Antivirus scan the message body + every attachment before anything
+        // hits disk. Any hit causes the whole message to be skipped (and
+        // flagged Seen) so we don't re-process it.
+        const scanTargets: Array<{ name: string; buf: Buffer }> = [
+          { name: htmlBody ? "message.html" : "message.txt", buf: Buffer.from(htmlBody || textBody || "(empty)", "utf8") },
+          ...attachments.map((a) => ({ name: a.filename, buf: a.data })),
+        ];
+        let infected: { name: string; result: ReturnType<typeof describeScanResult> } | null = null;
+        for (const t of scanTargets) {
+          const r = await scanBuffer(t.buf);
+          if (shouldRejectIngest(r)) {
+            infected = { name: t.name, result: describeScanResult(r) };
+            break;
+          }
+        }
+        if (infected) {
+          await writeAudit({
+            userId: rule.createdById,
+            action: "email.virus_blocked",
+            resourceType: "EmailIngestRule",
+            resourceId: rule.id,
+            metadata: {
+              from,
+              subject,
+              messageId: msg.envelope.messageId ?? null,
+              part: infected.name,
+              scan: infected.result,
+            },
+          }).catch(() => null);
+          try {
+            await client.messageFlagsAdd(String(msg.uid), ["\\Seen"], { uid: true });
+          } catch { /* ignore */ }
+          result.errors.push(`Blocked '${subject || infected.name}': ${infected.result}`);
+          continue;
+        }
+
         const referenceNumber = await generateReference("EML", department);
         const refDir = path.join(UPLOADS_DIR, referenceNumber);
 
