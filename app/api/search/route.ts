@@ -3,6 +3,7 @@ import { auth } from "@/lib/auth";
 import { db } from "@/lib/db";
 import { logger } from "@/lib/logger";
 import { buildDocumentAccessWhere } from "@/lib/document-access";
+import { rewriteSearchQuery } from "@/lib/ai-search";
 
 function serialise<T>(data: T): T {
   return JSON.parse(
@@ -10,90 +11,131 @@ function serialise<T>(data: T): T {
   );
 }
 
-/**
- * Highlight search terms in a string by wrapping matches in <mark> tags.
- */
-function highlight(text: string | null | undefined, query: string): string {
-  if (!text || !query) return text ?? "";
-  const escaped = query.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-  const regex = new RegExp(`(${escaped})`, "gi");
-  return text.replace(regex, "<mark>$1</mark>");
-}
-
-/**
- * Extract a snippet around the first occurrence of the query in the text.
- */
-function snippet(
-  text: string | null | undefined,
-  query: string,
-  maxLen = 200
-): string {
-  if (!text || !query) return text?.slice(0, maxLen) ?? "";
-  const lower = text.toLowerCase();
-  const idx = lower.indexOf(query.toLowerCase());
-  if (idx === -1) return text.slice(0, maxLen);
-
-  const start = Math.max(0, idx - 80);
-  const end = Math.min(text.length, idx + query.length + 80);
-  let result = text.slice(start, end);
-  if (start > 0) result = "..." + result;
-  if (end < text.length) result = result + "...";
-  return result;
-}
-
-/**
- * GET /api/search
- * Full-text search across documents.
- * Query params:
- *   q          - search query (required)
- *   department - filter by department
- *   type       - filter by document type
- *   status     - filter by document status
- *   dateFrom   - filter by creation date (from)
- *   dateTo     - filter by creation date (to)
- *   page       - page number (default 1)
- *   limit      - items per page (default 20)
- */
 export async function GET(req: NextRequest) {
+  const startedAt = Date.now();
   try {
     const session = await auth();
     if (!session?.user) {
       return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
     }
-
     const { searchParams } = new URL(req.url);
-    const q = searchParams.get("q") ?? "";
-    const department = searchParams.get("department");
-    const type = searchParams.get("type");
-    const status = searchParams.get("status");
-    const dateFrom = searchParams.get("dateFrom");
-    const dateTo = searchParams.get("dateTo");
+    const q = (searchParams.get("q") ?? "").trim();
+    let department = searchParams.get("department");
+    let type = searchParams.get("type");
+    let status = searchParams.get("status");
+    let dateFrom = searchParams.get("dateFrom");
+    let dateTo = searchParams.get("dateTo");
+    const useAi = searchParams.get("ai") === "1";
     const page = Math.max(1, Number(searchParams.get("page") ?? "1"));
-    const limit = Math.min(100, Math.max(1, Number(searchParams.get("limit") ?? "20")));
+    const limit = Math.min(
+      100,
+      Math.max(1, Number(searchParams.get("limit") ?? "20"))
+    );
     const skip = (page - 1) * limit;
 
-    // Access-control scope: limits results to documents the user may read.
-    // Admins (admin:manage) get {} (no restriction).
     const accessWhere = await buildDocumentAccessWhere(session);
 
-    // Compose the search filter.  When the user has narrower access, we AND
-    // the access scope with the query filter so they cannot surface documents
-    // they wouldn't otherwise see.
-    const filters: Record<string, unknown>[] = [];
-
-    if (q) {
-      filters.push({
-        OR: [
-          { title: { contains: q, mode: "insensitive" } },
-          { description: { contains: q, mode: "insensitive" } },
-          { referenceNumber: { contains: q, mode: "insensitive" } },
-          { documentType: { contains: q, mode: "insensitive" } },
-          { tags: { some: { tag: { contains: q, mode: "insensitive" } } } },
-          { files: { some: { ocrText: { contains: q, mode: "insensitive" } } } },
-        ],
-      });
+    let aiRewrite: Awaited<ReturnType<typeof rewriteSearchQuery>> = null;
+    let effectiveQ = q;
+    if (useAi && q) {
+      try {
+        aiRewrite = await rewriteSearchQuery({ query: q });
+        if (aiRewrite) {
+          if (!department && aiRewrite.department) department = aiRewrite.department;
+          if (!type && aiRewrite.type) type = aiRewrite.type;
+          if (!status && aiRewrite.status) status = aiRewrite.status;
+          if (!dateFrom && aiRewrite.dateFrom) dateFrom = aiRewrite.dateFrom;
+          if (!dateTo && aiRewrite.dateTo) dateTo = aiRewrite.dateTo;
+          effectiveQ = (aiRewrite.fts_query ?? "").trim() || q;
+        }
+      } catch (e) {
+        logger.warn("AI search rewrite failed", {
+          err: e instanceof Error ? e.message : String(e),
+        });
+      }
     }
 
+    let rankedIds: string[] | null = null;
+    const headlines = new Map<string, { title?: string; ocr?: string }>();
+    if (effectiveQ) {
+      const rows: Array<{
+        id: string;
+        rank: number;
+        title_hl: string | null;
+        ocr_hl: string | null;
+      }> = await db.$queryRawUnsafe(
+        `
+        WITH doc_match AS (
+          SELECT
+            d.id,
+            ts_rank(
+              to_tsvector('english',
+                coalesce(d.title, '') || ' ' ||
+                coalesce(d.description, '') || ' ' ||
+                coalesce(d."referenceNumber", '') || ' ' ||
+                coalesce(d."documentType", '')
+              ),
+              websearch_to_tsquery('english', $1)
+            ) AS doc_rank,
+            ts_headline(
+              'english',
+              coalesce(d.title, ''),
+              websearch_to_tsquery('english', $1),
+              'StartSel=<mark>, StopSel=</mark>, MaxFragments=1, MaxWords=15, MinWords=3'
+            ) AS title_hl
+          FROM documents d
+          WHERE
+            to_tsvector('english',
+              coalesce(d.title, '') || ' ' ||
+              coalesce(d.description, '') || ' ' ||
+              coalesce(d."referenceNumber", '') || ' ' ||
+              coalesce(d."documentType", '')
+            ) @@ websearch_to_tsquery('english', $1)
+            OR d.title ILIKE '%' || $1 || '%'
+            OR d."referenceNumber" ILIKE '%' || $1 || '%'
+        ),
+        file_match AS (
+          SELECT
+            f."documentId" AS id,
+            MAX(ts_rank(
+              to_tsvector('english', coalesce(f."ocrText", '')),
+              websearch_to_tsquery('english', $1)
+            )) AS file_rank,
+            (array_agg(ts_headline(
+              'english',
+              coalesce(f."ocrText", ''),
+              websearch_to_tsquery('english', $1),
+              'StartSel=<mark>, StopSel=</mark>, MaxFragments=2, MaxWords=20, MinWords=5'
+            )))[1] AS ocr_hl
+          FROM document_files f
+          WHERE
+            to_tsvector('english', coalesce(f."ocrText", '')) @@
+              websearch_to_tsquery('english', $1)
+          GROUP BY f."documentId"
+        )
+        SELECT
+          coalesce(dm.id, fm.id) AS id,
+          (coalesce(dm.doc_rank, 0) + 0.3 * coalesce(fm.file_rank, 0)) AS rank,
+          dm.title_hl,
+          fm.ocr_hl
+        FROM doc_match dm
+        FULL OUTER JOIN file_match fm ON dm.id = fm.id
+        ORDER BY rank DESC NULLS LAST
+        LIMIT 500
+        `,
+        effectiveQ
+      );
+      rankedIds = rows.map((r) => r.id);
+      for (const r of rows) {
+        headlines.set(r.id, {
+          title: r.title_hl ?? undefined,
+          ocr: r.ocr_hl ?? undefined,
+        });
+      }
+    }
+
+    const filters: Record<string, unknown>[] = [];
+    if (rankedIds) filters.push({ id: { in: rankedIds } });
     if (department) filters.push({ department });
     if (type) filters.push({ documentType: type });
     if (status) filters.push({ status });
@@ -103,7 +145,6 @@ export async function GET(req: NextRequest) {
       if (dateTo) createdAt.lte = new Date(dateTo + "T23:59:59.999Z");
       filters.push({ createdAt });
     }
-
     const where =
       Object.keys(accessWhere).length > 0
         ? filters.length
@@ -116,20 +157,16 @@ export async function GET(req: NextRequest) {
     const [documents, total] = await Promise.all([
       db.document.findMany({
         where,
-        skip,
-        take: limit,
-        orderBy: { createdAt: "desc" },
+        skip: rankedIds ? 0 : skip,
+        take: rankedIds ? Math.min(500, limit * page) : limit,
+        orderBy: rankedIds ? undefined : { createdAt: "desc" },
         include: {
           tags: { select: { tag: true } },
-          createdBy: {
-            select: { id: true, name: true, displayName: true },
-          },
-          classificationNode: {
-            select: { id: true, code: true, title: true },
-          },
+          createdBy: { select: { id: true, name: true, displayName: true } },
+          classificationNode: { select: { id: true, code: true, title: true } },
           files: {
             where: { ocrText: { not: null } },
-            select: { id: true, fileName: true, ocrText: true, ocrStatus: true },
+            select: { id: true, fileName: true, ocrStatus: true },
             take: 1,
           },
         },
@@ -137,8 +174,15 @@ export async function GET(req: NextRequest) {
       db.document.count({ where }),
     ]);
 
-    // Facet counts are also scoped to what the user can see.  Without this
-    // they would leak the existence of documents the user has no access to.
+    let ordered = documents;
+    if (rankedIds) {
+      const order = new Map(rankedIds.map((id, i) => [id, i]));
+      ordered = [...documents].sort(
+        (a, b) => (order.get(a.id) ?? 0) - (order.get(b.id) ?? 0)
+      );
+      ordered = ordered.slice(skip, skip + limit);
+    }
+
     const facetWhere =
       Object.keys(accessWhere).length > 0 ? accessWhere : undefined;
     const [departments, types, statuses] = await Promise.all([
@@ -162,28 +206,50 @@ export async function GET(req: NextRequest) {
       }),
     ]);
 
-    // Enrich results with highlighting (including OCR snippet when content matched)
-    const results = documents.map((doc) => {
+    const results = ordered.map((doc) => {
+      const hl = headlines.get(doc.id);
       const ocrFile = doc.files?.[0];
-      const ocrSnippet = ocrFile?.ocrText
-        ? snippet(ocrFile.ocrText, q, 200)
-        : null;
       return {
         ...doc,
         _highlight: {
-          title: highlight(doc.title, q),
-          description: snippet(doc.description, q),
-          referenceNumber: highlight(doc.referenceNumber, q),
-          ocrSnippet: ocrSnippet ? highlight(ocrSnippet, q) : null,
-          ocrFileName: ocrSnippet ? ocrFile?.fileName : null,
+          title: hl?.title ?? doc.title,
+          ocrSnippet: hl?.ocr ?? null,
+          ocrFileName: hl?.ocr ? ocrFile?.fileName : null,
         },
       };
     });
+
+    const durationMs = Date.now() - startedAt;
+    if (q) {
+      db.searchLog
+        .create({
+          data: {
+            userId: session.user.id,
+            query: q,
+            filters: {
+              department: department ?? null,
+              type: type ?? null,
+              status: status ?? null,
+              dateFrom: dateFrom ?? null,
+              dateTo: dateTo ?? null,
+            } as object,
+            resultCount: total,
+            durationMs,
+            hadResults: total > 0,
+          },
+        })
+        .catch((err) =>
+          logger.warn("Failed to write SearchLog", { err: String(err) })
+        );
+    }
 
     return NextResponse.json(
       serialise({
         results,
         query: q,
+        effectiveQuery: effectiveQ,
+        aiRewrite,
+        durationMs,
         facets: {
           departments: departments.map((d) => ({
             value: d.department,

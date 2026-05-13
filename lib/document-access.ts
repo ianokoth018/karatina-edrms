@@ -1,4 +1,4 @@
-import type { Prisma } from "@prisma/client";
+import type { Prisma, SecurityClassification } from "@prisma/client";
 import { db } from "@/lib/db";
 
 export interface SessionLike {
@@ -7,23 +7,41 @@ export interface SessionLike {
     roles?: string[];
     permissions?: string[];
     department?: string | null;
+    clearanceLevel?: SecurityClassification | null;
   };
 }
 
-/**
- * Build a Prisma `where` clause for `db.document.findMany` (or `count`) that
- * restricts results to documents the user may read.
- *
- * Access rules (ANY of):
- *   1. User has the `admin:manage` permission.
- *   2. User is the creator.
- *   3. User is in the same `department` as the document.
- *   4. A `DocumentAccessControl` row grants `canRead` to the user directly,
- *      or to one of the user's roles.
- *
- * Returns `{}` for admins (no restriction) or a Prisma `AND`-combinable
- * object that can be spread into an existing `where` clause.
- */
+/** Ordered least → most sensitive. */
+export const CLASSIFICATION_ORDER: SecurityClassification[] = [
+  "OPEN",
+  "CONFIDENTIAL",
+  "RESTRICTED",
+  "SECRET",
+  "TOP_SECRET",
+];
+
+export function classificationOrdinal(
+  level: SecurityClassification | null | undefined
+): number {
+  if (!level) return 0;
+  const idx = CLASSIFICATION_ORDER.indexOf(level);
+  return idx < 0 ? 0 : idx;
+}
+
+export function classificationsAtOrBelow(
+  level: SecurityClassification | null | undefined
+): SecurityClassification[] {
+  const idx = level ? CLASSIFICATION_ORDER.indexOf(level) : 0;
+  return CLASSIFICATION_ORDER.slice(0, Math.max(idx, 0) + 1);
+}
+
+export function canUserReadClassification(
+  userLevel: SecurityClassification | null | undefined,
+  docLevel: SecurityClassification
+): boolean {
+  return classificationOrdinal(userLevel) >= classificationOrdinal(docLevel);
+}
+
 export async function buildDocumentAccessWhere(
   session: SessionLike
 ): Promise<Prisma.DocumentWhereInput> {
@@ -33,8 +51,8 @@ export async function buildDocumentAccessWhere(
   const userId = session.user.id;
   const department = session.user.department ?? null;
   const roleNames = session.user.roles ?? [];
+  const clearance = session.user.clearanceLevel ?? "OPEN";
 
-  // Translate role names to IDs so we can match DocumentAccessControl rows
   const roleIds = roleNames.length
     ? (
         await db.role.findMany({
@@ -51,8 +69,12 @@ export async function buildDocumentAccessWhere(
     { createdById: userId },
     { accessControls: { some: { canRead: true, OR: aclOr } } },
   ];
-
   if (department) or.push({ department });
 
-  return { OR: or };
+  return {
+    AND: [
+      { securityClassification: { in: classificationsAtOrBelow(clearance) } },
+      { OR: or },
+    ],
+  };
 }

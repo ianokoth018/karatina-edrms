@@ -17,6 +17,12 @@ export async function proxy(req: NextRequest) {
     pathname.startsWith("/api/memos/public/") ||
     // Document share links: token already authenticates
     pathname.startsWith("/api/shared/") ||
+    pathname.startsWith("/api/public/") ||
+    pathname.startsWith("/memo/verify") ||
+    pathname.startsWith("/embed/") ||
+    pathname.startsWith("/public/forms") ||
+    pathname === "/api/system/features" ||
+    pathname === "/api/openapi" ||
     // DocuSign Connect webhook — vendor signs the request
     pathname === "/api/docusign/webhook" ||
     // DocuSign embedded-signing return URLs — hit by the popup after

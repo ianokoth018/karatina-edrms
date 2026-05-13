@@ -93,6 +93,15 @@ model User {
   documentSubscriptions     DocumentSubscription[]  @relation("DocumentWatcher")
   memoDrafts                MemoDraft[]             @relation("MemoDraftAuthor")
 
+  /// Distinguished name returned by the LDAP/AD directory on the user's
+  /// most recent successful bind. Allows re-syncing without an additional
+  /// directory lookup by email and proves which AD object owns this row.
+  ldapDn                    String?  @unique
+  /// When this user last signed in via LDAP/AD (group→role mapping run).
+  ldapSyncedAt              DateTime?
+  /// Max security classification this user can read.
+  clearanceLevel            SecurityClassification  @default(OPEN)
+
   @@map("users")
 }
 
@@ -103,9 +112,25 @@ model Role {
   isSystem    Boolean      @default(false)
   permissions Permission[]
   users       UserRole[]
+  ldapGroupMaps LdapGroupRoleMap[]
   createdAt   DateTime     @default(now())
 
   @@map("roles")
+}
+
+/// Maps an LDAP/AD group (by CN or full DN) to a local Role.
+/// When `autoApply` is true, the LDAP sign-in flow assigns/removes the role
+/// based on the user's group membership at each login. When false, the
+/// mapping is informational only and requires manual review.
+model LdapGroupRoleMap {
+  id          String   @id @default(cuid())
+  ldapGroup   String   @unique
+  roleId      String
+  role        Role     @relation(fields: [roleId], references: [id], onDelete: Cascade)
+  autoApply   Boolean  @default(true)
+  createdAt   DateTime @default(now())
+
+  @@map("ldap_group_role_maps")
 }
 
 model UserRole {
@@ -178,6 +203,9 @@ model Document {
   description          String?
   documentType         String   // MEMO, LETTER, FORM, REPORT, STUDENT_FILE, etc.
   status               DocumentStatus @default(ACTIVE)
+  /// Government-grade security classification (distinct from the records
+  /// file-plan node). Gated by user clearance in buildDocumentAccessWhere.
+  securityClassification SecurityClassification @default(OPEN)
   classificationNodeId String?
   classificationNode   ClassificationNode? @relation(fields: [classificationNodeId], references: [id])
   createdById          String
@@ -212,13 +240,45 @@ model Document {
   relationsTo     DocumentRelation[] @relation("RelationTarget")
   redactions      DocumentRedaction[]
   subscriptions   DocumentSubscription[]
+  externalLocks   DocumentExternalLock[]
 
   @@index([status])
   @@index([department])
   @@index([documentType])
   @@index([sourceSystem, sourceId])
   @@index([createdAt])
+  @@index([securityClassification])
   @@map("documents")
+}
+
+/// Five-level government-grade security classification.
+enum SecurityClassification {
+  OPEN
+  CONFIDENTIAL
+  RESTRICTED
+  SECRET
+  TOP_SECRET
+}
+
+/// External-system reference lock. Active locks block deletion/replacement
+/// but allow reads + new versions.
+model DocumentExternalLock {
+  id            String   @id @default(cuid())
+  documentId    String
+  document      Document @relation(fields: [documentId], references: [id], onDelete: Cascade)
+  sourceSystem  String
+  sourceType    String
+  sourceRef     String
+  lockedById    String?
+  lockedAt      DateTime @default(now())
+  reason        String?
+  releasedAt    DateTime?
+  releasedById  String?
+
+  @@unique([documentId, sourceSystem, sourceRef])
+  @@index([documentId, releasedAt])
+  @@index([sourceSystem, sourceRef])
+  @@map("document_external_locks")
 }
 
 model DocumentFile {
@@ -649,16 +709,28 @@ model WorkflowTrigger {
   name           String
   templateId     String
   template       WorkflowTemplate @relation(fields: [templateId], references: [id])
+  /// "document" (default), "form_submit", "manual", "scheduled".
+  triggerType    String   @default("document")
+  /// For form_submit triggers — the source form template id.
+  formTemplateId String?
   conditions     Json     // array of {field, operator, value} matching document metadata
   documentType   String?  // filter by document type (null = any)
   department     String?  // filter by department (null = any)
   subjectTemplate String? // template for workflow subject e.g. "Review: {{title}}"
+  /// For scheduled triggers — 5-field cron expression.
+  scheduleCron     String?
+  scheduleTimezone String? @default("Africa/Nairobi")
+  lastFiredAt      DateTime?
+  nextFireAt       DateTime?
   isActive       Boolean  @default(true)
   createdById    String
   createdAt      DateTime @default(now())
   updatedAt      DateTime @updatedAt
 
   @@index([isActive])
+  @@index([triggerType, isActive])
+  @@index([formTemplateId])
+  @@index([triggerType, nextFireAt])
   @@map("workflow_triggers")
 }
 
@@ -742,6 +814,8 @@ model FormTemplate {
   description String?
   fields      Json
   workflowTemplateId String?
+  /// When true, the form is submittable from /public/forms/[id] without auth.
+  isPublic    Boolean @default(false)
   isActive    Boolean @default(true)
   version     Int     @default(1)
   createdById String
@@ -776,12 +850,33 @@ model AuditLog {
   userAgent    String?
   metadata     Json     @default("{}")
   occurredAt   DateTime @default(now())
+  /// Tamper-evident hash chain.
+  prevHash     String?
+  hash         String?
 
   @@index([userId])
   @@index([resourceType, resourceId])
   @@index([action])
   @@index([occurredAt])
+  @@index([hash])
   @@map("audit_logs")
+}
+
+/// Append-only search-query log for analytics.
+model SearchLog {
+  id           String   @id @default(cuid())
+  userId       String?
+  query        String
+  filters      Json     @default("{}")
+  resultCount  Int
+  durationMs   Int      @default(0)
+  hadResults   Boolean  @default(true)
+  occurredAt   DateTime @default(now())
+
+  @@index([occurredAt])
+  @@index([userId, occurredAt])
+  @@index([hadResults, occurredAt])
+  @@map("search_logs")
 }
 
 model Notification {
@@ -1048,6 +1143,42 @@ enum CaptureTriggerChannel {
   EMAIL
   WEBHOOK
   IN_APP
+}
+
+/// Rule-driven inbound email auto-ingest. Distinct from CaptureProfile
+/// (sourceType=EMAIL) which drops attachments into a hot folder for the
+/// main capture worker. This pipeline persists incoming mail directly as
+/// Documents (one per message) with attachments as DocumentFiles.
+model EmailIngestRule {
+  id                 String   @id @default(cuid())
+  name               String
+  isActive           Boolean  @default(true)
+  /// IMAP host config (per-rule so different mailboxes can land in different folders).
+  imapHost           String
+  imapPort           Int      @default(993)
+  imapSecure         Boolean  @default(true)
+  imapUser           String
+  /// Encrypted password using lib/encryption (AES-256-GCM, enc:v1:... format).
+  imapPasswordCipher String
+  /// IMAP folder/mailbox to watch (e.g. "INBOX" or "Inbox/Procurement").
+  mailbox            String   @default("INBOX")
+  /// Optional From: header filter (substring match). null = any sender.
+  fromFilter         String?
+  /// Optional Subject: regex (raw). null = any subject.
+  subjectFilter      String?
+  /// Document target — either a casefolder slug/id or a freeform department.
+  targetDepartment   String?
+  targetDocumentType String   @default("EMAIL")
+  /// Tag every ingested doc with this tag set.
+  tagsCsv            String   @default("email,inbound")
+  lastPolledAt       DateTime?
+  lastError          String?
+  createdById        String
+  createdAt          DateTime @default(now())
+  updatedAt          DateTime @updatedAt
+
+  @@index([isActive])
+  @@map("email_ingest_rules")
 }
 
 model ApiKey {

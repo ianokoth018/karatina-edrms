@@ -333,3 +333,52 @@ export async function getSmtpConfigSafe(): Promise<SmtpConfigSafe> {
     source: "none",
   };
 }
+
+const WATERMARK_KEY = "watermark";
+
+export interface WatermarkConfig {
+  enabled: boolean;
+  minClassification:
+    | "OPEN"
+    | "CONFIDENTIAL"
+    | "RESTRICTED"
+    | "SECRET"
+    | "TOP_SECRET";
+  text: string;
+}
+
+const WATERMARK_DEFAULTS: WatermarkConfig = {
+  enabled: false,
+  minClassification: "CONFIDENTIAL",
+  text: "",
+};
+
+export async function getWatermarkConfig(): Promise<WatermarkConfig> {
+  const row = await db.appSetting.findUnique({ where: { key: WATERMARK_KEY } });
+  const raw = (row?.value as Partial<WatermarkConfig> | null) ?? null;
+  if (!raw) return WATERMARK_DEFAULTS;
+  return {
+    enabled: raw.enabled ?? WATERMARK_DEFAULTS.enabled,
+    minClassification: raw.minClassification ?? WATERMARK_DEFAULTS.minClassification,
+    text: raw.text ?? WATERMARK_DEFAULTS.text,
+  };
+}
+
+export async function setWatermarkConfig(
+  input: WatermarkConfig,
+  updatedById: string | null
+): Promise<WatermarkConfig> {
+  await db.appSetting.upsert({
+    where: { key: WATERMARK_KEY },
+    create: {
+      key: WATERMARK_KEY,
+      value: input as unknown as Prisma.InputJsonValue,
+      updatedById: updatedById ?? undefined,
+    },
+    update: {
+      value: input as unknown as Prisma.InputJsonValue,
+      updatedById: updatedById ?? undefined,
+    },
+  });
+  return input;
+}

@@ -1,0 +1,26 @@
+<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<OfficeApp
+  xmlns="http://schemas.microsoft.com/office/appforoffice/1.1"
+  xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+  xmlns:bt="http://schemas.microsoft.com/office/officeappbasictypes/1.0"
+  xsi:type="TaskPaneApp">
+  <Id>6f4a9c7e-3d12-4b8a-9f1c-1a2b3c4d5e03</Id>
+  <Version>1.0.0.0</Version>
+  <ProviderName>Karatina EDRMS</ProviderName>
+  <DefaultLocale>en-US</DefaultLocale>
+  <DisplayName DefaultValue="Save to EDRMS" />
+  <Description DefaultValue="Save the current PowerPoint presentation to the Karatina EDRMS." />
+  <IconUrl DefaultValue="https://EDRMS_HOST/icon.png" />
+  <HighResolutionIconUrl DefaultValue="https://EDRMS_HOST/icon.png" />
+  <SupportUrl DefaultValue="https://EDRMS_HOST/dashboard" />
+  <AppDomains>
+    <AppDomain>https://EDRMS_HOST</AppDomain>
+  </AppDomains>
+  <Hosts>
+    <Host Name="Presentation" />
+  </Hosts>
+  <DefaultSettings>
+    <SourceLocation DefaultValue="https://EDRMS_HOST/office/save?host=powerpoint" />
+  </DefaultSettings>
+  <Permissions>ReadWriteDocument</Permissions>
+</OfficeApp>

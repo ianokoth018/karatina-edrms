@@ -16,6 +16,7 @@ import {
   verifyAndTouchSession,
   revokeSession,
 } from "@/lib/sessions";
+import { authenticateLdapUser, ldapEnabled } from "@/lib/ldap";
 
 /** Reasons recorded in the LoginAttempt audit table. */
 type AuthFailureReason =
@@ -49,9 +50,167 @@ const ACCESS_TOKEN_MAX_AGE_MS = 60 * 60 * 1000;
 /** Refresh token lifetime: 7 days (in milliseconds). */
 const REFRESH_TOKEN_MAX_AGE_MS = 7 * 24 * 60 * 60 * 1000;
 
+/**
+ * Build the LDAP / Active Directory credentials provider.
+ *
+ * Returns null when LDAP env vars are missing — `providers` then skips
+ * the provider entirely and the AD sign-in option is simply absent.
+ *
+ * On success we:
+ *   1. Find-or-create the local User row keyed on email.
+ *   2. Persist `ldapDn` and bump `ldapSyncedAt`.
+ *   3. Re-derive UserRole rows from `LdapGroupRoleMap.autoApply=true`
+ *      entries that match any of the user's directory groups (by either
+ *      CN or full DN). Roles outside the LdapGroupRoleMap universe are
+ *      preserved so admin-granted local roles aren't wiped.
+ */
+function buildLdapProvider() {
+  if (!ldapEnabled()) return null;
+  return Credentials({
+    id: "ldap",
+    name: "LDAP / Active Directory",
+    credentials: {
+      username: { label: "Username", type: "text" },
+      password: { label: "Password", type: "password" },
+    },
+    async authorize(credentials) {
+      const username = (credentials?.username as string | undefined)?.trim();
+      const password = credentials?.password as string | undefined;
+      if (!username || !password) {
+        throw new Error("Username and password are required");
+      }
+
+      const ldapResult = await authenticateLdapUser(username, password);
+      if (!ldapResult) {
+        await recordAttempt({
+          email: username,
+          success: false,
+          reason: "INVALID_PASSWORD",
+        });
+        throw new Error("Invalid LDAP credentials");
+      }
+
+      const email = ldapResult.email.trim().toLowerCase();
+
+      let user = await db.user.findUnique({
+        where: { email },
+        include: {
+          roles: { include: { role: { include: { permissions: true } } } },
+        },
+      });
+
+      if (!user) {
+        const sentinel = await bcrypt.hash(`ldap:${uuidv4()}`, 10);
+        user = await db.user.create({
+          data: {
+            email,
+            name: ldapResult.displayName,
+            displayName: ldapResult.displayName,
+            password: sentinel,
+            isActive: true,
+            mustChangePassword: false,
+            ldapDn: ldapResult.dn,
+            ldapSyncedAt: new Date(),
+          },
+          include: {
+            roles: { include: { role: { include: { permissions: true } } } },
+          },
+        });
+      } else if (!user.isActive) {
+        await recordAttempt({
+          email,
+          userId: user.id,
+          success: false,
+          reason: "INACTIVE",
+        });
+        throw new Error("Your account has been deactivated. Contact the administrator.");
+      }
+
+      // Resolve group → role mappings. Match either CN or full DN.
+      const autoMaps = await db.ldapGroupRoleMap.findMany({
+        where: { autoApply: true },
+      });
+      const groupsLower = new Set(ldapResult.groups.map((g) => g.toLowerCase()));
+      const matchedRoleIds = autoMaps
+        .filter((m) => groupsLower.has(m.ldapGroup.toLowerCase()))
+        .map((m) => m.roleId);
+
+      const allLdapManagedRoleIds = new Set(
+        (await db.ldapGroupRoleMap.findMany({ select: { roleId: true } })).map(
+          (m) => m.roleId,
+        ),
+      );
+      const preservedRoleIds = user.roles
+        .map((ur) => ur.roleId)
+        .filter((rid) => !allLdapManagedRoleIds.has(rid));
+      const finalRoleIds = Array.from(
+        new Set([...preservedRoleIds, ...matchedRoleIds]),
+      );
+
+      const userId = user.id;
+      await db.$transaction([
+        db.userRole.deleteMany({ where: { userId } }),
+        ...finalRoleIds.map((roleId) =>
+          db.userRole.create({ data: { userId, roleId } }),
+        ),
+        db.user.update({
+          where: { id: userId },
+          data: {
+            ldapDn: ldapResult.dn,
+            ldapSyncedAt: new Date(),
+            lastLoginAt: new Date(),
+            failedLoginAttempts: 0,
+            lockedUntil: null,
+            displayName: ldapResult.displayName || user.displayName,
+            name: ldapResult.displayName || user.name,
+          },
+        }),
+      ]);
+
+      await recordAttempt({
+        email,
+        userId,
+        success: true,
+        reason: "OK",
+      });
+
+      const refreshed = await db.user.findUnique({
+        where: { id: userId },
+        include: {
+          roles: { include: { role: { include: { permissions: true } } } },
+        },
+      });
+      if (!refreshed) throw new Error("User vanished after LDAP sync");
+
+      const roles = refreshed.roles.map((ur) => ur.role.name);
+      const permissions = refreshed.roles.flatMap((ur) =>
+        ur.role.permissions.map((p) => `${p.resource}:${p.action}`),
+      );
+
+      return {
+        id: refreshed.id,
+        email: refreshed.email,
+        name: refreshed.displayName,
+        roles,
+        permissions: [...new Set(permissions)],
+        department: refreshed.department ?? "",
+        employeeId: refreshed.employeeId ?? "",
+        jobTitle: refreshed.jobTitle ?? "",
+        designation: refreshed.designation ?? "",
+        phone: refreshed.phone ?? "",
+        profilePhoto: refreshed.profilePhoto ?? "",
+        mustChangePassword: refreshed.mustChangePassword,
+      };
+    },
+  });
+}
+
+const ldapProvider = buildLdapProvider();
+
 export const { handlers, auth, signIn, signOut } = NextAuth({
   trustHost: true,
   providers: [
+    ...(ldapProvider ? [ldapProvider] : []),
     Credentials({
       name: "Credentials",
       credentials: {

@@ -50,6 +50,141 @@ function getField(data: Record<string, unknown>, field: string): unknown {
  *
  * Returns an array of created instance IDs.
  */
+export async function evaluateFormSubmitTriggers(params: {
+  formTemplateId: string;
+  formData: Record<string, unknown>;
+  submittedById: string;
+  documentId?: string;
+}): Promise<string[]> {
+  const { formTemplateId, formData, submittedById, documentId } = params;
+  const triggers = await db.workflowTrigger.findMany({
+    where: { isActive: true, triggerType: "form_submit", formTemplateId },
+    include: {
+      template: { select: { id: true, name: true, version: true, isActive: true } },
+    },
+  });
+  if (triggers.length === 0) return [];
+  const created: string[] = [];
+  for (const trigger of triggers) {
+    if (!trigger.template.isActive) continue;
+    const conditions = (trigger.conditions as unknown as TriggerCondition[]) ?? [];
+    const matched =
+      conditions.length === 0 || conditions.every((c) => testTriggerCondition(c, formData));
+    if (!matched) continue;
+    const vars: Record<string, string> = { _formName: trigger.template.name };
+    for (const [k, v] of Object.entries(formData)) {
+      if (typeof v === "string" || typeof v === "number") vars[k] = String(v);
+    }
+    const subject = interpolate(trigger.subjectTemplate ?? `New: {{_formName}}`, vars);
+    try {
+      const referenceNumber = await generateWorkflowReference();
+      const instance = await db.workflowInstance.create({
+        data: {
+          referenceNumber,
+          templateId: trigger.templateId,
+          templateVersion: trigger.template.version,
+          documentId: documentId ?? null,
+          initiatedById: submittedById,
+          subject,
+          status: "IN_PROGRESS",
+          currentStepIndex: 0,
+          formData: formData as object,
+          dueAt: new Date(Date.now() + 30 * 24 * 60 * 60 * 1000),
+          events: {
+            create: {
+              eventType: "WORKFLOW_STARTED",
+              data: {
+                triggeredBy: trigger.id,
+                triggerType: "form_submit",
+                formTemplateId,
+              } as object,
+            },
+          },
+        },
+      });
+      await bootstrapWorkflow({ instanceId: instance.id, initiatorId: submittedById, formData });
+      created.push(instance.id);
+    } catch (err) {
+      logger.error("evaluateFormSubmitTriggers failed", err, { triggerId: trigger.id });
+    }
+  }
+  return created;
+}
+
+export async function evaluateScheduledTriggers(): Promise<string[]> {
+  const now = new Date();
+  const due = await db.workflowTrigger.findMany({
+    where: { isActive: true, triggerType: "scheduled", nextFireAt: { lte: now } },
+    include: {
+      template: { select: { id: true, name: true, version: true, isActive: true } },
+    },
+    take: 100,
+  });
+  if (due.length === 0) return [];
+  const { parseCron, nextFireTime } = await import("@/lib/cron");
+  const created: string[] = [];
+  for (const trigger of due) {
+    if (!trigger.template.isActive) continue;
+    const parsed = trigger.scheduleCron ? parseCron(trigger.scheduleCron) : null;
+    if (!parsed) {
+      logger.warn("evaluateScheduledTriggers: invalid cron", {
+        triggerId: trigger.id,
+        cron: trigger.scheduleCron,
+      });
+      continue;
+    }
+    const formData = {
+      _triggeredBy: "schedule",
+      _firedAt: now.toISOString(),
+      _triggerName: trigger.name,
+    };
+    const subject = interpolate(
+      trigger.subjectTemplate ?? `Scheduled: {{_triggerName}}`,
+      { _triggerName: trigger.name, _firedAt: formData._firedAt }
+    );
+    try {
+      const referenceNumber = await generateWorkflowReference();
+      const instance = await db.workflowInstance.create({
+        data: {
+          referenceNumber,
+          templateId: trigger.templateId,
+          templateVersion: trigger.template.version,
+          initiatedById: trigger.createdById,
+          subject,
+          status: "IN_PROGRESS",
+          currentStepIndex: 0,
+          formData: formData as object,
+          dueAt: new Date(now.getTime() + 30 * 24 * 60 * 60 * 1000),
+          events: {
+            create: {
+              eventType: "WORKFLOW_STARTED",
+              data: {
+                triggeredBy: trigger.id,
+                triggerType: "scheduled",
+                cron: trigger.scheduleCron,
+              } as object,
+            },
+          },
+        },
+      });
+      await bootstrapWorkflow({
+        instanceId: instance.id,
+        initiatorId: trigger.createdById,
+        formData,
+      });
+      const next = nextFireTime(parsed, now, trigger.scheduleTimezone ?? "UTC");
+      await db.workflowTrigger.update({
+        where: { id: trigger.id },
+        data: { lastFiredAt: now, nextFireAt: next },
+      });
+      created.push(instance.id);
+    } catch (err) {
+      logger.error("evaluateScheduledTriggers failed", err, { triggerId: trigger.id });
+    }
+  }
+  return created;
+}
+
 export async function evaluateTriggers(documentId: string): Promise<string[]> {
   const doc = await db.document.findUnique({
     where: { id: documentId },
