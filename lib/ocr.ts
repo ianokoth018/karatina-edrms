@@ -5,6 +5,7 @@ import { promisify } from "util";
 import { db } from "@/lib/db";
 import { logger } from "@/lib/logger";
 import pLimit from "p-limit";
+import { extractOcrWords } from "@/lib/ocr-bbox";
 
 // Cap concurrent OCR jobs — ocrmypdf is CPU-intensive
 const ocrConcurrencyLimit = pLimit(3);
@@ -129,6 +130,41 @@ async function _processFileOcr(fileId: string): Promise<void> {
         ocrStatus: finalText ? "COMPLETE" : "FAILED",
       },
     });
+
+    // Additive: extract per-word bounding boxes for the visual metadata
+    // picker. Non-blocking — errors here MUST NOT mark the file's OCR as
+    // failed, since the plain text layer is independent.
+    if (finalText && docFile.mimeType === "application/pdf") {
+      try {
+        const pages = await extractOcrWords(absolutePath);
+        const flat = pages.flatMap((p) =>
+          p.words.map((w) => ({
+            fileId,
+            page: w.page,
+            x: w.x,
+            y: w.y,
+            width: w.width,
+            height: w.height,
+            text: w.text,
+            confidence: w.confidence,
+          })),
+        );
+        if (flat.length > 0) {
+          // Replace any previous words for idempotency.
+          await db.ocrWord.deleteMany({ where: { fileId } });
+          const CHUNK = 1000;
+          for (let i = 0; i < flat.length; i += CHUNK) {
+            await db.ocrWord.createMany({ data: flat.slice(i, i + CHUNK) });
+          }
+        }
+        logger.info("OCR words extracted", { fileId, count: flat.length });
+      } catch (err) {
+        logger.info("OCR word extraction skipped (non-fatal)", {
+          fileId,
+          err: err instanceof Error ? err.message : String(err),
+        });
+      }
+    }
 
     logger.info("OCR processing complete", {
       fileId,

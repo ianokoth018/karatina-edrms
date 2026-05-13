@@ -22,7 +22,8 @@
     "dev:signal-timeout": "npx tsx scripts/signal-timeout-worker.ts",
     "dev:scheduled-triggers": "npx tsx scripts/scheduled-triggers-worker.ts",
     "dev:storage-tier": "npx tsx scripts/storage-tier-worker.ts",
-    "start:workers": "npx tsx scripts/capture-worker.ts & npx tsx scripts/email-capture-worker.ts & npx tsx scripts/email-ingest-worker.ts & npx tsx scripts/remote-capture-worker.ts & npx tsx scripts/checkout-expiry-worker.ts & npx tsx scripts/timer-worker.ts & npx tsx scripts/sla-worker.ts & npx tsx scripts/signal-timeout-worker.ts & npx tsx scripts/scheduled-triggers-worker.ts & npx tsx scripts/presence-cleanup-worker.ts & npx tsx scripts/storage-tier-worker.ts & wait",
+    "dev:retention": "npx tsx scripts/retention-disposition-worker.ts",
+    "start:workers": "npx tsx scripts/capture-worker.ts & npx tsx scripts/email-capture-worker.ts & npx tsx scripts/email-ingest-worker.ts & npx tsx scripts/remote-capture-worker.ts & npx tsx scripts/checkout-expiry-worker.ts & npx tsx scripts/timer-worker.ts & npx tsx scripts/sla-worker.ts & npx tsx scripts/signal-timeout-worker.ts & npx tsx scripts/scheduled-triggers-worker.ts & npx tsx scripts/presence-cleanup-worker.ts & npx tsx scripts/storage-tier-worker.ts & npx tsx scripts/retention-disposition-worker.ts & wait",
     "test:e2e": "playwright test",
     "test:e2e:ui": "playwright test --ui",
     "test:e2e:headed": "playwright test --headed"

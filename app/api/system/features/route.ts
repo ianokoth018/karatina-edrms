@@ -3,6 +3,7 @@ import { aiEnabled } from "@/lib/ai-client";
 import { getActiveProvider } from "@/lib/ai/config";
 import { getBranding } from "@/lib/branding";
 import { ldapEnabled } from "@/lib/ldap";
+import { siemEnabled } from "@/lib/siem";
 import { logger } from "@/lib/logger";
 
 /**
@@ -22,6 +23,7 @@ export interface SystemFeatures {
   aiEnabled: boolean;
   aiProvider: string | null;
   webhookSigning: boolean;
+  siem: boolean;
   branding: { orgName: string };
 }
 
@@ -52,6 +54,7 @@ export async function GET() {
     aiEnabled: aiEnabled(),
     aiProvider: getActiveProvider(),
     webhookSigning: !!process.env.WEBHOOK_SIGNING_SECRET,
+    siem: siemEnabled(),
     branding: { orgName },
   };
 

@@ -140,6 +140,36 @@ export default function RedactionCanvas({
   /** Indexes the user has marked as "applied" so we can grey them out. */
   const [appliedAiIdx, setAppliedAiIdx] = useState<Set<number>>(new Set());
 
+  /** OCR word data — when present, AI suggestions can be auto-mapped to
+   *  bounding boxes by matching their `text` against consecutive words. */
+  interface OcrWordDto {
+    page: number;
+    x: number;
+    y: number;
+    width: number;
+    height: number;
+    text: string;
+  }
+  const [ocrWords, setOcrWords] = useState<OcrWordDto[] | null>(null);
+  useEffect(() => {
+    let cancelled = false;
+    fetch(`/api/documents/${encodeURIComponent(documentId)}/ocr-words`)
+      .then((r) => (r.ok ? r.json() : null))
+      .then((body) => {
+        if (cancelled || !body) return;
+        const pages = Array.isArray(body.pages) ? body.pages : [];
+        const flat: OcrWordDto[] = [];
+        for (const p of pages) {
+          for (const w of p.words ?? []) flat.push(w as OcrWordDto);
+        }
+        setOcrWords(flat);
+      })
+      .catch(() => {});
+    return () => {
+      cancelled = true;
+    };
+  }, [documentId]);
+
   useEffect(() => {
     let cancelled = false;
     async function run() {
@@ -178,6 +208,85 @@ export default function RedactionCanvas({
       cancelled = true;
     };
   }, [documentId]);
+
+  /**
+   * Locate an AI suggestion's text inside the OCR-word stream and return
+   * the union bounding box (per page) of the matching consecutive words.
+   *
+   * Matching is whitespace/punctuation-insensitive: both the target string
+   * and the OCR token stream are normalised to lowercase alphanumeric runs
+   * before comparison. Returns null when no match is found on any page.
+   */
+  function locateInOcrWords(text: string):
+    | { page: number; x: number; y: number; width: number; height: number }
+    | null {
+    if (!ocrWords || ocrWords.length === 0) return null;
+    const norm = (s: string) =>
+      s.toLowerCase().replace(/[^a-z0-9]+/g, " ").trim();
+    const needle = norm(text);
+    if (!needle) return null;
+    const needleTokens = needle.split(/\s+/);
+
+    // Group words by page, preserving the original index order.
+    const byPage = new Map<number, OcrWordDto[]>();
+    for (const w of ocrWords) {
+      const arr = byPage.get(w.page) ?? [];
+      arr.push(w);
+      byPage.set(w.page, arr);
+    }
+    for (const [page, words] of byPage) {
+      const tokens = words.map((w) => norm(w.text));
+      for (let i = 0; i + needleTokens.length <= words.length; i++) {
+        let ok = true;
+        for (let j = 0; j < needleTokens.length; j++) {
+          if (tokens[i + j] !== needleTokens[j]) {
+            ok = false;
+            break;
+          }
+        }
+        if (!ok) continue;
+        const slice = words.slice(i, i + needleTokens.length);
+        const x = Math.min(...slice.map((w) => w.x));
+        const y = Math.min(...slice.map((w) => w.y));
+        const right = Math.max(...slice.map((w) => w.x + w.width));
+        const bottom = Math.max(...slice.map((w) => w.y + w.height));
+        return {
+          page,
+          x,
+          y,
+          width: right - x,
+          height: bottom - y,
+        };
+      }
+    }
+    return null;
+  }
+
+  /**
+   * Convert an AI suggestion into a draft redaction rectangle by finding it
+   * in the OCR word stream. No-op when OcrWords aren't loaded yet or the
+   * text can't be located.
+   */
+  function autoApplySuggestion(idx: number, suggestion: AiSuggestion) {
+    const hit = locateInOcrWords(suggestion.text);
+    if (!hit) return false;
+    const draft: DraftRect = {
+      page: hit.page,
+      x: hit.x,
+      y: hit.y,
+      width: hit.width,
+      height: hit.height,
+      reason: `${suggestion.kind.replace("_", " ")} — ${suggestion.text}`,
+    };
+    setDrafts((prev) => [...prev, draft]);
+    setCurrentPage(hit.page);
+    setAppliedAiIdx((prev) => {
+      const next = new Set(prev);
+      next.add(idx);
+      return next;
+    });
+    return true;
+  }
 
   async function highlightSuggestion(idx: number, text: string) {
     // Browser-built-in PDF iframes don't expose a search API, so the most
@@ -613,13 +722,26 @@ export default function RedactionCanvas({
                       <div className="text-[11px] text-gray-500 dark:text-gray-400">
                         {s.rationale}
                       </div>
-                      <button
-                        type="button"
-                        onClick={() => void highlightSuggestion(idx, s.text)}
-                        className="w-full h-7 px-2 rounded-md border border-gray-200 dark:border-gray-700 text-[11px] font-medium text-gray-700 dark:text-gray-300 hover:bg-gray-50 dark:hover:bg-gray-800 transition-colors"
-                      >
-                        {applied ? "Copied — find in viewer" : "Highlight in viewer"}
-                      </button>
+                      <div className="flex items-center gap-1.5">
+                        <button
+                          type="button"
+                          onClick={() => void highlightSuggestion(idx, s.text)}
+                          className="flex-1 h-7 px-2 rounded-md border border-gray-200 dark:border-gray-700 text-[11px] font-medium text-gray-700 dark:text-gray-300 hover:bg-gray-50 dark:hover:bg-gray-800 transition-colors"
+                        >
+                          {applied ? "Copied" : "Highlight"}
+                        </button>
+                        {ocrWords && ocrWords.length > 0 && (
+                          <button
+                            type="button"
+                            onClick={() => autoApplySuggestion(idx, s)}
+                            disabled={applied}
+                            className="flex-1 h-7 px-2 rounded-md bg-karu-green text-white text-[11px] font-medium hover:bg-karu-green-dark transition-colors disabled:opacity-50"
+                            title="Find this text in the document and add a draft redaction over it"
+                          >
+                            Auto-apply
+                          </button>
+                        )}
+                      </div>
                     </div>
                   );
                 })}

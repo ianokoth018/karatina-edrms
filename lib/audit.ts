@@ -1,10 +1,16 @@
 import crypto from "crypto";
 import { db } from "@/lib/db";
 import { logger } from "@/lib/logger";
+import { enqueueAuditShipment, siemEnabled } from "@/lib/siem";
 
 /**
  * Write a tamper-evident audit log entry.
  * Every row carries `hash = sha256(prevHash + '|' + canonicalJson(row))`.
+ *
+ * On successful commit, if a SIEM target is configured, a `SiemShipLog`
+ * row is enqueued and a delivery attempt is fired in the background.
+ * Shipment is fire-and-forget — it MUST NEVER block or fail the audit
+ * write, since auditing is the source of truth for compliance.
  */
 export async function writeAudit(params: {
   userId?: string;
@@ -15,8 +21,9 @@ export async function writeAudit(params: {
   userAgent?: string;
   metadata?: Record<string, unknown>;
 }) {
+  let writtenId: string | null = null;
   try {
-    await db.$transaction(async (tx) => {
+    writtenId = await db.$transaction(async (tx) => {
       await tx.$queryRaw`SELECT pg_advisory_xact_lock(74100201)`;
       const last = await tx.auditLog.findFirst({
         orderBy: [{ occurredAt: "desc" }, { id: "desc" }],
@@ -39,6 +46,7 @@ export async function writeAudit(params: {
       };
       const hash = computeRowHash(prevHash, row);
       await tx.auditLog.create({ data: { ...row, prevHash, hash } });
+      return id;
     });
   } catch (error) {
     logger.error("Failed to write audit log", error, {
@@ -46,6 +54,15 @@ export async function writeAudit(params: {
       resourceType: params.resourceType,
       resourceId: params.resourceId,
       userId: params.userId,
+    });
+  }
+
+  // SIEM shipping — strictly post-commit, strictly non-blocking.
+  if (writtenId && siemEnabled()) {
+    void enqueueAuditShipment(writtenId).catch((err) => {
+      logger.error("siem: enqueueAuditShipment threw", err, {
+        auditLogId: writtenId,
+      });
     });
   }
 }

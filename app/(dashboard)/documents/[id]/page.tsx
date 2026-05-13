@@ -9,6 +9,10 @@ import SignaturePanel from "@/components/document/signature-panel";
 import { ShareDialog } from "@/components/document/share-dialog";
 import { Can } from "@/components/auth/can";
 import { PresenceStrip } from "@/components/presence-strip";
+import VisualMetadataPicker, {
+  type PickedValue,
+  type VisualPickerField,
+} from "@/components/document/visual-metadata-picker";
 
 /* ---------- types ---------- */
 
@@ -327,6 +331,32 @@ export default function DocumentDetailPage({
   const [ocrText, setOcrText] = useState<string | null>(null);
   const [isRunningOcr, setIsRunningOcr] = useState(false);
 
+  /* Visual metadata picker — opens a full-screen modal when the document
+   * has per-word OCR boxes (OcrWord rows). Saved picks are persisted under
+   * `metadata._visualMetadata[fieldName]` plus the plain field values so
+   * existing casefolder UI just reads them as text. */
+  const [hasOcrWords, setHasOcrWords] = useState(false);
+  const [showVisualPicker, setShowVisualPicker] = useState(false);
+  useEffect(() => {
+    let cancelled = false;
+    fetch(`/api/documents/${id}/ocr-words`)
+      .then((r) => (r.ok ? r.json() : null))
+      .then((data) => {
+        if (cancelled || !data) return;
+        const pages = Array.isArray(data.pages) ? data.pages : [];
+        const total = pages.reduce(
+          (acc: number, p: { words?: unknown[] }) =>
+            acc + (p.words?.length ?? 0),
+          0,
+        );
+        setHasOcrWords(total > 0);
+      })
+      .catch(() => {});
+    return () => {
+      cancelled = true;
+    };
+  }, [id]);
+
   /* version comparison */
   const [compareMode, setCompareMode] = useState(false);
   const [compareV1, setCompareV1] = useState<string | null>(null);
@@ -441,6 +471,46 @@ export default function DocumentDetailPage({
         setOcrText(data.ocrText ?? null);
       }
     } catch { /* ignore */ }
+  }
+
+  /**
+   * Persist values from the visual metadata picker.
+   *
+   * Strategy:
+   *   - Each field's `text` is stored at `metadata[fieldName]` so existing
+   *     UI (casefolder card, search) can read it without changes.
+   *   - The coordinates are kept alongside under
+   *     `metadata._visualMetadata[fieldName] = { text, x, y, width, height, page }`
+   *     so we can later highlight where each value came from.
+   *   - Existing `metadata` keys we don't touch are preserved.
+   */
+  async function handleSaveVisualMetadata(
+    picked: Record<string, PickedValue>,
+  ) {
+    if (!doc) return;
+    const existing = (doc.metadata ?? {}) as Record<string, unknown>;
+    const existingVisual =
+      typeof existing._visualMetadata === "object" && existing._visualMetadata !== null
+        ? (existing._visualMetadata as Record<string, PickedValue>)
+        : {};
+    const nextMetadata: Record<string, unknown> = { ...existing };
+    const nextVisual: Record<string, PickedValue> = { ...existingVisual };
+    for (const [name, value] of Object.entries(picked)) {
+      nextMetadata[name] = value.text;
+      nextVisual[name] = value;
+    }
+    nextMetadata._visualMetadata = nextVisual;
+    const res = await fetch(`/api/documents/${id}`, {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ metadata: nextMetadata }),
+    });
+    if (!res.ok) {
+      const body = await res.json().catch(() => null);
+      throw new Error(body?.error ?? "Failed to save metadata");
+    }
+    setShowVisualPicker(false);
+    await fetchDocument();
   }
 
   async function handleRunOcr() {
@@ -1224,6 +1294,19 @@ export default function DocumentDetailPage({
                       </span>
                     )}
                   </h3>
+                  <div className="flex items-center gap-2">
+                  {hasOcrWords && canPreview && previewSrc && (
+                    <button
+                      onClick={() => setShowVisualPicker(true)}
+                      className="inline-flex items-center gap-1.5 h-8 px-3 rounded-lg text-xs font-medium text-karu-green border border-karu-green/30 hover:bg-karu-green-light dark:hover:bg-karu-green/10 transition-colors"
+                      title="Pick metadata values by drawing rectangles on the document"
+                    >
+                      <svg className="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" strokeWidth={1.5} stroke="currentColor">
+                        <path strokeLinecap="round" strokeLinejoin="round" d="M3 8.25V18a2.25 2.25 0 0 0 2.25 2.25h13.5A2.25 2.25 0 0 0 21 18V8.25m-18 0V6A2.25 2.25 0 0 1 5.25 3.75h13.5A2.25 2.25 0 0 1 21 6v2.25m-18 0h18M7.5 12h.008v.008H7.5V12Zm0 3h.008v.008H7.5V15Z" />
+                      </svg>
+                      Pick metadata visually
+                    </button>
+                  )}
                   {doc.files.length > 0 && (
                     <button
                       onClick={handleRunOcr}
@@ -1248,6 +1331,7 @@ export default function DocumentDetailPage({
                       )}
                     </button>
                   )}
+                  </div>
                 </div>
 
                 {isRunningOcr ? (
@@ -2022,6 +2106,43 @@ export default function DocumentDetailPage({
         documentId={doc.id}
         documentTitle={doc.title}
       />
+
+      {/* Visual metadata picker — uses pre-computed OcrWord boxes to let the
+       *  user pick metadata values straight off the rendered PDF. Fields come
+       *  from the linked casefolder when present; otherwise a minimal default
+       *  set (title/description) is offered. */}
+      {showVisualPicker && previewSrc && (() => {
+        const cfFields = parseCasefolderFields(doc.casefolder?.fields).filter(
+          (f) => !CASEFOLDER_HIDDEN_FIELDS.has(f.name),
+        );
+        const pickerFields: VisualPickerField[] = cfFields.length
+          ? cfFields.map((f) => ({
+              name: f.name,
+              label: f.label,
+              type: f.type,
+            }))
+          : [
+              { name: "title", label: "Title", type: "string" },
+              { name: "description", label: "Description", type: "string" },
+              { name: "reference", label: "Reference", type: "string" },
+            ];
+        const rawMetadata = (doc.metadata ?? {}) as Record<string, unknown>;
+        const existingVisual =
+          rawMetadata._visualMetadata &&
+          typeof rawMetadata._visualMetadata === "object"
+            ? (rawMetadata._visualMetadata as Record<string, PickedValue>)
+            : undefined;
+        return (
+          <VisualMetadataPicker
+            documentId={doc.id}
+            pdfUrl={previewSrc}
+            fields={pickerFields}
+            initialValues={existingVisual}
+            onSave={handleSaveVisualMetadata}
+            onCancel={() => setShowVisualPicker(false)}
+          />
+        );
+      })()}
     </div>
   );
 }

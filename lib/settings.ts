@@ -13,6 +13,7 @@ import { encrypt, decrypt } from "@/lib/encryption";
 
 const SMTP_KEY = "smtp";
 const DOCUSIGN_KEY = "docusign";
+const NITRO_KEY = "nitro";
 
 export interface SmtpConfig {
   host: string;

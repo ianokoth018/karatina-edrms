@@ -23,6 +23,11 @@ model User {
   /// professional/academic title.
   designation   String?
   phone         String?
+  /// Preferred channel for workflow / SLA notifications. One of
+  /// "EMAIL" | "SMS" | "WHATSAPP" | "ALL". The in-app Notification row
+  /// is ALWAYS written regardless — this only gates outbound transports.
+  /// TODO: surface this on the profile page (settings → notifications).
+  notifyChannel String   @default("EMAIL")
   profilePhoto  String?
   /// Storage path (under uploads/signatures/) of the user's saved
   /// signature PNG. Embedded into memo PDFs when this user approves.
@@ -93,6 +98,7 @@ model User {
   documentSubscriptions     DocumentSubscription[]  @relation("DocumentWatcher")
   memoDrafts                MemoDraft[]             @relation("MemoDraftAuthor")
   presenceHeartbeats        PresenceHeartbeat[]
+  dashboardLayout           DashboardLayout?
 
   /// Distinguished name returned by the LDAP/AD directory on the user's
   /// most recent successful bind. Allows re-syncing without an additional
@@ -242,6 +248,7 @@ model Document {
   redactions      DocumentRedaction[]
   subscriptions   DocumentSubscription[]
   externalLocks   DocumentExternalLock[]
+  legalMatterDocs LegalMatterDocument[]
   bates           BatesStamp[]
 
   @@index([status])
@@ -337,6 +344,62 @@ model DocumentExternalLock {
   @@map("document_external_locks")
 }
 
+// === Legal hold (eDiscovery matters) ===
+model LegalMatter {
+  id            String   @id @default(cuid())
+  name          String
+  matterNumber  String   @unique
+  description   String?
+  status        String   @default("OPEN")
+  openedById    String
+  openedAt      DateTime @default(now())
+  closedAt      DateTime?
+  custodians    LegalMatterCustodian[]
+  documents     LegalMatterDocument[]
+  notices       LegalHoldNotice[]
+
+  @@map("legal_matters")
+}
+
+model LegalMatterCustodian {
+  id            String   @id @default(cuid())
+  matterId      String
+  matter        LegalMatter @relation(fields: [matterId], references: [id], onDelete: Cascade)
+  userId        String?
+  externalName  String?
+  externalEmail String?
+  notice        LegalHoldNotice?
+  addedAt       DateTime @default(now())
+
+  @@unique([matterId, userId])
+  @@map("legal_matter_custodians")
+}
+
+model LegalMatterDocument {
+  matterId   String
+  matter     LegalMatter @relation(fields: [matterId], references: [id], onDelete: Cascade)
+  documentId String
+  document   Document    @relation(fields: [documentId], references: [id], onDelete: Cascade)
+  addedById  String
+  addedAt    DateTime    @default(now())
+
+  @@id([matterId, documentId])
+  @@map("legal_matter_documents")
+}
+
+model LegalHoldNotice {
+  id             String   @id @default(cuid())
+  matterId       String
+  matter         LegalMatter @relation(fields: [matterId], references: [id], onDelete: Cascade)
+  custodianId    String   @unique
+  custodian      LegalMatterCustodian @relation(fields: [custodianId], references: [id], onDelete: Cascade)
+  sentAt         DateTime @default(now())
+  acknowledgedAt DateTime?
+  ackToken       String   @unique
+
+  @@map("legal_hold_notices")
+}
+
 model DocumentFile {
   id           String   @id @default(cuid())
   documentId   String
@@ -362,8 +425,29 @@ model DocumentFile {
   tierMovedAt    DateTime?
   uploadedAt   DateTime @default(now())
 
+  ocrWords     OcrWord[]
+
   @@index([storageTier, lastAccessedAt])
   @@map("document_files")
+}
+
+/// Per-word OCR bounding boxes extracted from a DocumentFile. Coordinates
+/// are normalised to 0–1 against the page so they survive zoom + resize;
+/// the client multiplies by the rendered page size in pixels.
+model OcrWord {
+  id           String       @id @default(cuid())
+  fileId       String
+  file         DocumentFile @relation(fields: [fileId], references: [id], onDelete: Cascade)
+  page         Int                       // 1-based
+  /// Normalised coords (0–1) — survive zoom + resize.
+  x            Float
+  y            Float
+  width        Float
+  height       Float
+  text         String
+  confidence   Float        @default(0)
+  @@index([fileId, page])
+  @@map("ocr_words")
 }
 
 /// Active tiering policy. Single-row by convention (isActive=true).
@@ -557,10 +641,19 @@ model WorkflowInstance {
   /// (combined with the certificate of completion).
   docusignSignedPdf  String?
 
+  /// Nitro Sign transaction id — alternative cryptographic signing provider.
+  /// Mirrors the DocuSign fields above; only one provider's fields will be
+  /// populated for a given memo (initiator picks at memo creation time).
+  nitroTransactionId String?
+  nitroStatus        String?
+  nitroSignedAt      DateTime?
+  nitroSignedPdf     String?
+
   @@index([status])
   @@index([initiatedById])
   @@index([originalInitiatedById])
   @@index([docusignEnvelopeId])
+  @@index([nitroTransactionId])
   @@map("workflow_instances")
 }
 
@@ -603,10 +696,18 @@ model WorkflowTask {
   /// Storage path of the downloaded, cryptographically signed PDF.
   docusignSignedPdf  String?
 
+  /// Nitro Sign transaction id — alternative cryptographic signing provider.
+  /// Mirrors the DocuSign fields above.
+  nitroTransactionId String?
+  nitroStatus        String?
+  nitroSignedAt      DateTime?
+  nitroSignedPdf     String?
+
   @@index([instanceId])
   @@index([assigneeId, status])
   @@index([poolId, status])
   @@index([docusignEnvelopeId])
+  @@index([nitroTransactionId])
   @@map("workflow_tasks")
 }
 
@@ -933,6 +1034,8 @@ model AuditLog {
   /// Tamper-evident hash chain.
   prevHash     String?
   hash         String?
+  /// SIEM shipment tracking — one row per outbound delivery attempt batch.
+  siemShipLogs SiemShipLog[]
 
   @@index([userId])
   @@index([resourceType, resourceId])
@@ -940,6 +1043,26 @@ model AuditLog {
   @@index([occurredAt])
   @@index([hash])
   @@map("audit_logs")
+}
+
+/// External SIEM shipment ledger.  One row per delivery lifecycle for a
+/// given AuditLog: created PENDING, transitions to DELIVERED on a 2xx
+/// from the configured target, or FAILED after the worker exhausts its
+/// retry budget.  `attempts` increments on every send try so the worker
+/// can cap retries and surface stuck events to admins.
+model SiemShipLog {
+  id          String    @id @default(cuid())
+  auditLogId  String
+  auditLog    AuditLog  @relation(fields: [auditLogId], references: [id], onDelete: Cascade)
+  target      String    // "splunk_hec" | "syslog_udp" | "http_json"
+  status      String    @default("PENDING") // PENDING | DELIVERED | FAILED
+  attempts    Int       @default(0)
+  lastError   String?
+  deliveredAt DateTime?
+  createdAt   DateTime  @default(now())
+
+  @@index([status, createdAt])
+  @@map("siem_ship_logs")
 }
 
 /// Append-only search-query log for analytics.
@@ -1570,6 +1693,12 @@ model MemoDraft {
   docusignEnvelopeId String?
   docusignStatus     String?
   docusignSignedAt   DateTime?
+  /// Nitro Sign transaction id when the initiator signed via Nitro instead
+  /// of DocuSign. Same lifecycle as the docusign fields above; signedPdfPath
+  /// is shared (the most recently completed envelope/transaction wins).
+  nitroTransactionId String?
+  nitroStatus        String?
+  nitroSignedAt      DateTime?
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 
@@ -1669,3 +1798,20 @@ model TranslationCache {
   @@index([targetLocale])
   @@map("translation_cache")
 }
+
+/// Per-user customisable dashboard layout. The `widgets` JSON is an array
+/// of widget descriptors of the form:
+///   { id, type, title, x, y, w, h, config: { ... } }
+/// Where x/y/w/h are integer cells on a 12-column CSS grid. The catalogue
+/// of widget types lives in `lib/widgets.ts`. Data is *never* stored here
+/// — widgets fetch live aggregates from /api/dashboard/data.
+model DashboardLayout {
+  id        String   @id @default(cuid())
+  userId    String   @unique
+  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  widgets   Json     @default("[]")
+  updatedAt DateTime @updatedAt
+
+  @@map("dashboard_layouts")
+}
+

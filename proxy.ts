@@ -21,6 +21,9 @@ export async function proxy(req: NextRequest) {
     pathname.startsWith("/memo/verify") ||
     pathname.startsWith("/embed/") ||
     pathname.startsWith("/public/forms") ||
+    // Legal-hold acknowledgement — public, HMAC-signed token URL.
+    pathname.startsWith("/legal-hold/ack/") ||
+    pathname.startsWith("/api/legal-hold/ack/") ||
     pathname === "/api/system/features" ||
     pathname === "/api/openapi" ||
     // DocuSign Connect webhook — vendor signs the request

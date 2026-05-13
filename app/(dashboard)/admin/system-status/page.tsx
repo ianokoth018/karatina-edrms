@@ -4,6 +4,7 @@ import { aiEnabled } from "@/lib/ai-client";
 import { getActiveProvider } from "@/lib/ai/config";
 import { getBranding } from "@/lib/branding";
 import { ldapEnabled } from "@/lib/ldap";
+import { siemEnabled, getTarget } from "@/lib/siem";
 
 /**
  * Admin → System Status.
@@ -39,6 +40,8 @@ export default async function SystemStatusPage() {
   const ai = aiEnabled();
   const aiProvider = getActiveProvider();
   const webhookSigning = !!process.env.WEBHOOK_SIGNING_SECRET;
+  const siem = siemEnabled();
+  const siemTarget = getTarget();
   const branding = await getBranding().catch(() => null);
 
   return (
@@ -89,6 +92,17 @@ export default async function SystemStatusPage() {
               : "Webhooks delivered unsigned"
           }
           hint="Set WEBHOOK_SIGNING_SECRET to enable HMAC signing."
+        />
+
+        <StatusCard
+          title="SIEM Audit Forwarding"
+          enabled={siem}
+          detail={
+            siem
+              ? `Shipping audit events to ${siemTarget}`
+              : "Audit events stay local only"
+          }
+          hint="Set SIEM_TARGET to splunk_hec | syslog_udp | http_json and the matching SIEM_SPLUNK_* / SIEM_SYSLOG_* / SIEM_HTTP_* env vars. Manage and test under Admin → SIEM."
         />
 
         <StatusCard

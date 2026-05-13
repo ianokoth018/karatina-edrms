@@ -7,10 +7,7 @@
 
 import { db } from "@/lib/db";
 import { logger } from "@/lib/logger";
-import { sendMail } from "@/lib/mailer";
-import { sendSms, buildSlaSms } from "@/lib/sms";
-import * as React from "react";
-import WorkflowNotification from "@/emails/workflow-notification";
+import { notifyUser } from "@/lib/notify-channel";
 
 interface EscalationLevel {
   level: number;
@@ -142,43 +139,29 @@ async function sendEscalationNotification(params: {
   level: number;
   hoursOverdue?: number;
 }): Promise<void> {
-  const { userId, taskStepName, instanceSubject, instanceRef, message, level, hoursOverdue } = params;
+  const { userId, taskStepName, instanceSubject, message, level, hoursOverdue } = params;
   const title = `Escalation (Level ${level}): Action Required — ${taskStepName}`;
-  const body = message || `Task "${taskStepName}" on "${instanceSubject}" has exceeded its SLA and has been escalated to you (Level ${level}).`;
+  const body =
+    message ||
+    `Task "${taskStepName}" on "${instanceSubject}" has exceeded its SLA and has been escalated to you (Level ${level}).`;
 
+  // notifyUser writes the in-app Notification row, then fans out to
+  // email / SMS / WhatsApp per the user's preference.
   try {
-    await db.notification.create({
-      data: { userId, type: "WORKFLOW_TASK", title, body, linkUrl: "/workflows" },
+    await notifyUser({
+      userId,
+      type: "WORKFLOW_TASK",
+      title,
+      body,
+      ctaUrl: "/workflows",
+      whatsappTemplate: process.env.WHATSAPP_TEMPLATE_SLA_ESCALATION,
+      whatsappTemplateVariables: [
+        String(level),
+        taskStepName,
+        instanceSubject,
+        String(Math.round(hoursOverdue ?? 0)),
+      ],
     });
-
-    const user = await db.user.findUnique({
-      where: { id: userId },
-      select: { email: true, name: true, displayName: true, phone: true },
-    });
-
-    if (user?.email) {
-      await sendMail({
-        to: user.email,
-        subject: title,
-        react: React.createElement(WorkflowNotification, {
-          recipientName: user.displayName ?? user.name ?? "User",
-          subject: title,
-          body,
-        }),
-      });
-    }
-
-    if (user?.phone) {
-      await sendSms({
-        to: user.phone,
-        message: buildSlaSms({
-          recipientName: user.displayName ?? user.name ?? "User",
-          stepName: taskStepName,
-          instanceRef: instanceRef ?? "unknown",
-          hoursOverdue: hoursOverdue ?? 0,
-        }),
-      });
-    }
   } catch (error) {
     logger.error("Failed to send escalation notification", error, { userId });
   }

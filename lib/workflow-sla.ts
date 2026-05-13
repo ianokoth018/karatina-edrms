@@ -1,7 +1,7 @@
 import { db } from "@/lib/db";
 import { logger } from "@/lib/logger";
 import { getDefaultCalendar, workingHoursBetween } from "@/lib/business-calendar";
-import { sendSms, buildSlaSms } from "@/lib/sms";
+import { notifyUser } from "@/lib/notify-channel";
 
 // ---------------------------------------------------------------------------
 // Types
@@ -278,39 +278,26 @@ export async function checkAndEscalateOverdueTasks(): Promise<{
             }),
           ]);
 
-          await db.notification.createMany({
-            data: [
-              {
-                userId: escalationUserId,
-                type: "SLA_ESCALATION",
-                title: `Task escalated to you (Level ${levelIndex + 1})`,
-                body: `Task "${task.stepName}" for "${task.instance.subject}" escalated after ${Math.floor(elapsed)} day(s).`,
-                linkUrl: "/workflows",
-              },
-              ...(task.assigneeId
-                ? [
-                    {
-                      userId: task.assigneeId,
-                      type: "SLA_ESCALATION",
-                      title: "Your task has been escalated",
-                      body: `Task "${task.stepName}" for "${task.instance.subject}" was escalated (Level ${levelIndex + 1}) after ${Math.floor(elapsed)} day(s).`,
-                      linkUrl: "/workflows",
-                    },
-                  ]
-                : []),
-            ],
+          // Fan out to escalation target + (optionally) the original assignee
+          // via the user's preferred channel. notifyUser writes the in-app
+          // Notification row + dispatches email/SMS/WhatsApp.
+          await notifyUser({
+            userId: escalationUserId,
+            type: "SLA_ESCALATION",
+            title: `Task escalated to you (Level ${levelIndex + 1})`,
+            body: `Task "${task.stepName}" for "${task.instance.subject}" escalated after ${Math.floor(elapsed)} day(s).`,
+            ctaUrl: "/workflows",
+            whatsappTemplate: process.env.WHATSAPP_TEMPLATE_SLA_ESCALATION,
           });
-
-          // SMS escalation alerts
-          const [escUser, origUser] = await Promise.all([
-            db.user.findUnique({ where: { id: escalationUserId }, select: { phone: true, name: true, displayName: true } }),
-            task.assigneeId ? db.user.findUnique({ where: { id: task.assigneeId }, select: { phone: true, name: true, displayName: true } }) : null,
-          ]);
-          if (escUser?.phone) {
-            await sendSms({ to: escUser.phone, message: buildSlaSms({ recipientName: escUser.displayName ?? escUser.name ?? "User", stepName: task.stepName, instanceRef: task.instanceId, hoursOverdue: elapsed * 24 }) });
-          }
-          if (origUser?.phone) {
-            await sendSms({ to: origUser.phone, message: buildSlaSms({ recipientName: origUser.displayName ?? origUser.name ?? "User", stepName: task.stepName, instanceRef: task.instanceId, hoursOverdue: elapsed * 24 }) });
+          if (task.assigneeId) {
+            await notifyUser({
+              userId: task.assigneeId,
+              type: "SLA_ESCALATION",
+              title: "Your task has been escalated",
+              body: `Task "${task.stepName}" for "${task.instance.subject}" was escalated (Level ${levelIndex + 1}) after ${Math.floor(elapsed)} day(s).`,
+              ctaUrl: "/workflows",
+              whatsappTemplate: process.env.WHATSAPP_TEMPLATE_SLA_ESCALATION,
+            });
           }
 
           escalated++;
@@ -361,39 +348,25 @@ export async function checkAndEscalateOverdueTasks(): Promise<{
         }),
       ]);
 
-      await db.notification.createMany({
-        data: [
-          {
-            userId: escalationUserId,
-            type: "SLA_ESCALATION",
-            title: "Task escalated to you",
-            body: `Task "${task.stepName}" for "${task.instance.subject}" escalated after ${Math.floor(elapsed)} day(s).`,
-            linkUrl: "/workflows",
-          },
-          ...(task.assigneeId
-            ? [
-                {
-                  userId: task.assigneeId,
-                  type: "SLA_ESCALATION",
-                  title: "Your task has been escalated",
-                  body: `Task "${task.stepName}" for "${task.instance.subject}" was escalated after ${Math.floor(elapsed)} day(s).`,
-                  linkUrl: "/workflows",
-                },
-              ]
-            : []),
-        ],
+      // Legacy single-level: fan out via notifyUser (in-app + email/SMS/WA
+      // gated on the user's preferred channel).
+      await notifyUser({
+        userId: escalationUserId,
+        type: "SLA_ESCALATION",
+        title: "Task escalated to you",
+        body: `Task "${task.stepName}" for "${task.instance.subject}" escalated after ${Math.floor(elapsed)} day(s).`,
+        ctaUrl: "/workflows",
+        whatsappTemplate: process.env.WHATSAPP_TEMPLATE_SLA_ESCALATION,
       });
-
-      // SMS escalation alerts
-      const [escUserL, origUserL] = await Promise.all([
-        db.user.findUnique({ where: { id: escalationUserId }, select: { phone: true, name: true, displayName: true } }),
-        task.assigneeId ? db.user.findUnique({ where: { id: task.assigneeId }, select: { phone: true, name: true, displayName: true } }) : null,
-      ]);
-      if (escUserL?.phone) {
-        await sendSms({ to: escUserL.phone, message: buildSlaSms({ recipientName: escUserL.displayName ?? escUserL.name ?? "User", stepName: task.stepName, instanceRef: task.instanceId, hoursOverdue: elapsed * 24 }) });
-      }
-      if (origUserL?.phone) {
-        await sendSms({ to: origUserL.phone, message: buildSlaSms({ recipientName: origUserL.displayName ?? origUserL.name ?? "User", stepName: task.stepName, instanceRef: task.instanceId, hoursOverdue: elapsed * 24 }) });
+      if (task.assigneeId) {
+        await notifyUser({
+          userId: task.assigneeId,
+          type: "SLA_ESCALATION",
+          title: "Your task has been escalated",
+          body: `Task "${task.stepName}" for "${task.instance.subject}" was escalated after ${Math.floor(elapsed)} day(s).`,
+          ctaUrl: "/workflows",
+          whatsappTemplate: process.env.WHATSAPP_TEMPLATE_SLA_ESCALATION,
+        });
       }
 
       escalated++;
