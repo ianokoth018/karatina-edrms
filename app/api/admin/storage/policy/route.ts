@@ -9,20 +9,23 @@ import { NextRequest, NextResponse } from "next/server";
 import { auth } from "@/lib/auth";
 import { db } from "@/lib/db";
 import { logger } from "@/lib/logger";
+import { enforceAdminRateLimit } from "@/lib/rate-limit-admin";
 
 const POLICY_NAME = "default";
 
-async function requireAdmin() {
+async function requireAdmin(req: Request) {
   const session = await auth();
   if (!session?.user) return { error: NextResponse.json({ error: "Unauthorized" }, { status: 401 }) };
   if (!session.user.permissions.includes("admin:manage")) {
     return { error: NextResponse.json({ error: "Forbidden" }, { status: 403 }) };
   }
+  const limited = await enforceAdminRateLimit(req, session);
+  if (limited) return { error: limited };
   return { session };
 }
 
-export async function GET() {
-  const guard = await requireAdmin();
+export async function GET(req: Request) {
+  const guard = await requireAdmin(req);
   if ("error" in guard) return guard.error;
 
   try {
@@ -51,7 +54,7 @@ export async function GET() {
 }
 
 export async function PUT(req: NextRequest) {
-  const guard = await requireAdmin();
+  const guard = await requireAdmin(req);
   if ("error" in guard) return guard.error;
 
   try {

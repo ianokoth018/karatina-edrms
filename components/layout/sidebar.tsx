@@ -163,6 +163,7 @@ const navItems: NavItem[] = [
       { label: "Auto Capture",    href: "/records/capture",       permission: "records_capture:read" },
       { label: "Legal holds",     href: "/admin/matters",         permission: "admin:manage" },
       { label: "Digitisation",    href: "/admin/digitisation",    permission: "admin:manage" },
+      { label: "Bulk Import",     href: "/admin/bulk-import",     permission: "admin:manage" },
     ],
   },
   {
@@ -230,8 +231,7 @@ const navItems: NavItem[] = [
       { label: "Audit Trail", href: "/admin/audit" },
       { label: "Compliance", href: "/admin/compliance" },
       { label: "Email Integration", href: "/admin/email" },
-      { label: "DocuSign Integration", href: "/admin/integrations/docusign" },
-      { label: "Nitro Sign Integration", href: "/admin/integrations/nitro" },
+      { label: "Signature Integration", href: "/admin/integrations" },
       { label: "Translations", href: "/admin/translations" },
     ],
   },

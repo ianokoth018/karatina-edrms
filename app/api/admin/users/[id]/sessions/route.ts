@@ -4,6 +4,7 @@ import { db } from "@/lib/db";
 import { writeAudit } from "@/lib/audit";
 import { logger } from "@/lib/logger";
 import { revokeAllUserSessions } from "@/lib/sessions";
+import { enforceAdminRateLimit } from "@/lib/rate-limit-admin";
 
 /**
  * GET /api/admin/users/[id]/sessions — list a user's active sessions.
@@ -12,7 +13,7 @@ import { revokeAllUserSessions } from "@/lib/sessions";
  * Both admin-only.
  */
 
-async function requireAdmin() {
+async function requireAdmin(req: Request) {
   const session = await auth();
   if (!session?.user?.id) {
     return { error: NextResponse.json({ error: "Unauthorized" }, { status: 401 }) };
@@ -20,15 +21,17 @@ async function requireAdmin() {
   if (!session.user.permissions?.includes("admin:manage")) {
     return { error: NextResponse.json({ error: "Forbidden" }, { status: 403 }) };
   }
+  const limited = await enforceAdminRateLimit(req, session);
+  if (limited) return { error: limited };
   return { adminId: session.user.id };
 }
 
 export async function GET(
-  _req: NextRequest,
+  req: NextRequest,
   { params }: { params: Promise<{ id: string }> }
 ) {
   try {
-    const guard = await requireAdmin();
+    const guard = await requireAdmin(req);
     if (guard.error) return guard.error;
     const { id } = await params;
 
@@ -53,11 +56,11 @@ export async function GET(
 }
 
 export async function DELETE(
-  _req: NextRequest,
+  req: NextRequest,
   { params }: { params: Promise<{ id: string }> }
 ) {
   try {
-    const guard = await requireAdmin();
+    const guard = await requireAdmin(req);
     if (guard.error) return guard.error;
     const { id } = await params;
 

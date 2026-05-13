@@ -612,6 +612,7 @@ model WorkflowInstance {
   initiatedById            String
   originalInitiatedById    String?
   parentInstanceId         String?  // for subprocess child instances
+  parentSubprocessNodeId   String?  // subprocess node id on the parent template
   subject                  String
   status                   WorkflowStatus @default(PENDING)
   currentStepIndex         Int      @default(0)
@@ -1043,6 +1044,61 @@ model AuditLog {
   @@index([occurredAt])
   @@index([hash])
   @@map("audit_logs")
+}
+
+/// Backup-run ledger. One row per backup attempt, kept for retention policy.
+model BackupLog {
+  id           String   @id @default(cuid())
+  timestamp    DateTime @default(now())
+  type         String                          // daily | weekly | monthly | manual
+  dbDumpPath   String?
+  uploadsPath  String?
+  dbBytes      BigInt?
+  uploadsBytes BigInt?
+  durationMs   Int      @default(0)
+  status       String                          // SUCCESS | FAILED
+  error        String?
+
+  @@index([timestamp])
+  @@map("backup_logs")
+}
+
+/// Bulk migration import — walks a directory tree and ingests every file
+/// as a Document. One job per directory; one row per file processed.
+model BulkImportJob {
+  id             String   @id @default(cuid())
+  name           String
+  sourcePath     String
+  status         String   @default("PENDING")  // PENDING | RUNNING | COMPLETED | FAILED | CANCELLED
+  totalFiles     Int      @default(0)
+  processedFiles Int      @default(0)
+  skippedFiles   Int      @default(0)
+  failedFiles    Int      @default(0)
+  department     String?
+  documentType   String   @default("OTHER")
+  tagsCsv        String?
+  startedAt      DateTime?
+  finishedAt     DateTime?
+  error          String?
+  createdById    String
+  createdAt      DateTime @default(now())
+  items          BulkImportItem[]
+
+  @@map("bulk_import_jobs")
+}
+
+model BulkImportItem {
+  id         String   @id @default(cuid())
+  jobId      String
+  job        BulkImportJob @relation(fields: [jobId], references: [id], onDelete: Cascade)
+  sourcePath String                                // relative to job.sourcePath
+  documentId String?
+  status     String   @default("PENDING")        // PENDING | INGESTED | SKIPPED | FAILED
+  error      String?
+  bytes      BigInt   @default(0)
+
+  @@index([jobId, status])
+  @@map("bulk_import_items")
 }
 
 /// External SIEM shipment ledger.  One row per delivery lifecycle for a
