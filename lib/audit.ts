@@ -24,7 +24,7 @@ export async function writeAudit(params: {
   let writtenId: string | null = null;
   try {
     writtenId = await db.$transaction(async (tx) => {
-      await tx.$queryRaw`SELECT pg_advisory_xact_lock(74100201)`;
+      await tx.$executeRaw`SELECT pg_advisory_xact_lock(74100201)`;
       const last = await tx.auditLog.findFirst({
         orderBy: [{ occurredAt: "desc" }, { id: "desc" }],
         select: { hash: true },

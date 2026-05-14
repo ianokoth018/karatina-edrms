@@ -33,7 +33,7 @@ export async function allocateBatesRange(
   return db.$transaction(async (tx) => {
     // Pessimistic read — Postgres advisory lock keyed off the sequence id
     // serialises concurrent allocators against this exact sequence.
-    await tx.$queryRaw`SELECT pg_advisory_xact_lock(hashtext(${sequenceId}))`;
+    await tx.$executeRaw`SELECT pg_advisory_xact_lock(hashtext(${sequenceId}))`;
     const seq = await tx.batesSequence.findUnique({
       where: { id: sequenceId },
       select: { nextValue: true },
