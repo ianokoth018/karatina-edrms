@@ -295,6 +295,8 @@ export async function POST(req: NextRequest) {
       approver: approverId,
       cc,
       bcc,
+      ccDepartments,
+      bccDepartments,
       department: memoDepartment,
       departmentOffice,
       designation,
@@ -315,6 +317,8 @@ export async function POST(req: NextRequest) {
       approver?: string;
       cc?: string[];
       bcc?: string[];
+      ccDepartments?: string[];
+      bccDepartments?: string[];
       department?: string;
       departmentOffice?: string;
       designation?: string;
@@ -541,7 +545,7 @@ export async function POST(req: NextRequest) {
             reference_number: memoReference,
             subject: subject.trim(),
             memo_body: memoBody.trim(),
-            copy_to: (cc ?? []).join(", "),
+            copy_to: [...(ccDepartments ?? []), ...(cc ?? [])].join(", "),
             recommenders: recommenderUsers.map((r) => ({
               id: r.id,
               name: r.displayName,
@@ -550,6 +554,8 @@ export async function POST(req: NextRequest) {
             })),
             cc: cc ?? [],
             bcc: bcc ?? [],
+            ccDepartments: ccDepartments ?? [],
+            bccDepartments: bccDepartments ?? [],
             bodyHtml: memoBody.trim(),
           },
           ...(documentId
@@ -602,6 +608,8 @@ export async function POST(req: NextRequest) {
             documentId: document.id,
             cc: cc ?? [],
             bcc: bcc ?? [],
+            ccDepartments: ccDepartments ?? [],
+            bccDepartments: bccDepartments ?? [],
             forwardToHod: applyHodStep,
             hodId: applyHodStep ? hod!.id : null,
             hodName: applyHodStep ? hod!.displayName : null,

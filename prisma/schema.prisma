@@ -74,6 +74,7 @@ model User {
   declaredRecords   Document[]     @relation("RecordDeclarer")
   auditLogs         AuditLog[]
   workflowTasks          WorkflowTask[]      @relation("Assignee")
+  workflowVersionsPublished WorkflowTemplateVersion[] @relation("WorkflowVersionPublisher")
   claimedTasks           WorkflowTask[]      @relation("TaskClaimer")
   taskComments           TaskComment[]       @relation("CommentAuthor")
   taskAttachments        TaskAttachment[]    @relation("AttachmentUploader")
@@ -607,8 +608,31 @@ model WorkflowTemplate {
   updatedAt    DateTime @updatedAt
   instances    WorkflowInstance[]
   triggers     WorkflowTrigger[]
+  versions     WorkflowTemplateVersion[]
 
   @@map("workflow_templates")
+}
+
+/// Snapshot of a WorkflowTemplate at publish time. Created whenever the
+/// template's `isActive` transitions from false to true so admins can
+/// see what changed between published revisions and roll back if needed.
+model WorkflowTemplateVersion {
+  id            String   @id @default(cuid())
+  templateId    String
+  template      WorkflowTemplate @relation(fields: [templateId], references: [id], onDelete: Cascade)
+  version       Int
+  name          String
+  description   String?
+  definition    Json
+  publishedById String
+  publishedBy   User     @relation("WorkflowVersionPublisher", fields: [publishedById], references: [id])
+  publishedAt   DateTime @default(now())
+  /// Optional note the publisher attaches (e.g. "Added ICT approval step").
+  note          String?
+
+  @@unique([templateId, version])
+  @@index([templateId])
+  @@map("workflow_template_versions")
 }
 
 model WorkflowInstance {

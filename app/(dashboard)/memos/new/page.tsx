@@ -762,7 +762,7 @@ export default function NewMemoPage() {
         ? senderStampUrl
         : undefined,
     senderIsSuperior,
-    copyTo: ccUsers.map((u) => u.displayName),
+    copyTo: [...ccDepts, ...ccUsers.map((u) => u.displayName)],
     recommenders: recommenders.map((r) => ({
       name: r.displayName,
       title: [r.jobTitle, r.department].filter(Boolean).join(", "),

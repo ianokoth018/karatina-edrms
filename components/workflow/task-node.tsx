@@ -48,6 +48,9 @@ export interface TaskNodeData {
   escalationDays?: number;
   escalateTo?: string;
   slaHours?: number;
+  /** Newer SLA shape used by the config panel (value + unit). */
+  slaValue?: number;
+  slaUnit?: "hours" | "days";
   reminderDays?: number;
   requiredAction?: "approve" | "reject" | "return" | "any";
   parallelApproval?: boolean;
@@ -61,6 +64,23 @@ export interface TaskNodeData {
   stepLayout?: "full" | "split" | "compact"; // layout mode: full form, split (form+doc viewer), compact
   showDocumentViewer?: boolean;       // show PDF/document viewer alongside the form
   sectionTitle?: string;              // custom section title for this step's form view
+  /**
+   * Runtime stats injected by the designer when the "Runtime overlay"
+   * toggle is on. Kept on `data` (rather than node.style) so it lives
+   * inside React Flow's normal re-render cycle.
+   */
+  __runtime?: NodeRuntimeStats;
+}
+
+export interface NodeRuntimeStats {
+  total: number;
+  completed: number;
+  pending: number;
+  approved: number;
+  rejected: number;
+  returned: number;
+  breaches: number;
+  avgDwellMs: number;
 }
 
 const taskTypeColors: Record<string, { bg: string; text: string; dot: string }> = {
@@ -88,8 +108,43 @@ const assigneeLabels: Record<string, string> = {
   dynamic: "Dynamic",
 };
 
+function formatDwell(ms: number): string {
+  if (ms <= 0) return "—";
+  const minutes = ms / 60_000;
+  if (minutes < 60) return `${Math.round(minutes)}m`;
+  const hours = minutes / 60;
+  if (hours < 48) return `${hours.toFixed(1)}h`;
+  return `${(hours / 24).toFixed(1)}d`;
+}
+
+function formatSla(data: TaskNodeData): string | null {
+  if (typeof data.slaValue === "number" && data.slaValue > 0 && data.slaUnit) {
+    return `${data.slaValue}${data.slaUnit === "hours" ? "h" : "d"}`;
+  }
+  if (typeof data.slaHours === "number" && data.slaHours > 0) {
+    return data.slaHours >= 24
+      ? `${(data.slaHours / 24).toFixed(1)}d`
+      : `${data.slaHours}h`;
+  }
+  return null;
+}
+
+function dwellHeatColor(ms: number): string {
+  // Banded so the chip reads at a glance: <2h cool, 2-24h warm, >1d hot.
+  const hours = ms / 3_600_000;
+  if (hours < 2) return "bg-emerald-100 text-emerald-700 dark:bg-emerald-950/40 dark:text-emerald-400";
+  if (hours < 24) return "bg-amber-100 text-amber-700 dark:bg-amber-950/40 dark:text-amber-400";
+  return "bg-red-100 text-red-700 dark:bg-red-950/40 dark:text-red-400";
+}
+
 function TaskNodeComponent({ data, selected }: NodeProps<TaskNodeData>) {
   const colors = taskTypeColors[data.taskType] ?? taskTypeColors.approval;
+  const slaLabel = formatSla(data);
+  const stats = data.__runtime;
+  const rejectionRate =
+    stats && stats.completed > 0
+      ? Math.round(((stats.rejected + stats.returned) / stats.completed) * 100)
+      : null;
 
   return (
     <div
@@ -153,13 +208,59 @@ function TaskNodeComponent({ data, selected }: NodeProps<TaskNodeData>) {
           </p>
         )}
 
-        {/* Escalation indicator */}
-        {data.escalationDays && data.escalationDays > 0 && (
-          <div className="flex items-center gap-1 text-[10px] text-orange-600 dark:text-orange-400">
-            <svg className="w-3 h-3" fill="none" viewBox="0 0 24 24" strokeWidth={2} stroke="currentColor">
-              <path strokeLinecap="round" strokeLinejoin="round" d="M12 6v6h4.5m4.5 0a9 9 0 1 1-18 0 9 9 0 0 1 18 0Z" />
-            </svg>
-            Escalate after {data.escalationDays}d
+        {/* SLA + escalation chips */}
+        {(slaLabel || (data.escalationDays && data.escalationDays > 0)) && (
+          <div className="flex items-center gap-1 flex-wrap">
+            {slaLabel && (
+              <span
+                className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded text-[10px] font-semibold bg-karu-green/10 text-[#02773b] dark:text-[#60c988]"
+                title="Service-level agreement"
+              >
+                <svg className="w-3 h-3" fill="none" viewBox="0 0 24 24" strokeWidth={2} stroke="currentColor">
+                  <path strokeLinecap="round" strokeLinejoin="round" d="M12 6v6h4.5m4.5 0a9 9 0 1 1-18 0 9 9 0 0 1 18 0Z" />
+                </svg>
+                SLA {slaLabel}
+              </span>
+            )}
+            {data.escalationDays !== undefined && data.escalationDays > 0 && (
+              <span className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded text-[10px] font-medium bg-orange-50 text-orange-600 dark:bg-orange-950/40 dark:text-orange-400">
+                Esc. {data.escalationDays}d
+              </span>
+            )}
+          </div>
+        )}
+
+        {/* Runtime overlay chips — only when the designer has injected stats */}
+        {stats && stats.total > 0 && (
+          <div className="flex items-center gap-1 flex-wrap pt-1 border-t border-gray-100 dark:border-gray-800">
+            <span
+              className={`inline-flex items-center px-1.5 py-0.5 rounded text-[10px] font-semibold ${dwellHeatColor(stats.avgDwellMs)}`}
+              title="Average time tasks spend at this step"
+            >
+              ⏱ {formatDwell(stats.avgDwellMs)}
+            </span>
+            <span
+              className="inline-flex items-center px-1.5 py-0.5 rounded text-[10px] font-medium bg-gray-100 text-gray-700 dark:bg-gray-800 dark:text-gray-300"
+              title={`${stats.completed} of ${stats.total} completed`}
+            >
+              {stats.total}
+            </span>
+            {rejectionRate !== null && rejectionRate > 0 && (
+              <span
+                className="inline-flex items-center px-1.5 py-0.5 rounded text-[10px] font-medium bg-red-50 text-red-700 dark:bg-red-950/40 dark:text-red-400"
+                title="Rejected or returned"
+              >
+                ✗ {rejectionRate}%
+              </span>
+            )}
+            {stats.breaches > 0 && (
+              <span
+                className="inline-flex items-center px-1.5 py-0.5 rounded text-[10px] font-semibold bg-red-100 text-red-800 dark:bg-red-950/60 dark:text-red-300"
+                title="SLA breaches"
+              >
+                ⚠ {stats.breaches}
+              </span>
+            )}
           </div>
         )}
 

@@ -16,6 +16,13 @@ import NodeConfigPanel from "@/components/workflow/node-config-panel";
 import VariablesPanel from "@/components/workflow/variables-panel";
 import TriggersDialog from "@/components/workflow/triggers-dialog";
 import SimulatorDialog from "@/components/workflow/simulator-dialog";
+import VersionHistoryDialog from "@/components/workflow/version-history-dialog";
+import {
+  validateWorkflow as runWorkflowValidation,
+  hasBlockingIssues,
+  type Issue as ValidationLibIssue,
+} from "@/lib/workflow-validation";
+import { autoLayoutNodes } from "@/lib/workflow-layout";
 
 const WorkflowCanvas = dynamic(() => import("@/components/workflow/canvas"), {
   ssr: false,
@@ -119,10 +126,33 @@ function slugify(text: string): string {
     .replace(/^-+|-+$/g, "");
 }
 
-interface ValidationIssue {
-  nodeId?: string;
-  severity: "error" | "warning";
-  message: string;
+type ValidationIssue = ValidationLibIssue;
+
+interface NodeRuntimeStats {
+  total: number;
+  completed: number;
+  pending: number;
+  approved: number;
+  rejected: number;
+  returned: number;
+  breaches: number;
+  avgDwellMs: number;
+}
+
+interface RuntimeStatsResponse {
+  totalInstances: number;
+  completedInstances: number;
+  windowDays: number | null;
+  byNode: Record<string, NodeRuntimeStats>;
+  byStepName: Record<string, NodeRuntimeStats>;
+}
+
+/** Strip the transient `__runtime` overlay before persisting a node. */
+function persistableNodeData(data: unknown): Record<string, unknown> {
+  if (!data || typeof data !== "object") return {};
+  const { __runtime: _drop, ...rest } = data as Record<string, unknown>;
+  void _drop;
+  return rest;
 }
 
 interface HistoryEntry {
@@ -191,6 +221,13 @@ export default function WorkflowDesignerPage() {
   const [nodes, setNodes, onNodesChange] = useNodesState(defaultNodes);
   const [edges, setEdges, onEdgesChange] = useEdgesState(defaultEdges);
   const [selectedNode, setSelectedNode] = useState<Node | null>(null);
+  const [snapToGrid, setSnapToGrid] = useState(false);
+  // Runtime overlay: when on, fetch per-node stats and inject into node.data.__runtime
+  const [runtimeOverlay, setRuntimeOverlay] = useState(false);
+  const [runtimeStats, setRuntimeStats] = useState<RuntimeStatsResponse | null>(null);
+  const [runtimeLoading, setRuntimeLoading] = useState(false);
+  // Version history dialog
+  const [showVersionHistory, setShowVersionHistory] = useState(false);
 
   // ---- Template state ----
   const [templateName, setTemplateName] = useState("");
@@ -272,6 +309,62 @@ export default function WorkflowDesignerPage() {
 
   const hasPermission = session?.user?.permissions?.includes("workflows:manage");
 
+  /* ================================================================== */
+  /*  Runtime overlay                                                    */
+  /*                                                                    */
+  /*  When toggled on, fetch per-node aggregate stats for this template  */
+  /*  and surface them on each node card via data.__runtime. Cleared on  */
+  /*  toggle-off so node cards return to design-time view.               */
+  /* ================================================================== */
+  useEffect(() => {
+    if (!runtimeOverlay) {
+      setRuntimeStats(null);
+      return;
+    }
+    if (!templateId) return;
+    let cancelled = false;
+    setRuntimeLoading(true);
+    fetch(`/api/workflows/templates/${templateId}/runtime-stats`)
+      .then((r) => (r.ok ? r.json() : Promise.reject(r)))
+      .then((data: RuntimeStatsResponse) => {
+        if (!cancelled) setRuntimeStats(data);
+      })
+      .catch(() => {
+        if (!cancelled) setRuntimeStats(null);
+      })
+      .finally(() => {
+        if (!cancelled) setRuntimeLoading(false);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [runtimeOverlay, templateId]);
+
+  // Project stats onto nodes by injecting/clearing data.__runtime.
+  // We only mutate nodes when the projected payload actually changes,
+  // otherwise React Flow re-renders the canvas on every keystroke.
+  useEffect(() => {
+    setNodes((nds: Node[]) =>
+      nds.map((n) => {
+        const existing = (n.data as { __runtime?: NodeRuntimeStats })?.__runtime;
+        let next: NodeRuntimeStats | undefined;
+        if (runtimeStats) {
+          next =
+            runtimeStats.byNode[n.id] ??
+            runtimeStats.byStepName[(n.data?.label as string) ?? ""];
+        }
+        if (existing === next) return n;
+        if (!existing && !next) return n;
+        const { __runtime: _drop, ...rest } = (n.data ?? {}) as Record<string, unknown>;
+        void _drop;
+        return {
+          ...n,
+          data: next ? { ...rest, __runtime: next } : rest,
+        };
+      })
+    );
+  }, [runtimeStats, setNodes]);
+
   // ---- Snapshot for undo/redo ----
   const pushHistory = useCallback(
     (n: Node[], e: Edge[]) => {
@@ -301,7 +394,7 @@ export default function WorkflowDesignerPage() {
         id: n.id,
         type: n.type,
         position: n.position,
-        data: n.data,
+        data: persistableNodeData(n.data),
       })),
       edges: edges.map((e) => ({
         id: e.id,
@@ -325,7 +418,7 @@ export default function WorkflowDesignerPage() {
       setAutoSaving(true);
       try {
         const definition = {
-          nodes: nodes.map((n) => ({ id: n.id, type: n.type, position: n.position, data: n.data })),
+          nodes: nodes.map((n) => ({ id: n.id, type: n.type, position: n.position, data: persistableNodeData(n.data) })),
           edges: edges.map((e) => ({
             id: e.id, source: e.source, target: e.target,
             sourceHandle: e.sourceHandle, targetHandle: e.targetHandle,
@@ -620,81 +713,8 @@ export default function WorkflowDesignerPage() {
 
   // Auto-layout: arrange nodes in a top-down tree layout
   function handleAutoLayout() {
-    // Build adjacency from edges
-    const adj: Record<string, string[]> = {};
-    const inDeg: Record<string, number> = {};
-    for (const n of nodes) {
-      adj[n.id] = [];
-      inDeg[n.id] = 0;
-    }
-    for (const e of edges) {
-      if (adj[e.source]) adj[e.source].push(e.target);
-      inDeg[e.target] = (inDeg[e.target] ?? 0) + 1;
-    }
-
-    // BFS level assignment
-    const levels: Record<string, number> = {};
-    const queue: string[] = [];
-    // Start from nodes with no incoming edges
-    for (const n of nodes) {
-      if ((inDeg[n.id] ?? 0) === 0) {
-        queue.push(n.id);
-        levels[n.id] = 0;
-      }
-    }
-
-    while (queue.length > 0) {
-      const cur = queue.shift()!;
-      const children = adj[cur] ?? [];
-      for (const child of children) {
-        const newLevel = (levels[cur] ?? 0) + 1;
-        if (levels[child] === undefined || levels[child] < newLevel) {
-          levels[child] = newLevel;
-        }
-        inDeg[child] = (inDeg[child] ?? 1) - 1;
-        if (inDeg[child] === 0) {
-          queue.push(child);
-        }
-      }
-    }
-
-    // Assign positions if node still has no level (disconnected)
-    let maxLevel = 0;
-    for (const n of nodes) {
-      if (levels[n.id] === undefined) {
-        maxLevel += 1;
-        levels[n.id] = maxLevel;
-      } else if (levels[n.id] > maxLevel) {
-        maxLevel = levels[n.id];
-      }
-    }
-
-    // Group nodes by level
-    const byLevel: Record<number, string[]> = {};
-    for (const n of nodes) {
-      const lvl = levels[n.id] ?? 0;
-      if (!byLevel[lvl]) byLevel[lvl] = [];
-      byLevel[lvl].push(n.id);
-    }
-
-    const VERTICAL_GAP = 150;
-    const HORIZONTAL_GAP = 220;
-
     setNodes((nds: Node[]) =>
-      nds.map((n) => {
-        const lvl = levels[n.id] ?? 0;
-        const siblings = byLevel[lvl] ?? [n.id];
-        const idx = siblings.indexOf(n.id);
-        const totalWidth = (siblings.length - 1) * HORIZONTAL_GAP;
-        const startX = 400 - totalWidth / 2;
-        return {
-          ...n,
-          position: {
-            x: startX + idx * HORIZONTAL_GAP,
-            y: 60 + lvl * VERTICAL_GAP,
-          },
-        };
-      })
+      autoLayoutNodes(nds, edges, { originX: 400, originY: 60 })
     );
   }
 
@@ -703,147 +723,7 @@ export default function WorkflowDesignerPage() {
   /* ================================================================== */
 
   function validateWorkflow(): ValidationIssue[] {
-    const issues: ValidationIssue[] = [];
-
-    // Build adjacency
-    const outgoing: Record<string, string[]> = {};
-    const incoming: Record<string, string[]> = {};
-    for (const n of nodes) {
-      outgoing[n.id] = [];
-      incoming[n.id] = [];
-    }
-    for (const e of edges) {
-      if (outgoing[e.source]) outgoing[e.source].push(e.target);
-      if (incoming[e.target]) incoming[e.target].push(e.source);
-    }
-
-    // 1. Exactly one start node
-    const startNodes = nodes.filter((n) => n.type === "start");
-    if (startNodes.length === 0) {
-      issues.push({
-        severity: "error",
-        message: "Missing Start node - every workflow needs exactly one",
-      });
-    } else if (startNodes.length > 1) {
-      startNodes.slice(1).forEach((n) =>
-        issues.push({
-          nodeId: n.id,
-          severity: "error",
-          message: `Duplicate Start node "${n.id}" - only one is allowed`,
-        })
-      );
-    }
-
-    // 2. At least one end node
-    const endNodes = nodes.filter((n) => n.type === "end");
-    if (endNodes.length === 0) {
-      issues.push({
-        severity: "error",
-        message: "Missing End node - add at least one to complete the workflow",
-      });
-    }
-
-    // 3. All nodes connected
-    for (const n of nodes) {
-      if (n.type === "start") {
-        if ((outgoing[n.id] ?? []).length === 0) {
-          issues.push({
-            nodeId: n.id,
-            severity: "error",
-            message: "Start node has no outgoing connection",
-          });
-        }
-      } else if (n.type === "end") {
-        if ((incoming[n.id] ?? []).length === 0) {
-          issues.push({
-            nodeId: n.id,
-            severity: "warning",
-            message: "End node has no incoming connection",
-          });
-        }
-      } else {
-        if ((incoming[n.id] ?? []).length === 0) {
-          issues.push({
-            nodeId: n.id,
-            severity: "warning",
-            message: `"${n.data?.label || n.type}" has no incoming connection`,
-          });
-        }
-        if ((outgoing[n.id] ?? []).length === 0) {
-          issues.push({
-            nodeId: n.id,
-            severity: "warning",
-            message: `"${n.data?.label || n.type}" has no outgoing connection`,
-          });
-        }
-      }
-    }
-
-    // 4. Decision nodes should have conditions
-    const decisionNodes = nodes.filter((n) => n.type === "decision");
-    for (const dn of decisionNodes) {
-      const conditions = dn.data?.conditions;
-      if (!conditions || (Array.isArray(conditions) && conditions.length === 0)) {
-        if (!dn.data?.conditionYes && !dn.data?.conditionNo) {
-          issues.push({
-            nodeId: dn.id,
-            severity: "warning",
-            message: `Decision "${dn.data?.label || "Decision"}" has no conditions configured`,
-          });
-        }
-      }
-      // Must have at least 2 outgoing edges
-      if ((outgoing[dn.id] ?? []).length < 2) {
-        issues.push({
-          nodeId: dn.id,
-          severity: "warning",
-          message: `Decision "${dn.data?.label || "Decision"}" should have at least 2 outgoing paths`,
-        });
-      }
-    }
-
-    // 5. Task nodes should have assignee rules
-    const taskNodes = nodes.filter((n) => n.type === "task");
-    for (const tn of taskNodes) {
-      if (!tn.data?.assigneeRule || tn.data.assigneeRule === "dynamic") {
-        // dynamic is the default placeholder, might not have actual value
-        if (
-          tn.data?.assigneeRule === "specific_user" &&
-          !tn.data?.assigneeValue
-        ) {
-          issues.push({
-            nodeId: tn.id,
-            severity: "warning",
-            message: `Task "${tn.data?.label || "Task"}" has no assignee specified`,
-          });
-        }
-      }
-    }
-
-    // 6. Reachability from Start
-    if (startNodes.length === 1) {
-      const reachable = new Set<string>();
-      const bfs = [startNodes[0].id];
-      while (bfs.length > 0) {
-        const cur = bfs.shift()!;
-        if (reachable.has(cur)) continue;
-        reachable.add(cur);
-        for (const child of outgoing[cur] ?? []) {
-          if (!reachable.has(child)) bfs.push(child);
-        }
-      }
-      for (const n of nodes) {
-        if (!reachable.has(n.id) && n.type !== "start") {
-          issues.push({
-            nodeId: n.id,
-            severity: "error",
-            message: `"${n.data?.label || n.type}" is unreachable from Start`,
-          });
-        }
-      }
-    }
-
-    return issues;
+    return runWorkflowValidation(nodes, edges);
   }
 
   function handleValidate() {
@@ -1108,7 +988,7 @@ export default function WorkflowDesignerPage() {
         id: n.id,
         type: n.type,
         position: n.position,
-        data: n.data,
+        data: persistableNodeData(n.data),
       })),
       edges: edges.map((e) => ({
         id: e.id,
@@ -1224,6 +1104,34 @@ export default function WorkflowDesignerPage() {
         text: "Save the template first before publishing",
       });
       return;
+    }
+
+    // Only gate the publish direction — unpublishing always allowed so admins
+    // can pull a misbehaving template offline even if validation regressed.
+    if (!isPublished) {
+      const issues = runWorkflowValidation(nodes, edges);
+      if (hasBlockingIssues(issues)) {
+        setValidationIssues(issues);
+        setShowValidationPanel(true);
+        const problemNodeIds = new Set(
+          issues.filter((i) => i.nodeId).map((i) => i.nodeId!)
+        );
+        setHighlightedNodes(problemNodeIds);
+        setNodes((nds: Node[]) =>
+          nds.map((n) => ({
+            ...n,
+            className: problemNodeIds.has(n.id)
+              ? "!ring-2 !ring-red-500 !ring-offset-2 rounded-xl"
+              : "",
+          }))
+        );
+        const errCount = issues.filter((i) => i.severity === "error").length;
+        setSaveMessage({
+          type: "error",
+          text: `Fix ${errCount} validation error${errCount === 1 ? "" : "s"} before publishing.`,
+        });
+        return;
+      }
     }
 
     setPublishing(true);
@@ -1490,6 +1398,106 @@ export default function WorkflowDesignerPage() {
                 />
               </svg>
               <span className="hidden lg:inline">Layout</span>
+            </button>
+
+            {/* Snap-to-grid toggle */}
+            <button
+              onClick={() => setSnapToGrid((v) => !v)}
+              className={`h-8 px-2.5 rounded-lg text-xs font-medium transition-colors flex items-center gap-1.5 ${
+                snapToGrid
+                  ? "bg-karu-green/10 text-[#02773b] dark:text-[#60c988]"
+                  : "text-gray-600 dark:text-gray-300 hover:bg-gray-100 dark:hover:bg-gray-800"
+              }`}
+              title={snapToGrid ? "Snap-to-grid: ON" : "Snap-to-grid: OFF"}
+              aria-pressed={snapToGrid}
+            >
+              <svg
+                className="w-3.5 h-3.5"
+                fill="none"
+                viewBox="0 0 24 24"
+                strokeWidth={2}
+                stroke="currentColor"
+              >
+                <path
+                  strokeLinecap="round"
+                  strokeLinejoin="round"
+                  d="M3.75 3v18M9 3v18M14.25 3v18M19.5 3v18M3 3.75h18M3 9h18M3 14.25h18M3 19.5h18"
+                />
+              </svg>
+              <span className="hidden lg:inline">Snap</span>
+            </button>
+
+            {/* Runtime overlay toggle */}
+            <button
+              onClick={() => setRuntimeOverlay((v) => !v)}
+              disabled={!templateId}
+              className={`h-8 px-2.5 rounded-lg text-xs font-medium transition-colors flex items-center gap-1.5 disabled:opacity-40 disabled:cursor-not-allowed ${
+                runtimeOverlay
+                  ? "bg-blue-50 dark:bg-blue-950/30 text-blue-700 dark:text-blue-300 border border-blue-200 dark:border-blue-800"
+                  : "text-gray-600 dark:text-gray-300 hover:bg-gray-100 dark:hover:bg-gray-800"
+              }`}
+              title={
+                !templateId
+                  ? "Save the template first to view runtime stats"
+                  : runtimeOverlay
+                  ? "Hide runtime stats"
+                  : "Overlay per-node dwell time, rejection rate, and SLA breaches"
+              }
+              aria-pressed={runtimeOverlay}
+            >
+              {runtimeLoading ? (
+                <svg
+                  className="animate-spin w-3.5 h-3.5"
+                  fill="none"
+                  viewBox="0 0 24 24"
+                >
+                  <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" />
+                  <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z" />
+                </svg>
+              ) : (
+                <svg
+                  className="w-3.5 h-3.5"
+                  fill="none"
+                  viewBox="0 0 24 24"
+                  strokeWidth={2}
+                  stroke="currentColor"
+                >
+                  <path
+                    strokeLinecap="round"
+                    strokeLinejoin="round"
+                    d="M3 13.125C3 12.504 3.504 12 4.125 12h2.25c.621 0 1.125.504 1.125 1.125v6.75C7.5 20.496 6.996 21 6.375 21h-2.25A1.125 1.125 0 0 1 3 19.875v-6.75ZM9.75 8.625c0-.621.504-1.125 1.125-1.125h2.25c.621 0 1.125.504 1.125 1.125v11.25c0 .621-.504 1.125-1.125 1.125h-2.25a1.125 1.125 0 0 1-1.125-1.125V8.625ZM16.5 4.125c0-.621.504-1.125 1.125-1.125h2.25C20.496 3 21 3.504 21 4.125v15.75c0 .621-.504 1.125-1.125 1.125h-2.25a1.125 1.125 0 0 1-1.125-1.125V4.125Z"
+                  />
+                </svg>
+              )}
+              <span className="hidden lg:inline">Runtime</span>
+            </button>
+
+            {/* Version history */}
+            <button
+              onClick={() => setShowVersionHistory(true)}
+              disabled={!templateId}
+              className="h-8 px-2.5 rounded-lg text-xs font-medium text-gray-600 dark:text-gray-300 hover:bg-gray-100 dark:hover:bg-gray-800 transition-colors flex items-center gap-1.5 disabled:opacity-40 disabled:cursor-not-allowed"
+              title={templateId ? "Compare and restore previous published versions" : "Save the template first to view version history"}
+            >
+              <svg
+                className="w-3.5 h-3.5"
+                fill="none"
+                viewBox="0 0 24 24"
+                strokeWidth={2}
+                stroke="currentColor"
+              >
+                <path
+                  strokeLinecap="round"
+                  strokeLinejoin="round"
+                  d="M12 6v6h4.5m4.5 0a9 9 0 1 1-18 0 9 9 0 0 1 18 0Z"
+                />
+                <path
+                  strokeLinecap="round"
+                  strokeLinejoin="round"
+                  d="M3 12h2.25M18.75 12H21M5.636 5.636l1.591 1.591M16.773 16.773l1.591 1.591"
+                />
+              </svg>
+              <span className="hidden lg:inline">History</span>
             </button>
 
             {/* Triggers */}
@@ -1998,6 +2006,7 @@ export default function WorkflowDesignerPage() {
             setNodes={setNodes}
             setEdges={setEdges}
             onNodeSelect={handleNodeSelect}
+            snapToGrid={snapToGrid}
           />
 
           {/* Validation panel overlay (bottom of canvas) */}
@@ -2044,9 +2053,20 @@ export default function WorkflowDesignerPage() {
               </div>
               <div className="overflow-y-auto max-h-32 divide-y divide-gray-100 dark:divide-gray-800">
                 {validationIssues.map((issue, idx) => (
-                  <div
+                  <button
+                    type="button"
                     key={idx}
-                    className="flex items-start gap-2.5 px-4 py-2 text-xs hover:bg-gray-50 dark:hover:bg-gray-800/50 transition-colors cursor-default"
+                    onClick={() => {
+                      if (!issue.nodeId) return;
+                      const target = nodes.find((n) => n.id === issue.nodeId);
+                      if (target) handleNodeSelect(target);
+                      setNodes((nds: Node[]) =>
+                        nds.map((n) => ({ ...n, selected: n.id === issue.nodeId }))
+                      );
+                    }}
+                    className={`w-full text-left flex items-start gap-2.5 px-4 py-2 text-xs hover:bg-gray-50 dark:hover:bg-gray-800/50 transition-colors ${
+                      issue.nodeId ? "cursor-pointer" : "cursor-default"
+                    }`}
                   >
                     {issue.severity === "error" ? (
                       <svg
@@ -2086,7 +2106,7 @@ export default function WorkflowDesignerPage() {
                     >
                       {issue.message}
                     </span>
-                  </div>
+                  </button>
                 ))}
               </div>
             </div>
@@ -2695,6 +2715,32 @@ export default function WorkflowDesignerPage() {
         onClose={() => setShowSimulator(false)}
         nodes={nodes}
         edges={edges}
+      />
+
+      <VersionHistoryDialog
+        open={showVersionHistory}
+        onClose={() => setShowVersionHistory(false)}
+        templateId={templateId}
+        currentNodes={nodes}
+        currentEdges={edges}
+        onRestore={async (definition, version) => {
+          if (!templateId) return;
+          const res = await fetch(
+            `/api/workflows/templates/${templateId}/versions/${version}/restore`,
+            { method: "POST" }
+          );
+          if (!res.ok) throw new Error("Restore failed");
+          // Replace the canvas with the restored graph and mark the
+          // template as a draft so the user reviews before re-publishing.
+          setNodes(definition.nodes ?? []);
+          setEdges(definition.edges ?? []);
+          setIsPublished(false);
+          setSaveMessage({
+            type: "success",
+            text: `Restored version ${version} as a new draft. Review and publish to make it live.`,
+          });
+          setTimeout(() => setSaveMessage(null), 5000);
+        }}
       />
     </div>
   );

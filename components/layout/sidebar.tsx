@@ -538,7 +538,7 @@ export default function Sidebar({ open, onClose }: SidebarProps) {
 
                   <div
                     className={`overflow-hidden transition-all duration-200 ${
-                      expanded ? "max-h-96 opacity-100" : "max-h-0 opacity-0"
+                      expanded ? "max-h-[640px] opacity-100" : "max-h-0 opacity-0"
                     }`}
                   >
                     <div className="ml-5 mt-1 space-y-0.5 border-l-2 border-gray-200 dark:border-gray-700 pl-4">

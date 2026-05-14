@@ -58,6 +58,8 @@ interface WorkflowCanvasProps {
   setNodes: Dispatch<SetStateAction<Node[]>>;
   setEdges: Dispatch<SetStateAction<Edge[]>>;
   onNodeSelect: (node: Node | null) => void;
+  /** When true, dragged nodes and pasted nodes snap to the grid. */
+  snapToGrid?: boolean;
 }
 
 interface ContextMenu {
@@ -80,15 +82,19 @@ export default function WorkflowCanvas({
   setNodes,
   setEdges,
   onNodeSelect,
+  snapToGrid = false,
 }: WorkflowCanvasProps) {
   const reactFlowWrapper = useRef<HTMLDivElement>(null);
   const memoizedNodeTypes = useMemo(() => nodeTypes, []);
   const reactFlowInstance = useRef<ReactFlowInstance | null>(null);
   const prevNodeCount = useRef(nodes.length);
   const nodesRef = useRef(nodes);
+  const edgesRef = useRef(edges);
+  const clipboardRef = useRef<{ nodes: Node[]; edges: Edge[] } | null>(null);
   const [contextMenu, setContextMenu] = useState<ContextMenu | null>(null);
 
   useEffect(() => { nodesRef.current = nodes; }, [nodes]);
+  useEffect(() => { edgesRef.current = edges; }, [edges]);
 
   useEffect(() => {
     if (nodes.length > 0 && nodes.length !== prevNodeCount.current && reactFlowInstance.current) {
@@ -106,6 +112,79 @@ export default function WorkflowCanvas({
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
   }, [contextMenu]);
+
+  // Copy/paste of the current selection. We listen on the wrapper so the
+  // shortcuts don't fire while the user is typing in inputs elsewhere on
+  // the page (the config panel uses native focusable elements, which the
+  // wrapper does not bubble keydown for).
+  useEffect(() => {
+    function isEditableTarget(target: EventTarget | null): boolean {
+      if (!(target instanceof HTMLElement)) return false;
+      const tag = target.tagName;
+      return (
+        tag === "INPUT" ||
+        tag === "TEXTAREA" ||
+        tag === "SELECT" ||
+        target.isContentEditable
+      );
+    }
+
+    function onKey(e: KeyboardEvent) {
+      if (!(e.ctrlKey || e.metaKey)) return;
+      if (isEditableTarget(e.target)) return;
+      const key = e.key.toLowerCase();
+      if (key === "c") {
+        const selectedNodes = nodesRef.current.filter((n) => n.selected);
+        if (selectedNodes.length === 0) return;
+        const ids = new Set(selectedNodes.map((n) => n.id));
+        const selectedEdges = edgesRef.current.filter(
+          (edge) => ids.has(edge.source) && ids.has(edge.target)
+        );
+        clipboardRef.current = {
+          nodes: selectedNodes.map((n) => ({ ...n, data: { ...n.data } })),
+          edges: selectedEdges.map((edge) => ({ ...edge })),
+        };
+        e.preventDefault();
+      } else if (key === "v") {
+        const clip = clipboardRef.current;
+        if (!clip || clip.nodes.length === 0) return;
+        // Disallow pasting start/end nodes — only one of each is allowed.
+        const pasteable = clip.nodes.filter(
+          (n) => n.type !== "start" && n.type !== "end"
+        );
+        if (pasteable.length === 0) return;
+        const idMap = new Map<string, string>();
+        for (const n of pasteable) {
+          idMap.set(n.id, getNextNodeId());
+        }
+        const offset = 40;
+        const newNodes: Node[] = pasteable.map((n) => ({
+          ...n,
+          id: idMap.get(n.id)!,
+          position: { x: n.position.x + offset, y: n.position.y + offset },
+          data: { ...n.data },
+          selected: true,
+        }));
+        const newEdges: Edge[] = clip.edges
+          .filter((edge) => idMap.has(edge.source) && idMap.has(edge.target))
+          .map((edge) => ({
+            ...edge,
+            id: `edge_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`,
+            source: idMap.get(edge.source)!,
+            target: idMap.get(edge.target)!,
+            selected: false,
+          }));
+        setNodes((nds) => [
+          ...nds.map((n) => ({ ...n, selected: false })),
+          ...newNodes,
+        ]);
+        if (newEdges.length > 0) setEdges((eds) => [...eds, ...newEdges]);
+        e.preventDefault();
+      }
+    }
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [setNodes, setEdges]);
 
   const onConnect = useCallback(
     (params: Connection) => {
@@ -275,6 +354,8 @@ export default function WorkflowCanvas({
         nodeTypes={memoizedNodeTypes}
         fitView
         deleteKeyCode={["Backspace", "Delete"]}
+        snapToGrid={snapToGrid}
+        snapGrid={[16, 16]}
         proOptions={{ hideAttribution: true }}
         className="bg-white dark:bg-gray-950"
       >

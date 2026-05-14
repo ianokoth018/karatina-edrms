@@ -150,6 +150,31 @@ export async function PUT(
         })
       : 0;
 
+    // Snapshot the template every time it transitions from unpublished
+    // to published. This gives admins a permanent record of every
+    // published revision for diffing and rollback. We do this *before*
+    // the update so the snapshot reflects exactly what was approved.
+    const isPublishing = isActive === true && existing.isActive === false;
+    if (isPublishing) {
+      const snapshotDefinition =
+        definition !== undefined ? definition : (existing.definition as object);
+      const snapshotName = name ?? existing.name;
+      const snapshotDescription =
+        description !== undefined ? description : existing.description;
+      const snapshotVersion =
+        definition !== undefined ? existing.version + 1 : existing.version;
+      await db.workflowTemplateVersion.create({
+        data: {
+          templateId: id,
+          version: snapshotVersion,
+          name: snapshotName,
+          description: snapshotDescription,
+          definition: snapshotDefinition as object,
+          publishedById: session.user.id,
+        },
+      });
+    }
+
     const template = await db.workflowTemplate.update({
       where: { id },
       data: updateData,

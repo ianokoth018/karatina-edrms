@@ -94,16 +94,21 @@ export async function GET(
     const rawCc = Array.isArray((formData as Record<string, unknown>)?.cc)
       ? ((formData as Record<string, unknown>).cc as string[])
       : [];
+    const ccDepartments = Array.isArray((formData as Record<string, unknown>)?.ccDepartments)
+      ? ((formData as Record<string, unknown>).ccDepartments as string[])
+      : [];
     const cuidLike = rawCc.filter((c) => typeof c === "string" && /^c[a-z0-9]{20,}$/i.test(c));
-    let resolvedCc: string[] = rawCc;
+    let resolvedCcUsers: string[] = rawCc;
     if (cuidLike.length > 0) {
       const users = await db.user.findMany({
         where: { id: { in: cuidLike } },
         select: { id: true, name: true, displayName: true },
       });
       const nameById = new Map(users.map((u) => [u.id, u.displayName || u.name]));
-      resolvedCc = rawCc.map((c) => nameById.get(c) ?? c);
+      resolvedCcUsers = rawCc.map((c) => nameById.get(c) ?? c);
     }
+    // Departments first (institutional precedence), then individual recipients.
+    const resolvedCc: string[] = [...ccDepartments, ...resolvedCcUsers];
 
     // If the memo was endorsed by an HOD, the initiator on record will be the
     // HOD while `originalInitiatedById` still points to the real author. Resolve
